@@ -1,0 +1,18 @@
+dev-compose +args:
+    docker compose -f docker/docker-compose.yaml {{ args }}
+
+dev-compose-up:
+    just dev-compose up -d
+
+dev-compose-down:
+    just dev-compose down
+
+dev-compose-logs:
+    just dev-compose logs --follow
+
+dev-compose-prune:
+    just dev-compose down -v
+
+run-dev:
+    dev-compose-up
+    dotnet run

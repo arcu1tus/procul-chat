@@ -1,3 +1,5 @@
 net10.0/
 obj/
 bin/
+.env*
+!.env*.example
