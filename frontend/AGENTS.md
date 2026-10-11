@@ -9,7 +9,9 @@
 The Flutter chat client ("Procul") for the Procul backend. It supports **multiple
 conversations** (list, switch, rename, delete), streams assistant replies over SSE, shows
 tool activity, renders assistant Markdown, and has a persisted **settings** dialog (theme:
-light / dark / system, dark default). It talks to the backend's versioned
+light / dark / system, dark default). It also tracks **token usage**: a per-conversation
+counter chip in the chat app bar and a **Usage** dashboard reachable from the sidebar. It
+talks to the backend's versioned
 `/v1/conversations` API, which is **password-protected**: the app signs in with a shared
 password, keeps the returned session token in secure storage, and can save and switch between
 **multiple server profiles**.
@@ -23,6 +25,8 @@ password, keeps the returned session token in secure storage, and can save and s
   "Procul" wordmark and the empty-state heading). Inline code / code blocks stay on the
   bundled **GeistMono**.
 - **Markdown:** `gpt_markdown` (`^1.3.4`) renders assistant replies (code, lists, bold).
+- **Charts:** [`fl_chart`](https://pub.dev/packages/fl_chart) (`^1.2.0`) — the Usage
+  dashboard's daily bar chart (the only charting dependency).
 - **HTTP:** `package:http` (manual SSE parsing; no SSE package).
 - **Persistence:** `package:shared_preferences` — server profiles (without tokens), the active
   server id, the active conversation id and settings.
@@ -41,10 +45,11 @@ frontend/
                                   #   ConnectScreen (signed out) and the keyed AuthenticatedShell
     src/
       config.dart                 # apiBaseUrl (PROCUL_API_BASE dart-define)
-      models.dart                 # domain types: Conversation, ChatMessage, ToolCall, MessageRole
+      models.dart                 # domain types: Conversation, ChatMessage, ToolCall, MessageRole,
+                                  #   TokenUsage + formatTokenCount (999 / 1.0k / 1.2M)
       mcp_status.dart             # McpServerStatus: read-only MCP server status DTO
       mcp_status_controller.dart  # McpStatusController: MCP status for the Settings section
-      chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/ToolCall/...)
+      chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/Usage/ToolCall/...)
       chat_api.dart               # ChatApi: authenticated REST + SSE client (Bearer token)
       auth_api.dart               # AuthApi: unauthenticated POST /v1/auth/session
       auth_controller.dart        # AuthController: server profiles + active session
@@ -57,13 +62,19 @@ frontend/
       settings_store.dart         # SettingsStore: persisted preferences (shared_preferences)
       settings_controller.dart    # SettingsController: theme mode (dark default)
       chat_controller.dart        # ChatController: conversation list + active buffer + turn logic
+                                  #   + activeUsage (per-conversation) / lastTurnUsage
+      usage.dart                  # UsageSummary/UsageDay/UsageModel/UsageBreakdown DTOs
+      usage_controller.dart       # UsageController: dashboard summary + range + loading/error
+      usage_screen.dart           # Usage dashboard: lifetime cards, fl_chart bars, per-model list
       app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData, teal + Inter)
                                   #   + ShadcnMaterialBridge (flutter/material theme for markdown)
-      home_shell.dart             # responsive shell: sidebar (wide) / animated slide-in panel (narrow)
-      conversation_sidebar.dart   # conversation list, new chat, settings footer
+      home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow);
+                                  #   overlays UsageScreen over the still-mounted chat
+      conversation_sidebar.dart   # conversation list, new chat, usage + settings footer
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
       settings_dialog.dart        # settings dialog (theme selector + server management)
-      chat_screen.dart            # chat pane: header, message list, composer
+      chat_screen.dart            # chat pane: header (+ usage chip), message list, composer;
+                                  #   streaming shimmer over assistant Markdown
       widgets/
         skeleton.dart             # Shimmer + Skeleton loading placeholders
         icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label
@@ -124,6 +135,8 @@ Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's save
 | Rename | `PATCH /{id}` body `{"title":"..."}` | JSON `{"conversation":{...}}` |
 | Delete | `DELETE /{id}` | `204` (404 treated as success) |
 | MCP status | `GET /v1/mcp/servers` | JSON `{"servers":[{"name","type","url","connected","toolCount","tools","lastError","lastConnectedAt"}]}` |
+| Conversation usage | `GET /v1/usage/conversations/{id}` | JSON totals `{inputTokens,outputTokens,cachedInputTokens,totalTokens,turns}` |
+| Usage summary | `GET /v1/usage?days=30` | JSON `{lifetime, days:[{date,…}], models:[{model,…}]}` |
 
 **SSE wire format.** There is **no `event:` field**; each event is a `data: <json>` line
 followed by a blank line, and the kind is a `type` discriminator *inside* the JSON under
@@ -135,13 +148,16 @@ data: {"value":{"message":"received","type":"acknowledge"}}
 data: {"value":{"callId":"…","name":"get_current_time","arguments":"{\"utcOffsetMinutes\":120}","type":"toolCall"}}
 data: {"value":{"callId":"…","result":"2026-10-11T15:38:44+02:00","error":null,"type":"toolResult"}}
 data: {"value":{"content":"Hello","type":"token"}}
+data: {"value":{"inputTokens":10,"outputTokens":5,"cachedInputTokens":2,"totalTokens":17,"type":"usage"}}
 data: {"value":{"error":"…","type":"error"}}
 data: {"value":{"type":"done"}}
 data: {"value":{"conversationId":"…","title":"France's capital","type":"title"}}
 ```
 
 `created` is only emitted by `POST /`; `POST /{id}/messages` emits
-`acknowledge` → (`toolCall` → `toolResult`)* → `token`* → (`error` | `done`). `title` is only
+`acknowledge` → (`toolCall` → `toolResult`)* → `token`* → `usage`? → (`error` | `done`).
+`usage` (the reply's summed token counts) is emitted just before `done` **only when usage was
+seen**; `title` is only
 emitted by `POST /`, **after** `done` — the model-generated title arrives a moment after the
 reply, so the client must treat `done` (not stream close) as the end of a turn. Tool events
 only appear when the model actually calls a tool, and correlate via `callId` (`arguments` is a
@@ -173,6 +189,25 @@ reaches the buffer.
 - **Tool activity lives on the assistant message.** `ToolCallEvent`/`ToolResultEvent` are
   folded into the streaming assistant `ChatMessage.toolCalls` (matched by `callId`), not added
   as separate buffer entries. Tool calls are not persisted, so they vanish on reload.
+- **Token usage is two-level.** `ChatController.activeUsage` is the active conversation's
+  cumulative total: seeded from `GET /v1/usage/conversations/{id}` when a conversation is
+  opened, then incremented by each turn's `UsageEvent` so switching conversations needs no
+  refetch. `lastTurnUsage` is just the most recent reply; both reset in `newChat()` /
+  `deleteConversation`. The app-bar `_UsageChip` renders only when `activeUsage.hasTokens` and
+  opens a `showDropdown` popover (`MenuLabel` rows + `MenuDivider`) with the
+  input/output/cached/total breakdown.
+- **The Usage dashboard is its own controller + screen.** `UsageController` mirrors
+  `McpStatusController` and is owned by `UsageScreen`: it holds the `UsageSummary`, the
+  selected range (`7/30/90/365`, default `30`; `365` is the "all" view, the backend caps a
+  window at 366), plus `isLoading`/`error`. `UsageScreen` shows lifetime cards, a `fl_chart`
+  bar chart with a Total/Input/Output metric toggle, a per-model breakdown list, and
+  pull-to-refresh via `RefreshTrigger` **plus** an explicit `IconAction`. It is opened from the
+  sidebar footer's **Usage** button beside Settings; `HomeShell` overlays it on top of the
+  still-mounted chat so the chat's scroll position and buffer survive.
+- **Assistant text shimmers while streaming.** `_ShimmerText` (in `chat_screen.dart`) wraps the
+  `GptMarkdown` in a `ShaderMask` (`BlendMode.srcIn`) with a sliding `LinearGradient`, active
+  only while the reply streams. It owns its own `AnimationController`, so per-token rebuilds do
+  not restart the sweep, and it removes the overlay once the reply completes.
 - **Errors are user-facing strings** on `ChatController.error`; `ChatScreen` shows them as a
   shadcn toast. Streaming failures still leave the partial reply in the bubble.
 - **Settings are a `ChangeNotifier` + `shared_preferences`.** `SettingsController.themeMode`
@@ -331,3 +366,8 @@ surfaces the error rather than downgrading the token to plaintext.
 - **MCP status JSON never contains secrets.** `McpServerStatus.fromJson` reads only
   name/type/url/connected/toolCount/tools/lastError/lastConnectedAt and ignores anything else,
   so even a hypothetical `headers` field in the payload is never rendered.
+- **Don't `await` `StreamController.close()` twice in a widget test.** The second `close()` on
+  an already-closed controller never completes under `flutter_test`'s fake async, so the test
+  hangs in **teardown** (and `flutter test --timeout` never fires because the test body already
+  finished). Guard it — `addTearDown(() => stream.isClosed ? null : stream.close())` — as in
+  `chat_usage_test.dart`.

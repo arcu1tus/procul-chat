@@ -5,6 +5,7 @@ import 'chat_controller.dart';
 import 'chat_screen.dart';
 import 'conversation_sidebar.dart';
 import 'settings_controller.dart';
+import 'usage_screen.dart';
 
 /// The app's root layout: a persistent sidebar next to the chat on wide
 /// screens, and the chat alone (with a slide-in sidebar) on narrow ones.
@@ -43,6 +44,10 @@ class _HomeShellState extends State<HomeShell>
 
   bool _sidebarOpen = false;
 
+  /// Whether the main pane shows the usage dashboard instead of the chat. The
+  /// chat stays mounted underneath so its scroll position and buffer survive.
+  bool _showUsage = false;
+
   @override
   void dispose() {
     _controller.dispose();
@@ -58,6 +63,16 @@ class _HomeShellState extends State<HomeShell>
     _controller.reverse().whenComplete(() {
       if (mounted) setState(() => _sidebarOpen = false);
     });
+  }
+
+  void _openUsage() {
+    setState(() => _showUsage = true);
+    _closeSidebar();
+  }
+
+  void _openChat() {
+    if (!_showUsage) return;
+    setState(() => _showUsage = false);
   }
 
   @override
@@ -77,10 +92,22 @@ class _HomeShellState extends State<HomeShell>
                     chat: widget.chat,
                     settings: widget.settings,
                     auth: widget.auth,
+                    onOpenUsage: _openUsage,
+                    onOpenChat: _openChat,
                   ),
                 ),
                 Container(width: 1, color: colors.border),
-                Expanded(child: ChatScreen(chat: widget.chat)),
+                Expanded(
+                  child: Stack(
+                    children: [
+                      Positioned.fill(child: ChatScreen(chat: widget.chat)),
+                      if (_showUsage)
+                        Positioned.fill(
+                          child: UsageScreen(api: widget.chat.api),
+                        ),
+                    ],
+                  ),
+                ),
               ],
             ),
           );
@@ -89,10 +116,24 @@ class _HomeShellState extends State<HomeShell>
         return Stack(
           children: [
             Positioned.fill(
-              child: ChatScreen(
-                chat: widget.chat,
-                showMenuButton: true,
-                onMenu: _openSidebar,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: ChatScreen(
+                      chat: widget.chat,
+                      showMenuButton: true,
+                      onMenu: _openSidebar,
+                    ),
+                  ),
+                  if (_showUsage)
+                    Positioned.fill(
+                      child: UsageScreen(
+                        api: widget.chat.api,
+                        showMenuButton: true,
+                        onMenu: _openSidebar,
+                      ),
+                    ),
+                ],
               ),
             ),
             if (_sidebarOpen)
@@ -127,6 +168,8 @@ class _HomeShellState extends State<HomeShell>
                     chat: widget.chat,
                     settings: widget.settings,
                     auth: widget.auth,
+                    onOpenUsage: _openUsage,
+                    onOpenChat: _openChat,
                     onClose: _closeSidebar,
                   ),
                 ),

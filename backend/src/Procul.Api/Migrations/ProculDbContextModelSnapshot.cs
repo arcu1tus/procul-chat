@@ -69,7 +69,58 @@ namespace Procul.Api.Migrations
                     b.ToTable("ConversationMessages");
                 });
 
+            modelBuilder.Entity("Procul.Api.Chat.TurnUsage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("CachedInputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("TotalTokens")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConversationId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.ToTable("TurnUsages");
+                });
+
             modelBuilder.Entity("Procul.Api.Chat.ConversationMessage", b =>
+                {
+                    b.HasOne("Procul.Api.Chat.Conversation", null)
+                        .WithMany()
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Procul.Api.Chat.TurnUsage", b =>
                 {
                     b.HasOne("Procul.Api.Chat.Conversation", null)
                         .WithMany()

@@ -27,6 +27,14 @@ public sealed record ChatStreamToolResultV1(string CallId, string? Result, strin
 /// <summary>The turn failed mid-stream.</summary>
 public sealed record ChatStreamFailedV1(string Error, string Type = "error");
 
+/// <summary>Token usage for the reply, summed across every underlying model call on the turn.</summary>
+public sealed record ChatStreamUsageV1(
+    long? InputTokens,
+    long? OutputTokens,
+    long? CachedInputTokens,
+    long? TotalTokens,
+    string Type = "usage");
+
 /// <summary>The assistant's reply is complete and persisted.</summary>
 public sealed record ChatStreamDoneV1(string Type = "done");
 
@@ -40,5 +48,6 @@ public abstract record ChatStreamEventV1
     public sealed record ToolCall(ChatStreamToolCallV1 Value) : ChatStreamEventV1;
     public sealed record ToolResult(ChatStreamToolResultV1 Value) : ChatStreamEventV1;
     public sealed record Failed(ChatStreamFailedV1 Value) : ChatStreamEventV1;
+    public sealed record Usage(ChatStreamUsageV1 Value) : ChatStreamEventV1;
     public sealed record Done(ChatStreamDoneV1 Value) : ChatStreamEventV1;
 }

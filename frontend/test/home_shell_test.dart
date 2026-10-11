@@ -205,4 +205,55 @@ void main() {
     expect(find.byType(GptMarkdown), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('the sidebar Usage entry opens the usage dashboard', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final usage = jsonEncode({
+      'lifetime': {
+        'inputTokens': 100,
+        'outputTokens': 50,
+        'cachedInputTokens': 20,
+        'totalTokens': 150,
+        'turns': 2,
+      },
+      'days': [
+        {
+          'date': '2026-10-11',
+          'inputTokens': 100,
+          'outputTokens': 50,
+          'cachedInputTokens': 20,
+          'totalTokens': 150,
+          'turns': 1,
+        },
+      ],
+      'models': <dynamic>[],
+    });
+
+    final client = MockClient((request) async {
+      if (request.url.path.startsWith('/v1/usage')) {
+        return http.Response(usage, 200);
+      }
+      return http.Response('{"conversations":[]}', 200);
+    });
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      store: FakeConversationStore(),
+    );
+
+    await tester.pumpWidget(
+      _app(chat: chat, settings: SettingsController(), auth: _auth()),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Usage'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Lifetime'), findsOneWidget);
+    expect(find.text('Daily usage'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

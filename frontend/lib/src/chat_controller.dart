@@ -38,6 +38,14 @@ class ChatController extends ChangeNotifier {
   /// The most recent user-facing error, if any.
   String? error;
 
+  /// Cumulative token usage for the active conversation. Seeded from
+  /// `GET /v1/usage/conversations/{id}` when it is opened, then incremented by
+  /// each turn's `usage` event so it survives switching without a refetch.
+  TokenUsage activeUsage = const TokenUsage();
+
+  /// Token usage reported for the most recent reply, or null when none was.
+  TokenUsage? lastTurnUsage;
+
   String? get activeConversationId => _conversationId;
 
   /// Whether a conversation is already established on the backend.
@@ -120,6 +128,8 @@ class ChatController extends ChangeNotifier {
   Future<void> newChat() async {
     _conversationId = null;
     messages.clear();
+    activeUsage = const TokenUsage();
+    lastTurnUsage = null;
     error = null;
     await _store.clear();
     notifyListeners();
@@ -179,6 +189,12 @@ class ChatController extends ChangeNotifier {
             // flight (it is emitted after the reply).
             isStreaming = false;
             notifyListeners();
+          case UsageEvent(:final usage):
+            // The turn's token usage, summed across any tool-loop calls. Add it
+            // to the conversation's running total and remember it for the chip.
+            activeUsage = activeUsage + usage;
+            lastTurnUsage = usage;
+            notifyListeners();
           case AcknowledgeEvent():
         }
       }
@@ -225,6 +241,8 @@ class ChatController extends ChangeNotifier {
       if (_conversationId == id) {
         _conversationId = null;
         messages.clear();
+        activeUsage = const TokenUsage();
+        lastTurnUsage = null;
         await _store.clear();
       }
       notifyListeners();
@@ -238,6 +256,8 @@ class ChatController extends ChangeNotifier {
     _conversationId = id;
     isLoadingMessages = true;
     messages.clear();
+    activeUsage = const TokenUsage();
+    lastTurnUsage = null;
     error = null;
     notifyListeners();
 
@@ -252,6 +272,18 @@ class ChatController extends ChangeNotifier {
     } finally {
       isLoadingMessages = false;
       notifyListeners();
+    }
+
+    // The running total is fetched separately: a failure here must not mark the
+    // chat as broken, so it is best-effort and never touches `error`.
+    try {
+      final usage = await api.fetchConversationUsage(id);
+      if (_conversationId == id) {
+        activeUsage = usage;
+        notifyListeners();
+      }
+    } catch (_) {
+      // Keep zeros; the chip just stays hidden until the next load.
     }
   }
 

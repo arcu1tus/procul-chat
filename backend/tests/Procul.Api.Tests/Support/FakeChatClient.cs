@@ -4,12 +4,13 @@ namespace Procul.Api.Tests.Support;
 
 /// <summary>
 /// A minimal <see cref="IChatClient"/> for tests. It answers <see cref="GetResponseAsync"/> with a
-/// canned reply (or a caller-supplied handler) and never touches the network. Streaming is not
-/// implemented because the tests that use it exercise the non-streaming title call only.
+/// canned reply (or a caller-supplied handler) and never touches the network. A streaming handler
+/// can be supplied for tests that exercise the SSE reply path.
 /// </summary>
 internal sealed class FakeChatClient : IChatClient
 {
     private readonly Func<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken, Task<ChatResponse>> _handler;
+    private readonly Func<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>? _streamHandler;
 
     /// <summary>Replies with <paramref name="response"/> to every request.</summary>
     public FakeChatClient(string response)
@@ -19,8 +20,12 @@ internal sealed class FakeChatClient : IChatClient
 
     /// <summary>Replies using a custom handler, e.g. to throw or capture the request.</summary>
     public FakeChatClient(
-        Func<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken, Task<ChatResponse>> handler)
-        => _handler = handler;
+        Func<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken, Task<ChatResponse>> handler,
+        Func<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>? streamHandler = null)
+    {
+        _handler = handler;
+        _streamHandler = streamHandler;
+    }
 
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
@@ -32,7 +37,8 @@ internal sealed class FakeChatClient : IChatClient
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
-        => throw new NotSupportedException("Streaming is not used by these tests.");
+        => _streamHandler?.Invoke(messages, options, cancellationToken)
+            ?? throw new NotSupportedException("This FakeChatClient was built without a streaming handler.");
 
     public object? GetService(Type serviceType, object? serviceKey = null) => null;
 

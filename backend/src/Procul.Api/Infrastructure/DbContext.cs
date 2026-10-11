@@ -7,6 +7,7 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
 {
     public DbSet<Conversation> Conversations { get; set; }
     public DbSet<ConversationMessage> ConversationMessages { get; set; }
+    public DbSet<TurnUsage> TurnUsages { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -18,6 +19,10 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
                 .WithOne()
                 .HasForeignKey(m => m.ConversationId)
                 .IsRequired();
+            e.HasMany<TurnUsage>()
+                .WithOne()
+                .HasForeignKey(u => u.ConversationId)
+                .IsRequired();
         });
 
         modelBuilder.Entity<ConversationMessage>(e =>
@@ -25,6 +30,16 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
             e.HasKey(m => m.Id);
             e.Property(m => m.Id).ValueGeneratedNever();
             e.Property(m => m.MessageRole).HasConversion<string>().HasMaxLength(16);
+        });
+
+        modelBuilder.Entity<TurnUsage>(e =>
+        {
+            e.HasKey(u => u.Id);
+            e.Property(u => u.Id).ValueGeneratedNever();
+            e.Property(u => u.Model).HasMaxLength(256);
+            e.Property(u => u.Kind).HasConversion<string>().HasMaxLength(16);
+            e.HasIndex(u => u.ConversationId);
+            e.HasIndex(u => u.CreatedAt);
         });
     }
 }

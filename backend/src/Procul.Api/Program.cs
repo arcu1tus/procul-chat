@@ -6,6 +6,7 @@ using Procul.Api.Mcp;
 using Procul.Api.Mcp.V1;
 using Procul.Api.Security;
 using Procul.Api.Security.V1;
+using Procul.Api.Usage.V1;
 using Procul.Api.Versioning;
 
 DotNetEnv.Env.Load();
@@ -55,6 +56,14 @@ var v1Mcp = mcp
     .RequireAuthorization();
 
 v1Mcp.MapMcpV1();
+
+var usage = app.NewVersionedApi("Usage");
+var v1Usage = usage
+    .MapGroup("/v{version:apiVersion}/usage")
+    .HasApiVersion(1.0)
+    .RequireAuthorization();
+
+v1Usage.MapUsageV1();
 
 await app.RunAsync();
 
