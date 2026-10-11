@@ -16,7 +16,10 @@ public sealed class AttachmentOptions
     /// <summary>Allowed content-type patterns (e.g. <c>image/*</c>).</summary>
     public required IReadOnlyList<string> AllowedContentTypes { get; init; }
 
-    /// <summary>Whether earlier turns re-send attachment bytes, or only a text note.</summary>
+    /// <summary>
+    /// Whether earlier turns re-send attachment bytes, or only a text note. Defaults to
+    /// <c>true</c> (see <see cref="AttachmentConfig.ResendHistory"/>).
+    /// </summary>
     public required bool ResendHistory { get; init; }
 
     /// <summary>Cap, in bytes, on how much of a <c>text/*</c> file is inlined into the prompt.</summary>

@@ -64,10 +64,10 @@ against [OpenRouter](https://openrouter.ai/).
   client's Settings.
 - **File attachments**: attach images, text, PDFs, and (where the model supports it) audio to a
   message. Bytes land in PostgreSQL or S3-compatible storage (config choice); the backend maps
-  each file to the content the selected model can read and **refuses** types it cannot (the gate
-  is enforced server-side *and* previewed in the client). The Flutter client has a paperclip
-  picker, removable preview chips, and renders images and files inline; reloaded conversations
-  show their attachments.
+  each file to the content the selected model can read and **refuses** types it cannot — at
+  upload *and* at send. The Flutter client restricts its picker to the active model's readable
+  types, has removable preview chips, and renders images and files inline; reloaded conversations
+  show their attachments (and, by default, re-sends them to the model on later turns).
 - **AI-generated conversation titles** produced concurrently with the first reply.
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
@@ -251,8 +251,8 @@ service, including MinIO via `serviceUrl` + `forcePathStyle`).
   "storage": "postgres",            // "postgres" | "s3"
   "maxFileSizeBytes": 20971520,     // 20 MiB (the client pre-checks the same limit)
   "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
-  "resendHistory": false,           // false = only the newest user turn carries the bytes;
-                                    // earlier turns contribute a short text note
+  "resendHistory": true,            // true = earlier turns re-send the bytes, so a model
+                                    // picked later can still read them; false = note only
   "textInlineMaxBytes": 262144,     // cap for inlining a text/* file into the prompt
   "s3": { "bucket": "${S3_BUCKET}", "region": "${S3_REGION}", "serviceUrl": "${S3_ENDPOINT}",
           "forcePathStyle": true, "accessKey": "${S3_ACCESS_KEY}", "secretKey": "${S3_SECRET_KEY}" }
@@ -269,9 +269,18 @@ On send, each attachment is mapped to `Microsoft.Extensions.AI` content:
 | `text/*` | inlined `TextContent` (capped) | — (always) |
 | video / anything else | not sent; a text placeholder | — (stored + shown only) |
 
-The model's effective capabilities (declared ∪ discovered) are enforced by the backend: a
-message referencing a type the model cannot read is rejected with a `400` naming the file and
-the missing capability. The client applies the same rule up-front for a friendly message.
+The model's effective capabilities (declared ∪ discovered) are enforced by the backend: a file
+whose type the selected model cannot read is rejected with a `400` naming the file and the
+missing capability — both at **upload** (the client sends the target model as `?model=...`) and
+again at **send** (the model can change in between). The client also restricts the native picker
+to that model's readable types, so an unsupported file usually cannot even be chosen; video is
+never offered, because no configured model can receive it.
+
+With `resendHistory: true` (the default), every turn re-sends the bytes of earlier user messages
+that have attachments, so switching to a more capable model later lets it read files attached
+before the switch. A per-attachment capability check still degrades any type the current model
+cannot read to a placeholder. Set it to `false` to send the bytes only on the turn the file was
+attached and use a short text note for earlier turns.
 
 ### MCP tool servers
 

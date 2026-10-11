@@ -49,7 +49,7 @@ selected model cannot read. The client needs a picker, previews, and rendering.
   "storage": "postgres",            // "postgres" | "s3"
   "maxFileSizeBytes": 20971520,
   "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
-  "resendHistory": false,           // false = only the newest user turn carries the bytes
+  "resendHistory": true,            // true = earlier turns re-send the bytes; false = note only
   "textInlineMaxBytes": 262144,     // cap for inlining a text/* file into the prompt
   "s3": { "bucket": "${S3_BUCKET}", "region": "${S3_REGION}", "serviceUrl": "${S3_ENDPOINT}",
           "forcePathStyle": true, "accessKey": "${S3_ACCESS_KEY}", "secretKey": "${S3_SECRET_KEY}" }
@@ -105,7 +105,10 @@ DELETE /v{version}/attachments/{id}   204 (idempotent)
 
 - **Validation:** reject when `SizeBytes > maxFileSizeBytes` (`413`) or `ContentType` not matched by
   `allowedContentTypes` (`400`). Match wildcards (`image/*`). Optionally sniff magic bytes to
-  confirm the declared type (reject mismatches).
+  confirm the declared type (reject mismatches). Also run the **capability gate** here: the optional
+  `model` query names the target model (default when omitted) and a type it cannot read is a `400`,
+  so the user is refused the moment they add the file — not only at send time. The send gate
+  repeats the check because the model can change between upload and send.
 - `GET` streams from the store; sets `Content-Disposition: inline; filename="…"` and the stored
   content type. **CORS:** add `WithExposedHeaders("Content-Disposition")` to the policy so a web
   client can read the filename; the `Authorization` header already triggers (and is allowed by)
@@ -126,10 +129,12 @@ DELETE /v{version}/attachments/{id}   204 (idempotent)
      and other unknown types are allowed to be *stored*, but are **not** sent — see below.)
   4. Attach the rows to the persisted user message (`MessageId`, `ConversationId`).
   5. Build the user `ChatMessage` content parts (Part F).
-- **History rebuild:** by default (`resendHistory: false`) only the **current** user turn carries
-  the bytes; earlier user messages with attachments contribute a short `TextContent` note
-  (`[Attached file: name (type, N bytes)]`) so the model still knows they exist without re-sending
-  large blobs every turn. `resendHistory: true` re-sends the bytes each turn.
+- **History rebuild:** `resendHistory: true` (the default) re-sends each earlier user message's
+  bytes every turn, so a model chosen later can still read earlier files; a per-attachment
+  capability check still degrades an unreadable type to a placeholder. Setting
+  `resendHistory: false` instead has earlier user messages contribute a short `TextContent` note
+  (`[Attached file: name (type, N bytes)]`) so the model knows the file exists without re-sending
+  large blobs every turn.
 
 ## Part F — Attachment → `AIContent` mapping
 
@@ -168,9 +173,11 @@ effective capabilities, produce `IReadOnlyList<AIContent>`:
   - `send(text, {List<String> attachmentIds})`; `createConversation` includes ids.
   - Validate picks against the **active model's** capabilities (from Plan 2's catalog) and the
     configured limits; surface a friendly error for unsupported/too-large files.
-- **Composer (`chat_screen.dart`):** a paperclip attach `IconAction`; on pick, upload with a small
-  progress/`Skeleton` state; show removable preview chips (thumbnail for images, icon + name + size
-  otherwise); disable attach while streaming.
+- **Composer (`chat_screen.dart`):** a paperclip attach `IconAction`; the native picker is
+  restricted to the active model's readable extensions (so an unsupported type cannot be chosen),
+  with a post-pick guard as a fallback; on pick, upload with a small progress/`Skeleton` state; show
+  removable preview chips (thumbnail for images, icon + name + size otherwise); disable attach while
+  streaming.
 - **Message rendering:** user bubbles show attachments — images via `Image.memory` (bytes fetched
   through `ChatApi` and cached), other files as chips (name/size, tap to save via `file_picker`
   `saveFile`). Reloaded history shows persisted attachments.
@@ -215,13 +222,15 @@ effective capabilities, produce `IReadOnlyList<AIContent>`:
 
 1. Users attach files; bytes land in Postgres or S3 (config choice), metadata in Postgres.
 2. On send, the backend checks the model's capabilities and only sends what the model can read.
-3. Images/text/PDF render and round-trip; audio works where supported; video is stored + shown but
-   not sent.
+3. Images/text/PDF render and round-trip; audio works where supported. The client only offers file
+   types the active model can read (video, which no model can receive, is not offered at all), and
+   the backend rejects an unreadable type both at upload and at send.
 4. Reloaded conversations show their attachments.
 
 ## Assumptions / notes
 
 - There are **no users** (single shared password), so any authenticated client can fetch any
   attachment id. Acceptable for this app; note it as a hardening follow-up (signed URLs / ownership).
-- Inlining text files and (optionally) re-sending history increases prompt tokens; the caps and
-  `resendHistory: false` default bound it.
+- Inlining text files and re-sending history increases prompt tokens; `resendHistory: false` and a
+  low `textInlineMaxBytes` bound it (the default is `true`, chosen so a model picked later can still
+  read earlier files).

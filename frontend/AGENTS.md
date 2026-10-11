@@ -149,7 +149,7 @@ Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's save
 | List chats | `GET /` | JSON `{"conversations":[...]}`, newest activity first |
 | Start chat | `POST /` body `{"initialMessage":"...","model":"<slug>"?,"attachmentIds":["<guid>"]?}` | SSE |
 | Send message | `POST /{id}/messages` body `{"text":"...","attachmentIds":["<guid>"]?}` | SSE |
-| Upload | `POST /v1/attachments` multipart (`file` field) | JSON `AttachmentV1` (`201`); `400`/`413` |
+| Upload | `POST /v1/attachments?model=<slug>` multipart (`file` field) | JSON `AttachmentV1` (`201`); `400` (type/model can't read it)/`413` |
 | Download | `GET /v1/attachments/{id}` (authenticated) | raw bytes + `Content-Disposition` |
 | Delete | `DELETE /v1/attachments/{id}` | `204` (404 treated as success) |
 | History | `GET /{id}/messages?limit=1..100&afterMessageId=<guid>` | JSON (user messages carry an `attachments` array of `AttachmentV1`) |
@@ -283,13 +283,16 @@ reaches the buffer.
   `TextInputAction.send` still submits.
 - **Attachments are picked, uploaded, and queued in `ChatController`.** `ChatScreen` owns an
   `AttachmentPicker` (`FilePickerAttachmentPicker` by default, injected in tests) and a paperclip
-  `IconAction`. On pick, it checks the file against the **active model's** capabilities (looked
-  up from the shared catalog via `chat.activeModel`; `attachmentProblem` in `attachments.dart`
-  mirrors the backend rule) and, if it passes, `ChatController.uploadAttachment` POSTs it and
-  appends the result to `pendingAttachments` (shown as removable chips; disabled while streaming
-  or mid-upload). `ChatController.send` snapshots the pending ids into the request and attaches
-  the metadata to the user bubble; the queue clears on send, `newChat()`, and switching chats.
-  `pendingAttachments` is *not* persisted: a failed turn leaves the uploads orphaned server-side.
+  `IconAction`. The picker is **restricted to the active model's readable types**:
+  `_activeCapabilities()` looks the model up in the shared catalog via `chat.activeModel`, then
+  `allowedExtensionsForCapabilities` produces the allow-list (`text/*` always; video never, since
+  no model can receive it). A post-pick `attachmentProblem` check (in `attachments.dart`, mirroring
+  the backend rule) is the fallback if the platform ignores the filter. `ChatController.uploadAttachment`
+  then POSTs it — passing the active model so the **backend re-validates at upload** — and appends
+  the result to `pendingAttachments` (removable chips; disabled while streaming or mid-upload).
+  `ChatController.send` snapshots the pending ids into the request and attaches the metadata to the
+  user bubble; the queue clears on send, `newChat()`, and switching chats. `pendingAttachments` is
+  *not* persisted: a failed turn leaves the uploads orphaned server-side.
 - **Attachment bytes are fetched through `ChatApi`, then cached.** `ChatController.loadAttachmentBytes`
   does an authenticated `GET /v1/attachments/{id}` and memoizes in `_attachmentBytes`; images
   render as `Image.memory` and other files as chips that fetch the bytes and hand them to

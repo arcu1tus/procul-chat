@@ -118,21 +118,30 @@ class ChatApi {
 
   /// `POST /v1/attachments` — uploads a file as multipart/form-data and returns
   /// its metadata. The bytes are sent once; renders later fetch them by id.
+  ///
+  /// [model] names the model the file is meant for; the backend rejects a type
+  /// that model cannot read (the same rule the send gate enforces). Omit it to
+  /// let the backend use its default model.
   Future<Attachment> uploadAttachment({
     required Uint8List bytes,
     required String fileName,
     required String contentType,
+    String? model,
   }) async {
-    final request = http.MultipartRequest('POST', _uri('/v1/attachments'))
-      ..headers.addAll(_authHeaders)
-      ..files.add(
-        http.MultipartFile.fromBytes(
-          'file',
-          bytes,
-          filename: fileName,
-          contentType: MediaType.parse(contentType),
-        ),
-      );
+    final request =
+        http.MultipartRequest(
+            'POST',
+            _uri('/v1/attachments', model == null ? null : {'model': model}),
+          )
+          ..headers.addAll(_authHeaders)
+          ..files.add(
+            http.MultipartFile.fromBytes(
+              'file',
+              bytes,
+              filename: fileName,
+              contentType: MediaType.parse(contentType),
+            ),
+          );
 
     final response = await http.Response.fromStream(
       await _client.send(request),

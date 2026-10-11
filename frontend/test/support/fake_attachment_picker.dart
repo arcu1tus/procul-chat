@@ -18,9 +18,14 @@ class FakeAttachmentPicker implements AttachmentPicker {
 
   int pickCalls = 0;
 
+  /// The allow-list the picker was asked for on the last [pick], or null when
+  /// unrestricted.
+  List<String>? lastAllowedExtensions;
+
   @override
-  Future<PickedAttachment?> pick() async {
+  Future<PickedAttachment?> pick({List<String>? allowedExtensions}) async {
     pickCalls++;
+    lastAllowedExtensions = allowedExtensions;
     final result = next;
     next = null;
     return result;

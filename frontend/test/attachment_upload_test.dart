@@ -109,6 +109,11 @@ void main() {
     expect(chat.pendingAttachments, hasLength(1));
     expect(chat.pendingAttachments.single.fileName, 'photo.png');
     expect(find.text('photo.png'), findsOneWidget);
+
+    // The picker only offered types the active model (text + image) can read.
+    expect(picker.lastAllowedExtensions, contains('png'));
+    expect(picker.lastAllowedExtensions, contains('txt'));
+    expect(picker.lastAllowedExtensions, isNot(contains('pdf')));
     expect(
       requests.where(
         (r) => r.method == 'POST' && r.url.path == '/v1/attachments',
@@ -152,6 +157,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(picker.pickCalls, 1);
+    // The picker was restricted to text files, so an image could not be chosen.
+    expect(picker.lastAllowedExtensions, contains('txt'));
+    expect(picker.lastAllowedExtensions, isNot(contains('png')));
+    // Even if the platform lets one through, it is rejected before upload.
     expect(chat.pendingAttachments, isEmpty);
     expect(chat.error, contains('image capability'));
     expect(
@@ -244,5 +253,25 @@ void main() {
       ),
       contains('limit'),
     );
+  });
+
+  test('allowedExtensionsForCapabilities follows the model modalities', () {
+    // Text is always offered; video never is (no model can receive it).
+    final textOnly = allowedExtensionsForCapabilities({
+      ModelInputModality.text,
+    });
+    expect(textOnly, contains('txt'));
+    expect(textOnly, isNot(contains('png')));
+    expect(textOnly, isNot(contains('mp4')));
+
+    final everything = allowedExtensionsForCapabilities({
+      ModelInputModality.text,
+      ModelInputModality.image,
+      ModelInputModality.file,
+      ModelInputModality.audio,
+      ModelInputModality.video,
+    });
+    expect(everything, containsAll(['png', 'pdf', 'mp3', 'txt']));
+    expect(everything, isNot(contains('mp4')));
   });
 }

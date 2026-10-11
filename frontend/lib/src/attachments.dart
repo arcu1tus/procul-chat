@@ -73,6 +73,56 @@ String _modalityLabel(ModelInputModality modality) => switch (modality) {
   ModelInputModality.text => 'text',
 };
 
+/// The file extensions a model with [capabilities] can actually receive, used to
+/// restrict the native picker so an unsupported file cannot even be chosen.
+///
+/// `text/*` is always included (the backend always inlines it). Video is
+/// excluded on purpose: no model can receive it, so offering the extension would
+/// only promise something the app cannot deliver.
+const _extensionsByModality = <ModelInputModality, List<String>>{
+  ModelInputModality.image: [
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'heic',
+    'bmp',
+  ],
+  ModelInputModality.file: ['pdf'],
+  ModelInputModality.audio: ['mp3', 'wav', 'm4a', 'oga'],
+  ModelInputModality.text: [
+    'txt',
+    'md',
+    'csv',
+    'json',
+    'xml',
+    'log',
+    'yaml',
+    'yml',
+  ],
+};
+
+/// The picker's allow-list for a model's input modalities (sorted, for stable
+/// tests and dialogs).
+List<String> allowedExtensionsForCapabilities(
+  Set<ModelInputModality> capabilities,
+) {
+  final extensions = <String>{
+    ..._extensionsByModality[ModelInputModality.text]!,
+  };
+  for (final modality in const [
+    ModelInputModality.image,
+    ModelInputModality.file,
+    ModelInputModality.audio,
+  ]) {
+    if (capabilities.contains(modality)) {
+      extensions.addAll(_extensionsByModality[modality]!);
+    }
+  }
+  return extensions.toList()..sort();
+}
+
 /// Returns a user-facing problem when the active model cannot receive the file,
 /// or null when it can. [capabilities] is the active model's input set.
 String? attachmentProblem({
@@ -160,8 +210,9 @@ class PickedAttachment {
 /// Picking and saving files, abstracted so widget tests never touch the
 /// `file_picker` platform channel.
 abstract interface class AttachmentPicker {
-  /// Opens the native picker. Returns null when the user cancels.
-  Future<PickedAttachment?> pick();
+  /// Opens the native picker, offering only [allowedExtensions] when given (the
+  /// active model's readable file types). Returns null when the user cancels.
+  Future<PickedAttachment?> pick({List<String>? allowedExtensions});
 
   /// Saves [bytes] under [fileName], opening the platform's save dialog (web
   /// downloads directly).
@@ -173,8 +224,11 @@ class FilePickerAttachmentPicker implements AttachmentPicker {
   const FilePickerAttachmentPicker();
 
   @override
-  Future<PickedAttachment?> pick() async {
-    final files = await FilePicker.pickFiles();
+  Future<PickedAttachment?> pick({List<String>? allowedExtensions}) async {
+    final files = await FilePicker.pickFiles(
+      type: allowedExtensions == null ? FileType.any : FileType.custom,
+      allowedExtensions: allowedExtensions,
+    );
     if (files.isEmpty) return null;
     final file = files.first;
     final bytes = await file.readAsBytes();

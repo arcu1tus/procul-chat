@@ -68,9 +68,11 @@ public sealed class AttachmentConfig
 
     /// <summary>
     /// Whether earlier turns re-send an attachment's bytes every time, or only a short text note.
-    /// <c>false</c> (the default) keeps only the newest user turn carrying the bytes.
+    /// <c>true</c> (the default) re-sends, so a model chosen later can still read earlier files
+    /// (a capability the current model lacks still degrades to a note). Set <c>false</c> to keep
+    /// only the newest user turn carrying the bytes and bound the prompt size.
     /// </summary>
-    public bool ResendHistory { get; set; }
+    public bool ResendHistory { get; set; } = true;
 
     /// <summary>Cap, in bytes, on how much of a <c>text/*</c> file is inlined into the prompt.</summary>
     public long TextInlineMaxBytes { get; set; } = 256 * 1024;

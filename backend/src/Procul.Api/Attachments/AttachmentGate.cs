@@ -59,18 +59,34 @@ internal static class AttachmentGate
 
         foreach (var attachment in found)
         {
-            if (AttachmentContentBuilder.RequiredModality(attachment.ContentType) is { } required
-                && !capabilities.Contains(required))
+            if (TypeProblem(definition, attachment.FileName, attachment.ContentType, capabilities) is { } problem)
             {
-                return AttachmentResolution.Fail(
-                    $"The model '{definition.Name}' cannot read '{attachment.FileName}' " +
-                    $"({attachment.ContentType}); it requires the " +
-                    $"'{required.ToString().ToLowerInvariant()}' capability.");
+                return AttachmentResolution.Fail(problem);
             }
         }
 
         // Preserve the order the client sent.
         var ordered = ids.Select(id => found.First(a => a.Id == id)).ToList();
         return new AttachmentResolution(ordered, null);
+    }
+
+    /// <summary>
+    /// The user-facing problem with a single file for a model, or null when the model can read it.
+    /// Shared by the send gate and the upload endpoint so the rule (and its wording) live once.
+    /// </summary>
+    public static string? TypeProblem(
+        ChatModelDefinition definition,
+        string fileName,
+        string contentType,
+        IReadOnlySet<ModelInputModality> capabilities)
+    {
+        if (AttachmentContentBuilder.RequiredModality(contentType) is { } required
+            && !capabilities.Contains(required))
+        {
+            return $"The model '{definition.Name}' cannot read '{fileName}' ({contentType}); " +
+                $"it requires the '{required.ToString().ToLowerInvariant()}' capability.";
+        }
+
+        return null;
     }
 }

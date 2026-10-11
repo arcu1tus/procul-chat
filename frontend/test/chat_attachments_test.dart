@@ -141,6 +141,38 @@ void main() {
     expect(user.attachments.single.fileName, 'notes.txt');
   });
 
+  test('uploadAttachment tells the backend which model it is for', () async {
+    http.Request? upload;
+    final client = MockClient((request) async {
+      if (request.url.path == '/v1/attachments' && request.method == 'POST') {
+        upload = request;
+        return http.Response(
+          jsonEncode({
+            'id': 'a1',
+            'fileName': 'notes.txt',
+            'contentType': 'text/plain',
+            'sizeBytes': 5,
+            'createdAt': '2026-10-11T10:00:00Z',
+          }),
+          201,
+        );
+      }
+      return http.Response('{}', 200);
+    });
+    final chat = _chat(client)..setDefaultModel('openai/gpt-4o-mini');
+
+    await chat.uploadAttachment(
+      PickedAttachment(
+        bytes: _textBytes,
+        fileName: 'notes.txt',
+        contentType: 'text/plain',
+      ),
+    );
+
+    expect(upload, isNotNull);
+    expect(upload!.url.queryParameters['model'], 'openai/gpt-4o-mini');
+  });
+
   test('removePendingAttachment drops a queued file', () async {
     final client = MockClient(
       (request) async => http.Response(

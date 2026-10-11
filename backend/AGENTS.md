@@ -255,7 +255,7 @@ the auth and health routes do not (see Authentication).
 | DELETE | `/{conversationId:guid}` | Deletes the conversation and its messages (cascade). 204 or 404. |
 | GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). |
 | POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. Body may carry `attachmentIds`. 404 if missing. |
-| POST | `/v{version}/attachments` | Multipart upload (`file` field) → `201 AttachmentV1`. `400` disallowed type, `413` too large. |
+| POST | `/v{version}/attachments[?model=<slug>]` | Multipart upload (`file` field) → `201 AttachmentV1`. `400` disallowed type or a type the model (`model` query, else default) cannot read, `413` too large. |
 | GET | `/v{version}/attachments/{id:guid}` | The raw bytes, with the stored `Content-Type` and an inline `Content-Disposition`; `404` if unknown. |
 | DELETE | `/v{version}/attachments/{id:guid}` | `204`, idempotent (unknown id is also `204`). |
 | GET | `/v{version}/models` | JSON `GetModelsResponseV1`: `defaultModel` + every model with capabilities + live health. No secrets. |
@@ -376,9 +376,11 @@ a foreign key to it — the endpoint adds the metadata row first so the FK is sa
 
 **Endpoints** (`Attachments/V1/AttachmentEndpointsV1.cs`, group `/v{version}/attachments`,
 mapped next to `Mcp`/`Usage` in `Program.cs`): `POST /` (multipart `file`) validates size
-(`413`) and content type against `allowedContentTypes` (wildcards like `image/*`; `400`),
-hashes, stores, and returns `AttachmentV1`; `GET /{id}` streams the bytes with an inline
-`Content-Disposition`; `DELETE /{id}` is `204`/idempotent. `MapPost` calls `DisableAntiforgery()`
+(`413`) and content type against `allowedContentTypes` (wildcards like `image/*`; `400`), then
+runs the **same capability gate as the send** against the model named by the optional `model`
+query (default when omitted) — `AttachmentGate.TypeProblem` — so an unreadable type is a `400` at
+upload time too; it then hashes, stores, and returns `AttachmentV1`. `GET /{id}` streams the
+bytes with an inline `Content-Disposition`; `DELETE /{id}` is `204`/idempotent. `MapPost` calls `DisableAntiforgery()`
 — the API is bearer-token and cookie-less, so there is no CSRF surface. `Program.cs` raises
 Kestrel's `MaxRequestBodySize` to `maxFileSizeBytes + 1 MiB` so multipart uploads reach the
 handler (the `413` decision is the handler's, not Kestrel's).
@@ -387,8 +389,10 @@ handler (the `413` decision is the handler's, not Kestrel's).
 `AttachmentIds`; `ConversationMessageV1` carries the attached files (empty for assistant/tool).
 `ChatEndpointsV1` runs `AttachmentGate` (load the rows, 400 on unknown/already-attached ids),
 then `ChatStreamServiceV1` attaches them to the persisted user message and builds the content
-parts. `resendHistory: false` (default) means only the current user turn carries the bytes;
-earlier turns with attachments contribute `AttachmentContentBuilder.HistoryNote(...)`.
+parts. `resendHistory: true` (default) re-sends each earlier user message's bytes every turn
+(capability-checked per attachment), so a model selected later can still read files attached
+before the switch. Setting it to `false` has earlier turns contribute
+`AttachmentContentBuilder.HistoryNote(...)` instead.
 
 **Content mapping** (`AttachmentContentBuilder`, pure + unit-tested):
 

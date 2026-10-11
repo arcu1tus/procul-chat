@@ -91,9 +91,18 @@ public class AttachmentPipelineTests : IClassFixture<WebApplicationFactory<Progr
 
     private static void ReplaceModels(IServiceCollection services, IChatClient client)
     {
+        // Two models with different capabilities, so the send gate (which runs against the
+        // conversation's model) can be exercised independently of the upload gate.
         services.RemoveAll<ChatModelRegistry>();
         services.AddSingleton(_ => ChatModelTestHelpers.Registry(
-            (ChatModelTestHelpers.Definition(slug: "model/one", capabilities: [ModelInputModality.Text, ModelInputModality.Image]), client)));
+            (ChatModelTestHelpers.Definition(
+                slug: "model/one",
+                isDefault: true,
+                capabilities: [ModelInputModality.Text, ModelInputModality.Image]), client),
+            (ChatModelTestHelpers.Definition(
+                slug: "model/two",
+                isDefault: false,
+                capabilities: [ModelInputModality.Text, ModelInputModality.Pdf]), client)));
     }
 
     private static void ReplaceDbWithInMemory(IServiceCollection services)
@@ -138,10 +147,18 @@ public class AttachmentPipelineTests : IClassFixture<WebApplicationFactory<Progr
         return form;
     }
 
-    private static async Task<AttachmentV1> UploadAsync(HttpClient client, byte[] bytes, string fileName, string contentType)
+    private static async Task<AttachmentV1> UploadAsync(
+        HttpClient client,
+        byte[] bytes,
+        string fileName,
+        string contentType,
+        string? model = null)
     {
         using var form = FileForm(bytes, fileName, contentType);
-        using var response = await client.PostAsync("/v1/attachments", form);
+        var url = model is null
+            ? "/v1/attachments"
+            : $"/v1/attachments?model={Uri.EscapeDataString(model)}";
+        using var response = await client.PostAsync(url, form);
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<AttachmentV1>())!;
     }
@@ -231,14 +248,31 @@ public class AttachmentPipelineTests : IClassFixture<WebApplicationFactory<Progr
     }
 
     [Fact]
-    public async Task Sending_a_type_the_model_cannot_read_is_rejected_with_400()
+    public async Task Uploading_a_type_the_model_cannot_read_is_rejected_with_400()
     {
         using var client = await SignedInClientAsync(CreateFactory());
-        var upload = await UploadAsync(client, [1, 2, 3], "report.pdf", "application/pdf");
 
+        // The default model (model/one) accepts text + images, but not PDFs.
+        using var form = FileForm([1, 2, 3], "report.pdf", "application/pdf");
+        using var response = await client.PostAsync("/v1/attachments?model=model/one", form);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("report.pdf", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Sending_a_type_the_current_model_cannot_read_is_rejected_with_400()
+    {
+        using var client = await SignedInClientAsync(CreateFactory());
+
+        // model/two accepts PDFs, so the upload succeeds...
+        var upload = await UploadAsync(
+            client, [1, 2, 3], "report.pdf", "application/pdf", model: "model/two");
+
+        // ...but the conversation runs on model/one, which cannot read a PDF.
         using var response = await client.PostAsJsonAsync(
             "/v1/conversations",
-            new CreateConversationRequestV1("read this", AttachmentIds: [upload.Id]));
+            new CreateConversationRequestV1("read this", Model: "model/one", AttachmentIds: [upload.Id]));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains("report.pdf", await response.Content.ReadAsStringAsync());

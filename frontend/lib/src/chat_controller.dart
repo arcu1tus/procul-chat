@@ -214,6 +214,7 @@ class ChatController extends ChangeNotifier {
         bytes: picked.bytes,
         fileName: picked.fileName,
         contentType: picked.contentType,
+        model: activeModel,
       );
       pendingAttachments.add(attachment);
       return true;

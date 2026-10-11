@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Net.Http.Headers;
 using Procul.Api.Attachments.V1;
+using Procul.Api.Chat;
+using Procul.Api.Chat.Models;
 using Procul.Api.Configuration;
 using Procul.Api.Infrastructure;
 
@@ -25,13 +27,23 @@ internal static class AttachmentEndpointsV1
         return group;
     }
 
-    /// <summary>Accepts a multipart <c>file</c> field, stores the bytes, and returns the metadata.</summary>
+    /// <summary>
+    /// Accepts a multipart <c>file</c> field, stores the bytes, and returns the metadata.
+    ///
+    /// The optional <c>model</c> query parameter names the model the file is intended for; the
+    /// file's type must be one that model can read (the same rule the send gate enforces). When
+    /// omitted, the configured default model is used. This lets the client be told "no" at the
+    /// moment the user adds the file, not only when the message is sent.
+    /// </summary>
     private static async Task<Results<Created<AttachmentV1>, ProblemHttpResult>> UploadAsync(
         IFormFile file,
         ProculDbContext db,
         IAttachmentStore store,
         AttachmentOptions options,
-        CancellationToken ct)
+        ChatModelRegistry registry,
+        ModelCatalogService catalog,
+        CancellationToken ct,
+        string? model = null)
     {
         if (file is null || file.Length == 0)
         {
@@ -57,6 +69,17 @@ internal static class AttachmentEndpointsV1
                 statusCode: StatusCodes.Status400BadRequest,
                 detail: $"Content type '{contentType}' is not allowed. " +
                     $"Allowed: {string.Join(", ", options.AllowedContentTypes)}.");
+        }
+
+        // Capability gate: refuse a type the target model cannot read. The send gate repeats this
+        // (the model can change between upload and send), but failing here is a much better UX.
+        var definition = registry.ResolveOrDefault(model);
+        var capabilities = catalog.GetCapabilities(definition).Input;
+        if (AttachmentGate.TypeProblem(definition, file.FileName, contentType, capabilities) is { } problem)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                detail: problem);
         }
 
         byte[] bytes;

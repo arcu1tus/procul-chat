@@ -152,21 +152,28 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  /// Picks a file, validates it against the active model, and uploads it.
+  /// Picks a file, restricted to what the active model can read, validates it,
+  /// and uploads it. The backend re-checks both (see [ChatApi.uploadAttachment]).
   Future<void> _attach() async {
     final chat = widget.chat;
     if (chat.isStreaming || chat.isUploadingAttachment) return;
 
+    final capabilities = _activeCapabilities();
+
     final PickedAttachment? picked;
     try {
-      picked = await widget.picker.pick();
+      picked = await widget.picker.pick(
+        allowedExtensions: capabilities == null
+            ? null
+            : allowedExtensionsForCapabilities(capabilities),
+      );
     } catch (e) {
       chat.reportError('Could not open the file picker: $e');
       return;
     }
     if (picked == null || !mounted) return;
 
-    await chat.uploadAttachment(picked, capabilities: _activeCapabilities());
+    await chat.uploadAttachment(picked, capabilities: capabilities);
   }
 
   /// Fetches an attachment's bytes (authenticated) and hands them to the
