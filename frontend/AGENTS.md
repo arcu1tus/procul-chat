@@ -2,7 +2,9 @@
 
 > **Keep this file up to date.** If you change the structure, conventions, commands, or
 > gotchas described here, update this file in the same change. A stale AGENTS.md is worse
-> than none. When in doubt, add a short note rather than leaving it wrong.
+> than none. When in doubt, add a short note rather than leaving it wrong. The per-platform build
+> guide in [`../docs/flutter-builds.md`](../docs/flutter-builds.md) covers the same commands for a
+> human audience — keep it in sync too.
 
 ## What this is
 
@@ -101,6 +103,7 @@ frontend/
                                   #   FakeServerStore, FakeAttachmentPicker) + model_fixtures.dart
   test/flutter_test_config.dart   # disables google_fonts runtime fetching for all tests
   linux/ android/ ios/ ...        # platform shells (generated)
+  justfile                        # dev/test + per-platform release builds (see ../docs/flutter-builds.md)
   pubspec.yaml
 ```
 
@@ -119,7 +122,19 @@ flutter run -d chrome             # web (backend allows any origin in dev — se
 flutter build linux --debug
 ```
 
-Base URL defaults to `http://localhost:5010`; override without editing code:
+The `frontend/justfile` wraps these (run from `frontend/`, or `just frontend <recipe>` from the
+repo root):
+
+```bash
+just get | just analyze | just test | just format | just clean
+just run                           # -d linux
+just run-web                       # -d chrome
+just build-web | just build-linux | just build-windows | just build-macos
+just build-android-apk | just build-android-bundle | just build-ios
+```
+
+The base URL defaults to `http://localhost:5010`; override without editing code (all `just build-*`
+recipes pass it through, and honour the `PROCUL_API_BASE` env var):
 
 ```bash
 flutter run -d linux --dart-define=PROCUL_API_BASE=http://localhost:5010
@@ -127,7 +142,8 @@ flutter run -d linux --dart-define=PROCUL_API_BASE=http://localhost:5010
 
 For **release builds** the API base URL must be the deployed backend's public origin (there is
 no default that works in production), and the backend must allow that client's origin via its
-`CORS_ALLOWED_ORIGINS` setting:
+`server.corsAllowedOrigins` setting (see [`../docs/flutter-builds.md`](../docs/flutter-builds.md)
+for prerequisites, output paths, and signing on every platform):
 
 ```bash
 flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.com
@@ -402,9 +418,9 @@ surfaces the error rather than downgrading the token to plaintext.
   sends requests from the Flutter web dev-server origin to the backend's origin, so the
   browser enforces CORS; the backend must approve the origin. It now does: in development the
   `ProculCors` policy allows any origin (the web dev-server port is ephemeral), and it can be
-  pinned via the backend's `CORS_ALLOWED_ORIGINS` setting. In **production there is no
+  pinned via the backend's `server.corsAllowedOrigins` setting. In **production there is no
   wildcard** — a Flutter web build served from `https://app.example.com` only works if the
-  backend's `CORS_ALLOWED_ORIGINS` names that exact origin. If Chrome still fails before
+  backend's `server.corsAllowedOrigins` names that exact origin. If Chrome still fails before
   streaming, the running backend predates that policy — rebuild/restart it.
 - **Android: reach the backend with `adb reverse`, don't hardcode an IP.** The dev backend
   binds to `localhost:5010` only, so a phone can't reach it directly. Forward the port over

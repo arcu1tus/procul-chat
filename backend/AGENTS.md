@@ -2,7 +2,10 @@
 
 > **Keep this file up to date.** If you change the structure, conventions, commands, or
 > gotchas described here, update this file in the same change. A stale AGENTS.md is worse
-> than none. When in doubt, add a short note rather than leaving it wrong.
+> than none. When in doubt, add a short note rather than leaving it wrong. The operator guides
+> in [`../docs/`](../docs/) — especially [`configuration.md`](../docs/configuration.md) and
+> [`docker-compose.md`](../docs/docker-compose.md) — document the same config shape and commands
+> for a human audience; keep them in sync too.
 
 ## What this is
 
@@ -30,6 +33,7 @@ message history. Persistence is PostgreSQL via EF Core; the LLM is called throug
 backend/
   Procul.slnx                      # solution (references src/Procul.Api + tests/Procul.Api.Tests)
   .dockerignore                    # build-context excludes for the image (context root is backend/)
+  justfile                         # build/test/run + dev Postgres + container helpers
   src/Procul.Api/
     Program.cs                     # host + route wiring (DI lives in the extension files below)
     Dockerfile                     # multi-stage container build (build context: backend/)
@@ -109,7 +113,6 @@ backend/
     config.jsonc.example           # committed example config (the source of truth; real file gitignored)
     config.schema.json             # JSON Schema for config.jsonc (validated at startup + copied out)
     docker/docker-compose.yaml     # dev-only Postgres
-    justfile                       # dev-compose-* / run-dev helpers
     Procul.Api.http                # manual request examples
   tests/Procul.Api.Tests/          # xUnit unit + integration tests (no DB/network needed)
 ```
@@ -123,10 +126,13 @@ cd backend
 dotnet build Procul.slnx            # builds the whole solution
 dotnet test  Procul.slnx            # unit + integration tests (no DB or network required)
 
-cd src/Procul.Api
-just run-dev                        # docker compose up (Postgres) + dotnet run
+# Via the backend justfile (run from backend/, or `just backend <recipe>` from the repo root):
+just run                            # dev-db-up (Postgres) + dotnet run
+just dev-db-up                      # just start Postgres on :5432
+just build | just test | just fmt | just publish
+just docker-build | just docker-run # build/run the container image
 # or manually:
-just dev-compose-up                 # start Postgres on :5432
+cd src/Procul.Api
 dotnet run                          # listens on http://localhost:5010 (launchSettings)
 ```
 
@@ -146,6 +152,10 @@ startup (`Program.cs` → `Configuration/ProculConfigLoader.Load`), before any D
 missing or invalid file is fatal. `.env` is demoted to a **secrets scratchpad**: `config.jsonc`
 references environment variables as `${VAR}` and the loader resolves them from the process
 environment (populated from `.env` by `DotNetEnv`). An unresolved reference names the variable.
+
+> The field-by-field reference (types, defaults, the `${VAR}` rule, durations) lives in
+> **[`../docs/configuration.md`](../docs/configuration.md)**. This section is the architecture
+> summary; keep the two in step.
 
 The loader pipeline is: locate the file → parse JSONC (comments + trailing commas) → validate
 against `config.schema.json` (JsonSchema.Net) → deserialize → expand every `${VAR}` → fail-fast
@@ -190,7 +200,9 @@ Build / run / test). There is no flag for this — it happens whenever a databas
 ## Container image & CI
 
 The backend ships as a container image (`src/Procul.Api/Dockerfile`, **build context is
-`backend/`** so the restore/publish paths are `src/Procul.Api/...`):
+`backend/`** so the restore/publish paths are `src/Procul.Api/...`). For a ready-made
+`compose.yaml` — Postgres + the published `ghcr.io` image, secrets, S3/MinIO, TLS/CORS, upgrades —
+see **[`../docs/docker-compose.md`](../docs/docker-compose.md)**. To build and run it locally:
 
 ```bash
 docker build -f backend/src/Procul.Api/Dockerfile -t procul-api backend

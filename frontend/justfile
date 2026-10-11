@@ -1,0 +1,71 @@
+# Procul Flutter client — dev, test, and per-platform release builds.
+#
+# Run from `frontend/`. Every build bakes in the backend URL via
+# `--dart-define=PROCUL_API_BASE=…`; override it with the PROCUL_API_BASE environment variable,
+# e.g. `PROCUL_API_BASE=https://api.example.com just build-web`.
+#
+# Platform prerequisites, output paths, and gotchas: ../docs/flutter-builds.md
+
+api := env_var_or_default('PROCUL_API_BASE', 'http://localhost:5010')
+
+# --- Develop ---------------------------------------------------------------
+
+# Fetch dependencies.
+get:
+    flutter pub get
+
+# Static analysis (must stay clean).
+analyze:
+    flutter analyze
+
+# Unit + widget tests (no backend needed).
+test:
+    flutter test
+
+# Format the Dart sources.
+format:
+    dart format lib test
+
+# Delete the build output.
+clean:
+    flutter clean
+
+# --- Run -------------------------------------------------------------------
+
+# Run on the native Linux desktop (prereqs: clang/cmake/ninja/GTK dev).
+run:
+    flutter run -d linux --dart-define=PROCUL_API_BASE={{api}}
+
+# Run in a browser (the backend allows any origin in development).
+run-web:
+    flutter run -d chrome --dart-define=PROCUL_API_BASE={{api}}
+
+# --- Build -----------------------------------------------------------------
+
+# Web — output: build/web. Set the backend's server.corsAllowedOrigins to the web origin.
+build-web:
+    flutter build web --release --dart-define=PROCUL_API_BASE={{api}}
+
+# Linux — output: build/linux/x64/release/bundle.
+build-linux:
+    flutter build linux --release --dart-define=PROCUL_API_BASE={{api}}
+
+# Windows — output: build/windows/x64/runner/Release. Prereqs: Visual Studio + Desktop C++.
+build-windows:
+    flutter build windows --release --dart-define=PROCUL_API_BASE={{api}}
+
+# macOS — output: build/macos/Build/Products/Release. Prereqs: Xcode + CocoaPods.
+build-macos:
+    flutter build macos --release --dart-define=PROCUL_API_BASE={{api}}
+
+# Android APK, all ABIs. Prereqs: Android SDK; add android/key.properties to sign.
+build-android-apk:
+    flutter build apk --release --dart-define=PROCUL_API_BASE={{api}}
+
+# Android App Bundle (Play Store) — output: build/app/outputs/bundle/release/app-release.aab.
+build-android-bundle:
+    flutter build appbundle --release --dart-define=PROCUL_API_BASE={{api}}
+
+# iOS — output: build/ios/ipa. Prereqs: macOS + Xcode (and signing).
+build-ios:
+    flutter build ipa --release --dart-define=PROCUL_API_BASE={{api}}

@@ -82,6 +82,8 @@ against [OpenRouter](https://openrouter.ai/).
 
 ```
 .
+├── docs/                    # operator guides: docker-compose, flutter-builds, configuration
+├── justfile                 # root task runner (just modules: `just backend …`, `just frontend …`)
 ├── backend/                 # ASP.NET Core (.NET 10) API
 │   ├── src/Procul.Api/       # the API project
 │   │   ├── Chat/             # endpoints, streaming service, model registry/catalog, tools, DTOs, entities
@@ -93,14 +95,15 @@ against [OpenRouter](https://openrouter.ai/).
 │   │   ├── Infrastructure/   # EF Core DbContext
 │   │   ├── Migrations/       # EF Core migrations
 │   │   ├── Versioning/       # API versioning
-│   │   ├── Dockerfile        # multi-stage, cache-friendly image
-│   │   └── justfile          # local dev helpers (docker compose + dotnet run)
+│   │   └── Dockerfile        # multi-stage, cache-friendly image
 │   ├── tests/Procul.Api.Tests/  # xUnit unit + integration tests
+│   ├── justfile              # build/test/run + dev Postgres + container helpers
 │   ├── Procul.slnx           # solution
 │   └── AGENTS.md             # backend conventions & gotchas
 ├── frontend/                # Flutter client
 │   ├── lib/                  # app + src (API client, controllers, UI)
 │   ├── test/                 # unit + widget tests
+│   ├── justfile              # dev/test + per-platform release builds
 │   └── AGENTS.md             # frontend conventions & gotchas
 ├── assets/                  # logo
 └── .github/workflows/       # CI + container publishing
@@ -126,7 +129,8 @@ architecture, conventions, and hard-won gotchas. Those are the best place to sta
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
 - [Docker](https://www.docker.com/) (for the dev Postgres, and for building the image)
 - [Flutter](https://flutter.dev/) (for the client)
-- [just](https://github.com/casey/just) (optional, for the backend dev helpers)
+- [just](https://github.com/casey/just) (≥ 1.0 — optional but recommended; the repo's
+  `justfile`s wrap every common task)
 - An [OpenRouter](https://openrouter.ai/) API key
 
 ### Backend
@@ -147,8 +151,8 @@ cp backend/src/Procul.Api/.env.example backend/src/Procul.Api/.env
 Run it (starts Postgres via Docker Compose, then the API):
 
 ```bash
-cd backend/src/Procul.Api
-just run-dev                        # docker compose up + dotnet run
+cd backend
+just run                            # dev Postgres + `dotnet run`; or: `just backend run` from the root
 ```
 
 The API listens on **http://localhost:5010**. Migrations are applied automatically at
@@ -182,6 +186,9 @@ The backend reads its configuration from a single **`config.jsonc`** file (JSONC
 trailing commas are allowed). `.env` holds **secrets only**; `config.jsonc` references them as
 `${VAR}`. The loader resolves every reference from the process environment at startup, and an
 unresolved reference names the missing variable and aborts startup.
+
+> **Full reference:** [`docs/configuration.md`](docs/configuration.md) documents every section,
+> field, default, and validation rule.
 
 Copy the example and edit it:
 
@@ -325,6 +332,10 @@ flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.co
 ## Testing
 
 ```bash
+# Everything at once (from the repo root): backend tests + frontend tests + analyzer
+just check
+
+# Or individually:
 # Backend: unit + integration tests (xUnit), no database or network required
 dotnet test backend/Procul.slnx
 
@@ -349,6 +360,10 @@ non-root user on port `8080`. The NuGet restore layer is cached independently of
 The container manages its own schema: on startup it applies pending EF Core migrations
 (creating the database if needed), so no separate `dotnet ef` step is required. It only
 needs the connection string above to point at a reachable PostgreSQL.
+
+> **Running from the published image?** [`docs/docker-compose.md`](docs/docker-compose.md) has a
+> complete `compose.yaml` (Postgres + the `ghcr.io` image), secrets, MinIO/S3, reverse-proxy/TLS
+> with CORS, upgrades, and troubleshooting.
 
 Build and run it locally:
 
