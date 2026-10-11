@@ -126,7 +126,9 @@ just run-dev                        # docker compose up + dotnet run
 ```
 
 The API listens on **http://localhost:5010**. Apply migrations once against a fresh
-database (`dotnet ef database update`) — they are not applied automatically.
+database (`dotnet ef database update`) — they are not applied automatically. (Set
+`PROCUL_AUTO_MIGRATE=true` to have the app apply pending migrations at startup instead; see
+Configuration.)
 
 ### Frontend
 
@@ -154,6 +156,7 @@ The backend reads its configuration from environment variables (and the git-igno
 | `OPENROUTER_API_KEY` | OpenRouter API key (**required**) |
 | `OPENROUTER_MODEL_SLUG` | Model slug to use, e.g. `nvidia/nemotron-3-ultra-550b-a55b:free` (**required**) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API |
+| `PROCUL_AUTO_MIGRATE` | Set `true` to apply EF Core migrations at startup (default off) |
 
 `.env.example` documents the shape. **No secrets are committed to this repository**, and
 the container image is environment-agnostic — configuration is injected at run time.

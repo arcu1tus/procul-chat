@@ -16,6 +16,8 @@ builder.Services.AddProculChat(builder.Configuration);
 
 var app = builder.Build();
 
+await app.ApplyProculMigrationsAsync();
+
 app.UseProculCors();
 
 if (app.Environment.IsDevelopment())
