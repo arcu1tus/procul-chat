@@ -5,7 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
-import 'package:procul_chat_flutter/src/conversation_store.dart';
+
+import 'support/fake_conversation_store.dart';
 
 const _sse =
     'data: {"value":{"conversation":{"id":"c1","title":"t"},'
@@ -18,15 +19,6 @@ const _sse =
     'data: {"value":{"content":"It is 15:38","type":"token"}}\n\n'
     'data: {"value":{"type":"done"}}\n\n';
 
-class _FakeStore implements ConversationStore {
-  @override
-  Future<void> clear() async {}
-  @override
-  Future<String?> read() async => null;
-  @override
-  Future<void> write(String conversationId) async {}
-}
-
 void main() {
   test('controller records tool call and result from the SSE stream', () async {
     final client = MockClient.streaming((request, body) async {
@@ -37,7 +29,7 @@ void main() {
       );
     });
     final api = ChatApi(baseUrl: 'http://test', client: client);
-    final controller = ChatController(api: api, store: _FakeStore());
+    final controller = ChatController(api: api, store: FakeConversationStore());
 
     await controller.send('what time is it?');
 

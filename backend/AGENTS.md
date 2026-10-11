@@ -25,10 +25,11 @@ message history. Persistence is PostgreSQL via EF Core; the LLM is called throug
 backend/
   Procul.slnx                      # solution (references src/Procul.Api/Procul.Api.csproj)
   src/Procul.Api/
-    Program.cs                     # host, DI (IChatClient, DbContext, versioning), route wiring
+    Program.cs                     # host + route wiring (DI lives in the extension files below)
     Chat/
+      ChatServiceCollectionExtensions.cs  # AddProculChat: IChatClient + ChatStreamServiceV1
       Conversation.cs              # entity
-      Message.cs                   # ConversationMessage entity
+      ConversationMessage.cs       # ConversationMessage entity
       MessageRole.cs               # enum + MessageRoleExtensions.ToChatRole() (namespace Procul.Api.Chat)
       Tools/
         AgentTools.cs              # AITool registry + system prompt (source of ChatOptions.Tools)
@@ -36,9 +37,12 @@ backend/
         PythonSandbox.cs           # run_python via Lokad.Lython + DenyAllLythonHost
       V1/
         ChatEndpointsV1.cs         # minimal-API endpoints + route mapping
-        ChatStreamServiceV1.cs     # shared conversation-turn streaming logic
-        DataTypesV1.cs             # request/response/event DTOs for v1
-    Infrastructure/DbContext.cs    # ProculDbContext + model config
+        ChatStreamServiceV1.cs     # conversation-turn streaming (create + reply + title)
+        DataTypesV1.cs             # request/response DTOs for v1
+        ChatStreamEventsV1.cs      # SSE event payloads + ChatStreamEventV1 hierarchy
+    Infrastructure/
+      DbContext.cs                 # ProculDbContext + model config
+      DbContextExtensions.cs       # AddProculDbContext
     Cors/CorsExtensions.cs         # AddProculCors (browser/web origin policy)
     Versioning/                    # ApiVersions + AddProculApiVersioning
     Migrations/                    # EF Core migrations
@@ -117,9 +121,10 @@ stream completes. If it fails/times out, `FallbackTitle` is used. Rename/delete 
   name is emitted, and the event kind is carried by a `type` discriminator **inside the JSON
   payload** (e.g. `created`, `acknowledge`, `token`, `toolCall`, `toolResult`, `error`,
   `done`).
-- **Streaming turn logic** lives once in `ChatStreamServiceV1.StreamAssistantReplyAsync`;
-  both create and send delegate to it. Keep new streaming features there, not duplicated in
-  endpoints.
+- **Streaming turn logic** lives once in `ChatStreamServiceV1`. `StreamAssistantReplyAsync`
+  is the shared reply turn; create wraps it with `StreamNewConversationAsync` (which emits
+  `created` and the trailing `title`), and send calls it directly. Keep new streaming
+  features there, not duplicated in endpoints.
 - **Persistence:** user message is saved immediately, then the assistant reply after the
   stream completes. Do **not** hold a DB transaction open across the model call.
 - **AI client:** `IChatClient` is registered as a singleton via `AddChatClient(...)`; inject
@@ -177,8 +182,9 @@ final assistant text.
 - **No `save` = no persistence.** `AddDbContextPool` + EF change tracking still requires an
   explicit `SaveChangesAsync`; a committed transaction without a save persists nothing.
 - **Tools do nothing unless function invocation is enabled.** `AddChatClient(...)` only
-  registers the raw client; chain `.UseFunctionInvocation()` on its builder (see `Program.cs`)
-  or the model can request tool calls that are silently never executed.
+  registers the raw client; chain `.UseFunctionInvocation()` on its builder (see
+  `Chat/ChatServiceCollectionExtensions.cs`) or the model can request tool calls that are
+  silently never executed.
 - **`UseFunctionInvocation()` still surfaces tool calls.** Although it runs the tool loop
   internally, the `ChatResponseUpdate`s it yields still carry the model's `FunctionCallContent`
   and the `FunctionResultContent`. `StreamTokens` reads those to emit the `toolCall`/

@@ -1,5 +1,5 @@
 name: procul_chat_flutter
-description: "A new Flutter project."
+description: "Procul — a Flutter chat client for the Procul backend."
 publish_to: 'none'
 version: 0.1.0+1
 

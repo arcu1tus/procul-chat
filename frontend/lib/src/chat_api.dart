@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'chat_stream_event.dart';
 import 'models.dart';
 
 /// Thrown when the backend returns a non-success HTTP status.

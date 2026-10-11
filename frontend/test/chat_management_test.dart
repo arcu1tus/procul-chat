@@ -5,20 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
-import 'package:procul_chat_flutter/src/conversation_store.dart';
 
-class _FakeStore implements ConversationStore {
-  String? stored;
-
-  @override
-  Future<void> clear() async => stored = null;
-
-  @override
-  Future<String?> read() async => stored;
-
-  @override
-  Future<void> write(String conversationId) async => stored = conversationId;
-}
+import 'support/fake_conversation_store.dart';
 
 /// SSE for a new conversation: `created` (with a placeholder title) followed by
 /// a reply, then the model-generated `title` after `done`.
@@ -42,7 +30,7 @@ void main() {
     });
     final controller = ChatController(
       api: ChatApi(baseUrl: 'http://test', client: client),
-      store: _FakeStore(),
+      store: FakeConversationStore(),
     );
 
     await controller.send('What is the capital of France?');
@@ -140,7 +128,7 @@ void main() {
     });
     final controller = ChatController(
       api: ChatApi(baseUrl: 'http://test', client: client),
-      store: _FakeStore(),
+      store: FakeConversationStore(),
     );
 
     await controller.init();
