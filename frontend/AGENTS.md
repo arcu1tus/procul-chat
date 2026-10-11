@@ -42,6 +42,8 @@ frontend/
     src/
       config.dart                 # apiBaseUrl (PROCUL_API_BASE dart-define)
       models.dart                 # domain types: Conversation, ChatMessage, ToolCall, MessageRole
+      mcp_status.dart             # McpServerStatus: read-only MCP server status DTO
+      mcp_status_controller.dart  # McpStatusController: MCP status for the Settings section
       chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/ToolCall/...)
       chat_api.dart               # ChatApi: authenticated REST + SSE client (Bearer token)
       auth_api.dart               # AuthApi: unauthenticated POST /v1/auth/session
@@ -121,6 +123,7 @@ Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's save
 | History | `GET /{id}/messages?limit=1..100&afterMessageId=<guid>` | JSON |
 | Rename | `PATCH /{id}` body `{"title":"..."}` | JSON `{"conversation":{...}}` |
 | Delete | `DELETE /{id}` | `204` (404 treated as success) |
+| MCP status | `GET /v1/mcp/servers` | JSON `{"servers":[{"name","type","url","connected","toolCount","tools","lastError","lastConnectedAt"}]}` |
 
 **SSE wire format.** There is **no `event:` field**; each event is a `data: <json>` line
 followed by a blank line, and the kind is a `type` discriminator *inside* the JSON under
@@ -202,6 +205,21 @@ reaches the buffer.
   tiles/tool rows use `AnimatedContainer` / `AnimatedSwitcher`.
 - **Icon-only buttons go through `IconAction`** (`widgets/icon_action.dart`) so every one has
   a tooltip and an accessible label.
+- **Pull-to-refresh uses `RefreshTrigger` plus an explicit button.** The conversation list
+  (`conversation_sidebar.dart`), the chat pane (`chat_screen.dart`) and the MCP section
+  (`settings_dialog.dart`) each wrap their scrollable in `RefreshTrigger`; every one also has a
+  refresh `IconAction`, because mouse-overscroll on desktop is less discoverable than a drag.
+  Empty states are scrollable (`AlwaysScrollableScrollPhysics`) so the gesture still works with
+  no content. The chat pane's `onRefresh` is **null while `chat.isStreaming`** so a pull cannot
+  clobber a live stream. `ChatController.refreshAll()` (list + active history) backs the chat
+  app-bar button; `reloadActiveConversation()` is a no-op when none is active or a reply is
+  streaming.
+- **MCP status is read-only and secret-free.** `McpStatusController` (owned by the Settings
+  dialog's `_McpSection`) fetches `GET /v1/mcp/servers` through `ChatApi`, so it inherits the
+  bearer header and the `401 → logout` path. `showSettingsDialog` takes the `ChatApi`
+  (`chat.api` from the sidebar). The section renders name, transport badge, online dot, tool
+  count and `lastError` only — never headers or tokens. The dialog is created fresh per open and
+  the shell is keyed by profile id, so it always reflects the active backend.
 - **All UI is shadcn_flutter.** Use shadcn components (`Scaffold` + `headers: [AppBar(...)]`,
   `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `SelectedButton` (used
   for the segmented theme selector), `TextField`, `AlertDialog` via `showOverlay`,
@@ -302,3 +320,14 @@ surfaces the error rather than downgrading the token to plaintext.
   instead, which also strips the trailing slash.
 - **The persisted conversation id can dangle.** If the backend's DB was reset, `init()`'s list
   won't contain it; the controller clears the stored id and starts fresh instead of crashing.
+- **`RefreshTrigger` needs a scrollable child and a non-zero `minExtent` pull.** It listens for
+  scroll notifications at depth 0, so wrap the `ListView`/`SingleChildScrollView` directly (an
+  empty state must use `AlwaysScrollableScrollPhysics` or it won't scroll at all). Its `refresh()`
+  method is public, which is how the pull-to-refresh tests drive it deterministically — a
+  synthetic `tester.drag` does not reliably cross the threshold.
+- **`showSettingsDialog` needs the `ChatApi`.** Its signature is
+  `(context, settings, auth, api)`; the sidebar passes `chat.api`. Don't build a separate client
+  for the MCP status section — that would skip the `401 → logout` path.
+- **MCP status JSON never contains secrets.** `McpServerStatus.fromJson` reads only
+  name/type/url/connected/toolCount/tools/lastError/lastConnectedAt and ignores anything else,
+  so even a hypothetical `headers` field in the payload is never rendered.

@@ -14,7 +14,7 @@ namespace Procul.Api.Tests.Chat;
 public class TitleGenerationTests
 {
     private static ChatStreamServiceV1 NewService(FakeChatClient client) =>
-        new(NewDbContext(), client, NullLogger<ChatStreamServiceV1>.Instance);
+        new(NewDbContext(), client, McpTestHelpers.DisabledManager(), NullLogger<ChatStreamServiceV1>.Instance);
 
     // The title call never touches the context, so an unconfigured one is enough: no provider
     // (and therefore no database) is ever needed.

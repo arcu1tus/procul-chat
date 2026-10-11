@@ -8,6 +8,10 @@
 **/.env.*
 !**/.env.example
 
+# Operator's MCP config (bind-mounted at run time, never baked in).
+**/config.jsonc
+!**/config.jsonc.example
+
 # Editor / VCS noise
 **/.vs/
 **/.idea/

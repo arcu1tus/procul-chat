@@ -50,6 +50,9 @@ against [OpenRouter](https://openrouter.ai/).
   `acknowledge`, `token`, `toolCall`, `toolResult`, `title`, `error`, `done`).
 - **Agent tools** the model can call mid-turn: `get_current_time` and `run_python`
   (a contained, file/network-denying Python subset via `Lokad.Lython`).
+- **MCP tool servers**: connect to remote Streamable HTTP / SSE MCP servers, discover their
+  tools, and expose them to the model (namespaced `{server}__{tool}`), with live status in the
+  client's Settings.
 - **AI-generated conversation titles** produced concurrently with the first reply.
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
@@ -166,9 +169,42 @@ The backend reads its configuration from environment variables (and the git-igno
 | `PROCUL_API_PASSWORD` | Shared password protecting the API (**required**) |
 | `PROCUL_SESSION_LIFETIME` | Session-token lifetime, e.g. `12h` (default `30d`) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API |
+| `PROCUL_CONFIG_PATH` | Path to the MCP config file (default `config.jsonc` next to the app) |
+| `MCP_ENABLED` | Master switch for MCP support (default `true`) |
+| `MCP_CONNECT_TIMEOUT` | Per-server connect/discover budget, e.g. `15s` |
+| `MCP_HEALTH_INTERVAL` | Background ping/reconnect cadence, e.g. `60s` |
 
 `.env.example` documents the shape. **No secrets are committed to this repository**, and
 the container image is environment-agnostic — configuration is injected at run time.
+
+### MCP tool servers
+
+The model can call tools from remote [MCP](https://modelcontextprotocol.io/) servers
+(Streamable HTTP and legacy SSE) in addition to the built-in ones. Servers are declared in a
+`config.jsonc` file, kept separate from secrets:
+
+- **Structure** lives in `config.jsonc` (bind-mountable, committable) — copy
+  `backend/src/Procul.Api/config.jsonc.example` to start.
+- **Secrets** stay in `.env`; the JSON references them as `${VAR}` in a URL or header value.
+  An unresolved reference fails startup and names the missing variable.
+
+```jsonc
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",                                  // "http" | "sse"
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_MCP_TOKEN}" },
+      "enabled": true                                  // optional, default true
+    }
+  }
+}
+```
+
+On startup the backend connects to every enabled server, discovers its tools, and logs a
+per-server status; a server that is down is retried in the background and never blocks startup.
+Tools are namespaced `{server}__{tool}`. The authenticated `GET /v1/mcp/servers` endpoint reports
+live status (never headers or tokens), and the client shows it read-only in Settings.
 
 ### CORS in production
 
@@ -225,8 +261,14 @@ docker run --rm -p 8080:8080 \
   -e ConnectionStrings__ChatContext="Host=...;Port=5432;Database=procul;Username=...;Password=..." \
   -e CORS_ALLOWED_ORIGINS=https://app.example.com \
   -e PROCUL_API_PASSWORD=a-strong-shared-password \
+  -e GITHUB_MCP_TOKEN=ghp_... \
+  -v ./config.jsonc:/app/config.jsonc:ro \
   procul-api
 ```
+
+The `-v` mount injects the MCP config read-only; tokens referenced as `${VAR}` come from `-e`
+(or the environment), so the mounted file stays secret-free. The runtime image is ASP.NET-only,
+which is fine: remote MCP transports spawn no child processes.
 
 ### Publishing
 

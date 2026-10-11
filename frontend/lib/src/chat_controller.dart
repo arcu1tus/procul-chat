@@ -94,6 +94,21 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  /// Re-fetches the active conversation's history into the buffer, so messages produced
+  /// elsewhere show up. No-op when no conversation is active or a reply is streaming (a
+  /// reload must not clobber the live stream).
+  Future<void> reloadActiveConversation() async {
+    final id = _conversationId;
+    if (id == null || isStreaming) return;
+    await _openConversation(id);
+  }
+
+  /// The "refresh the whole app" action: the conversation list plus the active history.
+  Future<void> refreshAll() async {
+    await refreshConversations();
+    await reloadActiveConversation();
+  }
+
   /// Opens [id], loading its history into the buffer.
   Future<void> selectConversation(String id) async {
     if (id == _conversationId && messages.isNotEmpty) return;

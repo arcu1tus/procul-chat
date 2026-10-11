@@ -43,7 +43,7 @@ class ConversationSidebar extends StatelessWidget {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _Header(onClose: onClose),
+                _Header(onClose: onClose, onRefresh: chat.refreshConversations),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
                   child: PrimaryButton(
@@ -69,7 +69,7 @@ class ConversationSidebar extends StatelessWidget {
                   child: GhostButton(
                     alignment: Alignment.centerLeft,
                     onPressed: () =>
-                        showSettingsDialog(context, settings, auth),
+                        showSettingsDialog(context, settings, auth, chat.api),
                     child: const Row(
                       children: [
                         Icon(LucideIcons.settings, size: 16),
@@ -94,9 +94,10 @@ class ConversationSidebar extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({this.onClose});
+  const _Header({this.onClose, this.onRefresh});
 
   final VoidCallback? onClose;
+  final VoidCallback? onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -129,6 +130,13 @@ class _Header extends StatelessWidget {
               ),
             ),
           ),
+          if (onRefresh != null)
+            IconAction(
+              icon: LucideIcons.refreshCw,
+              label: 'Refresh chats',
+              size: 18,
+              onPressed: onRefresh,
+            ),
           if (onClose != null)
             IconAction(
               icon: LucideIcons.x,
@@ -155,34 +163,45 @@ class _ConversationList extends StatelessWidget {
     }
 
     if (chat.conversations.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: const Text(
-            'No chats yet.\nSend a message to start one.',
-            textAlign: TextAlign.center,
-          ).muted.small,
+      // Scrollable so pull-to-refresh works even with no chats.
+      return RefreshTrigger(
+        onRefresh: chat.refreshConversations,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 64, 24, 24),
+              child: const Text(
+                'No chats yet.\nSend a message to start one.',
+                textAlign: TextAlign.center,
+              ).muted.small,
+            ),
+          ],
         ),
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      itemCount: chat.conversations.length,
-      itemBuilder: (context, index) {
-        final conversation = chat.conversations[index];
-        return _ConversationTile(
-          conversation: conversation,
-          selected: conversation.id == chat.activeConversationId,
-          onSelect: () {
-            chat.selectConversation(conversation.id);
-            onClose?.call();
-          },
-          onRename: () => renameConversationDialog(context, chat, conversation),
-          onDelete: () =>
-              confirmDeleteConversation(context, chat, conversation),
-        );
-      },
+    return RefreshTrigger(
+      onRefresh: chat.refreshConversations,
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        itemCount: chat.conversations.length,
+        itemBuilder: (context, index) {
+          final conversation = chat.conversations[index];
+          return _ConversationTile(
+            conversation: conversation,
+            selected: conversation.id == chat.activeConversationId,
+            onSelect: () {
+              chat.selectConversation(conversation.id);
+              onClose?.call();
+            },
+            onRename: () =>
+                renameConversationDialog(context, chat, conversation),
+            onDelete: () =>
+                confirmDeleteConversation(context, chat, conversation),
+          );
+        },
+      ),
     );
   }
 }

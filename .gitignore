@@ -9,6 +9,10 @@ net10.0/
 .env.*
 !.env*.example
 
+# Operator's MCP config (may reference secrets); the example is committed.
+config.jsonc
+!config.jsonc.example
+
 # IDE / editor noise
 .vs/
 .idea/

@@ -1,4 +1,4 @@
-using System.Globalization;
+using Procul.Api.Configuration;
 
 namespace Procul.Api.Security;
 
@@ -56,58 +56,6 @@ public sealed class AuthOptions
     /// unit is <c>d</c>, <c>h</c>, <c>m</c> or <c>s</c> (e.g. <c>30d</c>, <c>12h</c>, <c>1h30m</c>).
     /// An unset value yields <see cref="DefaultSessionLifetime"/>; anything else throws.
     /// </summary>
-    internal static TimeSpan ParseLifetime(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return DefaultSessionLifetime;
-        }
-
-        var value = raw.Trim();
-        var total = TimeSpan.Zero;
-        var index = 0;
-
-        while (index < value.Length)
-        {
-            var start = index;
-            while (index < value.Length && char.IsAsciiDigit(value[index]))
-            {
-                index++;
-            }
-
-            if (index == start || index >= value.Length)
-            {
-                throw MalformedLifetime(raw);
-            }
-
-            if (!long.TryParse(value.AsSpan(start, index - start), NumberStyles.None, CultureInfo.InvariantCulture, out var amount))
-            {
-                throw MalformedLifetime(raw);
-            }
-
-            var unit = char.ToLowerInvariant(value[index]);
-            index++;
-
-            total += unit switch
-            {
-                'd' => TimeSpan.FromDays(amount),
-                'h' => TimeSpan.FromHours(amount),
-                'm' => TimeSpan.FromMinutes(amount),
-                's' => TimeSpan.FromSeconds(amount),
-                _ => throw MalformedLifetime(raw),
-            };
-        }
-
-        if (total <= TimeSpan.Zero)
-        {
-            throw MalformedLifetime(raw);
-        }
-
-        return total;
-    }
-
-    private static InvalidOperationException MalformedLifetime(string? raw) =>
-        new(
-            $"{SessionLifetimeSetting} value '{raw}' is not a valid duration. Use a number followed " +
-            "by a unit: d (days), h (hours), m (minutes) or s (seconds), e.g. 30d, 12h or 1h30m.");
+    internal static TimeSpan ParseLifetime(string? raw) =>
+        DurationParser.Parse(raw, DefaultSessionLifetime, SessionLifetimeSetting);
 }
