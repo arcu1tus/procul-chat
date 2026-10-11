@@ -1,34 +1,26 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Procul.Api.Mcp;
-using Procul.Api.Tests.Support;
 
 namespace Procul.Api.Tests.Mcp;
 
 /// <summary>
-/// Unit tests for the <c>config.jsonc</c> loader: JSONC tolerance, <c>${ENV}</c> interpolation,
-/// and every fail-fast validation rule.
+/// Unit tests for validating the <c>mcpServers</c> section (already parsed and secret-resolved by
+/// <c>ProculConfigLoader</c>): every fail-fast rule, and disabled-server skipping.
 /// </summary>
 public class McpConfigLoaderTests
 {
-    private static readonly Func<string, string?> NoEnv = _ => null;
+    private static McpServerConfig Http(string url) => new() { Type = "http", Url = url };
 
     [Fact]
-    public void Parses_jsonc_with_comments_and_trailing_commas()
+    public void Validates_http_and_sse_servers()
     {
-        using var config = TempConfig.Write("""
+        var servers = McpConfigLoader.Load(
+            new Dictionary<string, McpServerConfig>
             {
-              // Servers live under "mcpServers".
-              "mcpServers": {
-                "github": {
-                  "type": "http",
-                  "url": "https://api.githubcopilot.com/mcp/",
-                },
-                "legacy": { "type": "sse", "url": "https://example.com/sse" }
-              }
-            }
-            """);
-
-        var servers = McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv);
+                ["github"] = Http("https://api.githubcopilot.com/mcp/"),
+                ["legacy"] = new() { Type = "sse", Url = "https://example.com/sse" },
+            },
+            NullLogger.Instance);
 
         Assert.Equal(2, servers.Count);
         Assert.Equal("github", servers[0].Name);
@@ -40,55 +32,35 @@ public class McpConfigLoaderTests
     }
 
     [Fact]
-    public void Expands_environment_references_in_url_and_headers()
+    public void Preserves_headers()
     {
-        using var config = TempConfig.Write("""
-            {
-              "mcpServers": {
-                "github": {
-                  "type": "http",
-                  "url": "https://${HOST}/mcp",
-                  "headers": { "Authorization": "Bearer ${TOKEN}" }
-                }
-              }
-            }
-            """);
-
         var servers = McpConfigLoader.Load(
-            FileOptions(config.Path),
-            NullLogger.Instance,
-            name => name switch { "HOST" => "api.test", "TOKEN" => "s3cret", _ => null });
+            new Dictionary<string, McpServerConfig>
+            {
+                ["github"] = new()
+                {
+                    Type = "http",
+                    Url = "https://api.test/mcp",
+                    Headers = new Dictionary<string, string> { ["Authorization"] = "Bearer s3cret" },
+                },
+            },
+            NullLogger.Instance);
 
         var server = Assert.Single(servers);
-        Assert.Equal("https://api.test/mcp", server.Url);
         Assert.Equal("Bearer s3cret", server.Headers["Authorization"]);
     }
 
-    [Fact]
-    public void An_unresolved_environment_reference_throws_naming_the_variable()
-    {
-        using var config = TempConfig.Write("""
-            { "mcpServers": { "github": { "type": "http", "url": "https://x/mcp",
-              "headers": { "Authorization": "Bearer ${MISSING_TOKEN}" } } } }
-            """);
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv));
-
-        Assert.Contains("MISSING_TOKEN", ex.Message);
-    }
-
     [Theory]
-    [InlineData("\"websocket\"", "unknown type")]
-    [InlineData("null", "missing 'type'")]
-    public void An_unknown_or_missing_type_throws(string typeJson, string expected)
+    [InlineData("websocket", "unknown type")]
+    [InlineData(null, "missing 'type'")]
+    public void An_unknown_or_missing_type_throws(string? type, string expected)
     {
-        using var config = TempConfig.Write($$"""
-            { "mcpServers": { "s": { "type": {{typeJson}}, "url": "https://x/mcp" } } }
-            """);
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv));
+        var ex = Assert.Throws<InvalidOperationException>(() => McpConfigLoader.Load(
+            new Dictionary<string, McpServerConfig>
+            {
+                ["s"] = new() { Type = type, Url = "https://x/mcp" },
+            },
+            NullLogger.Instance));
 
         Assert.Contains(expected, ex.Message);
     }
@@ -96,12 +68,9 @@ public class McpConfigLoaderTests
     [Fact]
     public void A_missing_url_throws()
     {
-        using var config = TempConfig.Write("""
-            { "mcpServers": { "s": { "type": "http" } } }
-            """);
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv));
+        var ex = Assert.Throws<InvalidOperationException>(() => McpConfigLoader.Load(
+            new Dictionary<string, McpServerConfig> { ["s"] = new() { Type = "http" } },
+            NullLogger.Instance));
 
         Assert.Contains("missing 'url'", ex.Message);
     }
@@ -109,77 +78,43 @@ public class McpConfigLoaderTests
     [Fact]
     public void A_non_absolute_url_throws()
     {
-        using var config = TempConfig.Write("""
-            { "mcpServers": { "s": { "type": "http", "url": "not-a-url" } } }
-            """);
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv));
+        var ex = Assert.Throws<InvalidOperationException>(() => McpConfigLoader.Load(
+            new Dictionary<string, McpServerConfig> { ["s"] = Http("not-a-url") },
+            NullLogger.Instance));
 
         Assert.Contains("invalid 'url'", ex.Message);
     }
 
     [Fact]
-    public void A_blank_server_name_throws()
-    {
-        using var config = TempConfig.Write("""
-            { "mcpServers": { "   ": { "type": "http", "url": "https://x/mcp" } } }
-            """);
+    public void A_blank_server_name_throws() =>
+        Assert.Throws<InvalidOperationException>(() => McpConfigLoader.Load(
+            new Dictionary<string, McpServerConfig> { ["   "] = Http("https://x/mcp") },
+            NullLogger.Instance));
 
-        Assert.Throws<InvalidOperationException>(
-            () => McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv));
-    }
+    [Fact]
+    public void A_blank_header_name_throws() =>
+        Assert.Throws<InvalidOperationException>(() => McpConfigLoader.Load(
+            new Dictionary<string, McpServerConfig>
+            {
+                ["s"] = new()
+                {
+                    Type = "http",
+                    Url = "https://x/mcp",
+                    Headers = new Dictionary<string, string> { ["   "] = "value" },
+                },
+            },
+            NullLogger.Instance));
 
     [Fact]
     public void Disabled_servers_are_skipped()
     {
-        using var config = TempConfig.Write("""
-            { "mcpServers": { "s": { "type": "http", "url": "https://x/mcp", "enabled": false } } }
-            """);
-
-        var servers = McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv);
-
-        Assert.Empty(servers);
-    }
-
-    [Fact]
-    public void A_missing_default_file_disables_mcp()
-    {
-        var options = FileOptions($"procul-missing-{Guid.NewGuid():N}.jsonc", explicitPath: false);
-
-        var servers = McpConfigLoader.Load(options, NullLogger.Instance, NoEnv);
+        var servers = McpConfigLoader.Load(
+            new Dictionary<string, McpServerConfig>
+            {
+                ["s"] = new() { Type = "http", Url = "https://x/mcp", Enabled = false },
+            },
+            NullLogger.Instance);
 
         Assert.Empty(servers);
     }
-
-    [Fact]
-    public void A_missing_explicit_file_throws()
-    {
-        var options = FileOptions($"procul-missing-{Guid.NewGuid():N}.jsonc", explicitPath: true);
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => McpConfigLoader.Load(options, NullLogger.Instance, NoEnv));
-
-        Assert.Contains("does not exist", ex.Message);
-    }
-
-    [Fact]
-    public void Malformed_json_throws()
-    {
-        using var config = TempConfig.Write("{ this is not json");
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => McpConfigLoader.Load(FileOptions(config.Path), NullLogger.Instance, NoEnv));
-
-        Assert.Contains("not valid JSON", ex.Message);
-    }
-
-    private static McpOptions FileOptions(string path, bool explicitPath = true) => new()
-    {
-        Enabled = true,
-        ConfigPath = path,
-        ConfigPathExplicit = explicitPath,
-        ConnectTimeout = McpOptions.DefaultConnectTimeout,
-        HealthInterval = McpOptions.DefaultHealthInterval,
-    };
 }

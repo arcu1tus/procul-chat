@@ -1,9 +1,9 @@
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using Procul.Api.Configuration;
 using Procul.Api.Cors;
 
 namespace Procul.Api.Tests.Cors;
@@ -67,14 +67,14 @@ public class CorsExtensionsTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddProculCors(BuildConfiguration(origins), new StubHostEnvironment(environmentName));
+        services.AddProculCors(Config(origins), new StubHostEnvironment(environmentName));
     }
 
     private static async Task<CorsPolicy> ResolvePolicyAsync(string? origins, string environmentName)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddProculCors(BuildConfiguration(origins), new StubHostEnvironment(environmentName));
+        services.AddProculCors(Config(origins), new StubHostEnvironment(environmentName));
 
         using var provider = services.BuildServiceProvider();
         var policyProvider = provider.GetRequiredService<ICorsPolicyProvider>();
@@ -84,16 +84,15 @@ public class CorsExtensionsTests
         return policy!;
     }
 
-    private static IConfiguration BuildConfiguration(string? origins)
+    private static ProculConfig Config(string? origins) => new()
     {
-        var data = new Dictionary<string, string?>();
-        if (origins is not null)
+        Server = new ServerConfig
         {
-            data[CorsExtensions.AllowedOriginsSetting] = origins;
-        }
-
-        return new ConfigurationBuilder().AddInMemoryCollection(data).Build();
-    }
+            CorsAllowedOrigins = string.IsNullOrWhiteSpace(origins)
+                ? []
+                : [.. origins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        },
+    };
 
     private sealed class StubHostEnvironment(string environmentName) : IHostEnvironment
     {

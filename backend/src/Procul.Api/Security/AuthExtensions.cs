@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Procul.Api.Configuration;
 
 namespace Procul.Api.Security;
 
@@ -14,14 +15,14 @@ public static class AuthExtensions
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// Thrown when <see cref="AuthOptions.PasswordSetting"/> is missing or
-    /// <see cref="AuthOptions.SessionLifetimeSetting"/> is malformed, so a misconfigured
-    /// deployment fails fast.
+    /// <c>server.sessionLifetime</c> is malformed, so a misconfigured deployment fails fast.
     /// </exception>
     public static IServiceCollection AddProculAuth(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        ProculConfig config)
     {
-        var options = AuthOptions.FromConfiguration(configuration);
+        var options = AuthOptions.FromConfig(config, configuration[AuthOptions.PasswordSetting]);
 
         services.AddSingleton(options);
         services.AddSingleton(new PasswordVerifier(options.Password));

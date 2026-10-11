@@ -1,37 +1,68 @@
 {
-  // Procul backend configuration.
-  //
-  // Copy this file to `config.jsonc` (git-ignored) and edit it. It is read once at startup from:
-  //   1. the path in PROCUL_CONFIG_PATH (absolute or relative), else
-  //   2. `config.jsonc` next to the app.
-  // A missing *default* file simply disables MCP; a missing *explicitly-set* path is fatal.
-  //
-  // JSONC is accepted: comments and trailing commas are allowed.
-  //
-  // Secrets do NOT belong here. Reference environment variables with ${VAR}; the process
+  // Procul backend configuration — the single source of truth.
+  // Secrets are NOT stored here: reference environment variables as ${VAR}; the process
   // environment (populated from `.env` by DotNetEnv) resolves them at startup. An unresolved
-  // reference is fatal and names the missing variable.
-  //
-  // Only remote transports are supported: "http" (Streamable HTTP) and "sse" (legacy). There is
-  // no stdio — the runtime image has no node/npx.
+  // reference is fatal and names the variable.
+  "$schema": "./config.schema.json",
+
+  "server": {
+    // Browser origins allowed to call the API. [] in Development = any origin (dev only).
+    // There is no wildcard outside Development; a `*` or malformed value fails startup.
+    "corsAllowedOrigins": [],
+    "sessionLifetime": "30d"
+  },
+
+  "database": {
+    "connectionString": "${DB_CONNECTION_STRING}"
+  },
+
+  "attachments": {
+    "storage": "postgres",            // "postgres" | "s3"
+    "maxFileSizeBytes": 20971520,     // 20 MiB
+    "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
+    "s3": {
+      "bucket": "${S3_BUCKET}",
+      "region": "${S3_REGION}",
+      "serviceUrl": "${S3_ENDPOINT}", // set for MinIO / S3-compatible; omit for AWS
+      "forcePathStyle": true,
+      "accessKey": "${S3_ACCESS_KEY}",
+      "secretKey": "${S3_SECRET_KEY}"
+    }
+  },
+
+  "models": [
+    {
+      "slug": "openrouter/free",       // also the provider model id sent on the wire
+      "name": "Free models",
+      "description": "Free models from OpenRouter",
+      "apiKey": "${OPENROUTER_KEY}",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "provider": "openrouter",        // optional; auto-detected from baseUrl otherwise
+      "capabilities": ["text", "image"], // optional; discovered when omitted
+      "default": true,
+      "healthCheck": true,
+      "discoverCapabilities": true,
+      "maxOutputTokens": 4096
+    }
+  ],
+
+  "titleModel": "openrouter/free",     // optional; defaults to the conversation's model
+
+  "modelHealth": {
+    "enabled": true,
+    "interval": "30m",                 // idle re-probe cadence (see Part E)
+    "timeout": "10s",
+    "probePrompt": "Reply with the single word: alive",
+    "maxOutputTokens": 5
+  },
+
+  "mcp": { "enabled": true, "connectTimeout": "15s", "healthInterval": "60s" },
 
   "mcpServers": {
-    // Example: GitHub's hosted MCP server, authenticated with a token from `.env`
-    // (GITHUB_MCP_TOKEN). Delete or set "enabled": false to turn it off.
     "github": {
       "type": "http",
       "url": "https://api.githubcopilot.com/mcp/",
-      "headers": { "Authorization": "Bearer ${GITHUB_MCP_TOKEN}" },
-      "enabled": true
-    },
-
-    // Example: an unauthenticated public server.
-    "deepwiki": {
-      "type": "http",
-      "url": "https://mcp.deepwiki.com/mcp"
+      "headers": { "Authorization": "Bearer ${GITHUB_MCP_TOKEN}" }
     }
-
-    // Example: a legacy SSE server.
-    // "legacy": { "type": "sse", "url": "https://example.com/sse" }
   }
 }

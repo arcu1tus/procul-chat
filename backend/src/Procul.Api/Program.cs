@@ -1,5 +1,6 @@
 using Procul.Api.Chat;
 using Procul.Api.Chat.V1;
+using Procul.Api.Configuration;
 using Procul.Api.Cors;
 using Procul.Api.Infrastructure;
 using Procul.Api.Mcp;
@@ -13,13 +14,22 @@ DotNetEnv.Env.Load();
 
 var builder = WebApplication.CreateSlimBuilder(args);
 
+// Load config.jsonc once, before any DI wiring. A missing or invalid config is fatal.
+using var bootstrapLoggerFactory = LoggerFactory.Create(logging => logging.AddSimpleConsole());
+var config = ProculConfigLoader.Load(
+    builder.Configuration,
+    bootstrapLoggerFactory.CreateLogger("Procul.Config"));
+
+builder.Services.AddSingleton(config);
+builder.Services.AddSingleton(AttachmentOptions.FromConfig(config));
+
 builder.Services.AddProculApiVersioning();
-builder.Services.AddProculCors(builder.Configuration, builder.Environment);
+builder.Services.AddProculCors(config, builder.Environment);
 builder.Services.AddOpenApi();
-builder.Services.AddProculAuth(builder.Configuration);
-builder.Services.AddProculDbContext(builder.Configuration);
-builder.Services.AddProculChat(builder.Configuration);
-builder.Services.AddProculMcp(builder.Configuration);
+builder.Services.AddProculAuth(builder.Configuration, config);
+builder.Services.AddProculDbContext(config);
+builder.Services.AddProculChat(config);
+builder.Services.AddProculMcp(config);
 
 var app = builder.Build();
 
@@ -48,6 +58,14 @@ var v1 = chat
     .RequireAuthorization();
 
 v1.MapChatV1();
+
+var models = app.NewVersionedApi("Models");
+var v1Models = models
+    .MapGroup("/v{version:apiVersion}/models")
+    .HasApiVersion(1.0)
+    .RequireAuthorization();
+
+v1Models.MapModelsV1();
 
 var mcp = app.NewVersionedApi("Mcp");
 var v1Mcp = mcp

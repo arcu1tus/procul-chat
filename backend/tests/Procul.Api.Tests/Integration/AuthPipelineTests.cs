@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Procul.Api.Security.V1;
+using Procul.Api.Tests.Support;
 
 namespace Procul.Api.Tests.Integration;
 
@@ -13,20 +14,25 @@ namespace Procul.Api.Tests.Integration;
 /// database is needed — authorization rejects unauthenticated requests before any handler runs,
 /// and the authenticated probe endpoint never touches the database.
 /// </summary>
-public class AuthPipelineTests : IClassFixture<WebApplicationFactory<Program>>
+public class AuthPipelineTests : IClassFixture<WebApplicationFactory<Program>>, IDisposable
 {
     private const string Password = "correct horse battery staple";
 
     private readonly WebApplicationFactory<Program> _factory;
+    private TempConfig? _config;
 
     public AuthPipelineTests(WebApplicationFactory<Program> factory) => _factory = factory;
 
-    private WebApplicationFactory<Program> CreateFactory() =>
-        _factory.WithWebHostBuilder(builder => builder
+    private WebApplicationFactory<Program> CreateFactory()
+    {
+        _config = TestConfig.Write();
+        return _factory.WithWebHostBuilder(builder => builder
             .UseEnvironment("Production")
-            .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
-            .UseSetting("PROCUL_API_PASSWORD", Password));
+            .UseSetting("PROCUL_API_PASSWORD", Password)
+            .UseSetting("PROCUL_CONFIG_PATH", _config.Path));
+    }
+
+    public void Dispose() => _config?.Dispose();
 
     [Fact]
     public async Task Health_is_public()

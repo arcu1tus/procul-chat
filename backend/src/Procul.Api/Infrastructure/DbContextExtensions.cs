@@ -1,32 +1,39 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Procul.Api.Configuration;
 
 namespace Procul.Api.Infrastructure;
 
 public static class DbContextExtensions
 {
     /// <summary>
-    /// Registers the pooled <see cref="ProculDbContext"/> using the
-    /// <c>ConnectionStrings:ChatContext</c> Postgres connection string.
+    /// Registers the pooled <see cref="ProculDbContext"/> using the connection string from
+    /// <c>database.connectionString</c> in <c>config.jsonc</c>.
     /// </summary>
     public static IServiceCollection AddProculDbContext(
         this IServiceCollection services,
-        IConfiguration configuration)
+        ProculConfig config)
     {
         services.AddDbContextPool<ProculDbContext>(opt =>
-            opt.UseNpgsql(configuration.GetConnectionString("ChatContext")));
+            opt.UseNpgsql(config.Database.ConnectionString));
         return services;
     }
 
     /// <summary>
     /// Ensures the database exists and is up to date by applying any pending EF Core
     /// migrations at startup. Runs on every start (it is idempotent) so the container
-    /// manages its own Postgres schema. The only reason to skip is a missing
-    /// <c>ConnectionStrings:ChatContext</c> — the integration tests boot the app without a
+    /// manages its own Postgres schema. The only reason to skip is an unset
+    /// <c>database.connectionString</c> — the integration tests boot the app without a
     /// database, and the app otherwise connects to Postgres lazily.
     /// </summary>
     public static async Task ApplyProculMigrationsAsync(this WebApplication app)
     {
-        if (string.IsNullOrWhiteSpace(app.Configuration.GetConnectionString("ChatContext")))
+        var connectionString = app.Services
+            .GetRequiredService<ProculConfig>()
+            .Database
+            .ConnectionString;
+
+        if (string.IsNullOrWhiteSpace(connectionString))
         {
             return;
         }

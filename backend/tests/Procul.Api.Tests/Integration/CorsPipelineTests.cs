@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Procul.Api.Tests.Support;
 
 namespace Procul.Api.Tests.Integration;
 
@@ -9,21 +10,28 @@ namespace Procul.Api.Tests.Integration;
 /// verifies the production CORS contract end-to-end: only configured origins are approved, and
 /// there is no wildcard outside development.
 /// </summary>
-public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>
+public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>, IDisposable
 {
     private readonly WebApplicationFactory<Program> _factory;
+    private TempConfig? _config;
 
     public CorsPipelineTests(WebApplicationFactory<Program> factory) => _factory = factory;
+
+    private WebApplicationFactory<Program> CreateFactory(string environment, string? origins)
+    {
+        _config = TestConfig.Write(corsOrigins: origins);
+        return _factory.WithWebHostBuilder(builder => builder
+            .UseEnvironment(environment)
+            .UseSetting("PROCUL_API_PASSWORD", "test-password")
+            .UseSetting("PROCUL_CONFIG_PATH", _config.Path));
+    }
+
+    public void Dispose() => _config?.Dispose();
 
     [Fact]
     public async Task Preflight_from_an_allowed_origin_is_approved_in_production()
     {
-        using var factory = _factory.WithWebHostBuilder(builder => builder
-            .UseEnvironment("Production")
-            .UseSetting("CORS_ALLOWED_ORIGINS", "https://app.example.com")
-            .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
-            .UseSetting("PROCUL_API_PASSWORD", "test-password"));
+        using var factory = CreateFactory("Production", "https://app.example.com");
         using var client = factory.CreateClient();
 
         using var response = await PreflightAsync(client, "https://app.example.com");
@@ -37,12 +45,7 @@ public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Preflight_from_a_disallowed_origin_is_not_approved_in_production()
     {
-        using var factory = _factory.WithWebHostBuilder(builder => builder
-            .UseEnvironment("Production")
-            .UseSetting("CORS_ALLOWED_ORIGINS", "https://app.example.com")
-            .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
-            .UseSetting("PROCUL_API_PASSWORD", "test-password"));
+        using var factory = CreateFactory("Production", "https://app.example.com");
         using var client = factory.CreateClient();
 
         using var response = await PreflightAsync(client, "https://evil.example.com");
@@ -54,11 +57,7 @@ public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Preflight_is_approved_for_any_origin_in_development()
     {
-        using var factory = _factory.WithWebHostBuilder(builder => builder
-            .UseEnvironment("Development")
-            .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
-            .UseSetting("PROCUL_API_PASSWORD", "test-password"));
+        using var factory = CreateFactory("Development", origins: null);
         using var client = factory.CreateClient();
 
         using var response = await PreflightAsync(client, "http://localhost:12345");

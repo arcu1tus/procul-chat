@@ -1,6 +1,3 @@
-using System.Text.Json;
-using System.Text.RegularExpressions;
-
 namespace Procul.Api.Mcp;
 
 /// <summary>The transport an MCP server is reached over. Remote only: no stdio.</summary>
@@ -13,7 +10,7 @@ public enum McpTransportType
     Sse,
 }
 
-/// <summary>A validated, environment-expanded MCP server entry ready to connect to.</summary>
+/// <summary>A validated, secret-resolved MCP server entry ready to connect to.</summary>
 public sealed record McpServerDefinition(
     string Name,
     McpTransportType Type,
@@ -26,72 +23,32 @@ public sealed record McpServerDefinition(
 }
 
 /// <summary>
-/// Reads <c>config.jsonc</c>, tolerating JSONC comments and trailing commas, expands
-/// <c>${ENV_VAR}</c> references in URLs and headers, and validates every server. Any problem is
-/// fatal: a misconfigured deployment should crash rather than silently run without its tools.
+/// Validates the <c>mcpServers</c> section of the already-parsed, secret-resolved
+/// <c>config.jsonc</c>. Any problem is fatal: a misconfigured deployment should crash rather than
+/// silently run without its tools.
 /// </summary>
 internal static class McpConfigLoader
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true,
-    };
-
-    private static readonly Regex EnvReference = new(
-        @"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
-
     /// <summary>
-    /// Loads and validates the configured servers.
+    /// Validates the configured servers. A blank name, an unknown <c>type</c>, a missing or
+    /// non-absolute <c>url</c>, or a blank header name is fatal. Disabled servers are skipped.
     /// </summary>
-    /// <returns>
-    /// The enabled servers, or an empty list when the config file is absent (the default path
-    /// only) or contains no enabled servers.
-    /// </returns>
     /// <exception cref="InvalidOperationException">
-    /// Thrown for a missing explicitly-set file, malformed JSON, an unresolved
-    /// <c>${VAR}</c>, an unknown type, a missing URL, a blank server name, or an invalid URL.
+    /// Thrown for a blank server name, an unknown type, a missing URL, a blank header name, or an
+    /// invalid URL.
     /// </exception>
     public static IReadOnlyList<McpServerDefinition> Load(
-        McpOptions options,
-        ILogger logger,
-        Func<string, string?>? environment = null)
+        IReadOnlyDictionary<string, McpServerConfig> servers,
+        ILogger logger)
     {
-        var resolveEnv = environment ?? Environment.GetEnvironmentVariable;
+        var definitions = new List<McpServerDefinition>();
 
-        if (!File.Exists(options.ConfigPath))
-        {
-            if (options.ConfigPathExplicit)
-            {
-                throw new InvalidOperationException(
-                    $"{McpOptions.ConfigPathSetting} points at '{options.ConfigPath}', which does not exist.");
-            }
-
-            logger.LogInformation(
-                "MCP: no config file at '{Path}'; MCP support is disabled.", options.ConfigPath);
-            return [];
-        }
-
-        ProculConfig config;
-        try
-        {
-            var json = File.ReadAllText(options.ConfigPath);
-            config = JsonSerializer.Deserialize<ProculConfig>(json, JsonOptions) ?? new ProculConfig();
-        }
-        catch (JsonException ex)
-        {
-            throw new InvalidOperationException(
-                $"MCP config file '{options.ConfigPath}' is not valid JSON/JSONC: {ex.Message}", ex);
-        }
-
-        var servers = new List<McpServerDefinition>();
-        foreach (var (name, server) in config.McpServers)
+        foreach (var (name, server) in servers)
         {
             if (string.IsNullOrWhiteSpace(name))
             {
                 throw new InvalidOperationException(
-                    $"MCP config file '{options.ConfigPath}' contains a server with a blank name.");
+                    "config.jsonc contains an MCP server with a blank name.");
             }
 
             if (!server.Enabled)
@@ -100,22 +57,18 @@ internal static class McpConfigLoader
                 continue;
             }
 
-            servers.Add(Validate(name, server, resolveEnv));
+            definitions.Add(Validate(name, server));
         }
 
-        if (servers.Count == 0)
+        if (definitions.Count == 0)
         {
-            logger.LogInformation(
-                "MCP: config file '{Path}' has no enabled servers.", options.ConfigPath);
+            logger.LogInformation("MCP: no enabled servers configured.");
         }
 
-        return servers;
+        return definitions;
     }
 
-    private static McpServerDefinition Validate(
-        string name,
-        McpServerConfig server,
-        Func<string, string?> resolveEnv)
+    private static McpServerDefinition Validate(string name, McpServerConfig server)
     {
         var type = ParseType(name, server.Type);
 
@@ -124,7 +77,7 @@ internal static class McpConfigLoader
             throw new InvalidOperationException($"MCP server '{name}' is missing 'url'.");
         }
 
-        var url = Expand(server.Url.Trim(), $"server '{name}' url", resolveEnv);
+        var url = server.Url.Trim();
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
@@ -141,7 +94,7 @@ internal static class McpConfigLoader
                     $"MCP server '{name}' has a header with a blank name.");
             }
 
-            headers[header] = Expand(value, $"server '{name}' header '{header}'", resolveEnv);
+            headers[header] = value;
         }
 
         return new McpServerDefinition(name.Trim(), type, url, headers);
@@ -156,19 +109,4 @@ internal static class McpConfigLoader
         _ => throw new InvalidOperationException(
             $"MCP server '{name}' has unknown type '{type}'. Use \"http\" or \"sse\"."),
     };
-
-    /// <summary>
-    /// Replaces <c>${VAR}</c> references with process-environment values. A reference to an
-    /// unset variable is fatal and names the variable, so a missing token is obvious at startup.
-    /// </summary>
-    private static string Expand(string value, string context, Func<string, string?> resolveEnv)
-    {
-        return EnvReference.Replace(value, match =>
-        {
-            var variable = match.Groups[1].Value;
-            return resolveEnv(variable)
-                ?? throw new InvalidOperationException(
-                    $"MCP {context} references environment variable '{variable}', which is not set.");
-        });
-    }
 }

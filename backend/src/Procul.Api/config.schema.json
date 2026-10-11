@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://procul.dev/config.schema.json",
+  "title": "Procul backend configuration",
+  "description": "Schema for config.jsonc — the single source of truth for the Procul backend.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["models"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "server": { "$ref": "#/$defs/server" },
+    "database": { "$ref": "#/$defs/database" },
+    "attachments": { "$ref": "#/$defs/attachments" },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/model" }
+    },
+    "titleModel": { "type": "string", "minLength": 1 },
+    "modelHealth": { "$ref": "#/$defs/modelHealth" },
+    "mcp": { "$ref": "#/$defs/mcp" },
+    "mcpServers": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/mcpServer" }
+    }
+  },
+  "$defs": {
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "corsAllowedOrigins": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "sessionLifetime": { "type": "string" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connectionString": { "type": "string" }
+      }
+    },
+    "attachments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storage": { "enum": ["postgres", "s3"] },
+        "maxFileSizeBytes": { "type": "integer", "minimum": 1 },
+        "allowedContentTypes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "s3": { "$ref": "#/$defs/s3" }
+      }
+    },
+    "s3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bucket": { "type": "string" },
+        "region": { "type": "string" },
+        "serviceUrl": { "type": "string" },
+        "forcePathStyle": { "type": "boolean" },
+        "accessKey": { "type": "string" },
+        "secretKey": { "type": "string" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "baseUrl"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "baseUrl": { "type": "string", "minLength": 1 },
+        "provider": { "enum": ["openrouter", "openai-compatible"] },
+        "capabilities": {
+          "type": "array",
+          "items": { "enum": ["text", "image", "audio", "video", "pdf"] }
+        },
+        "default": { "type": "boolean" },
+        "healthCheck": { "type": "boolean" },
+        "discoverCapabilities": { "type": "boolean" },
+        "maxOutputTokens": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "modelHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "probePrompt": { "type": "string" },
+        "maxOutputTokens": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "connectTimeout": { "type": "string" },
+        "healthInterval": { "type": "string" }
+      }
+    },
+    "mcpServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "url"],
+      "properties": {
+        "type": { "enum": ["http", "sse", "streamable-http", "streamablehttp"] },
+        "url": { "type": "string", "minLength": 1 },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "enabled": { "type": "boolean" }
+      }
+    }
+  }
+}

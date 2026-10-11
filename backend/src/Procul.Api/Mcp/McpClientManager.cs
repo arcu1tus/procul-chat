@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Client;
+using Procul.Api.Configuration;
 
 namespace Procul.Api.Mcp;
 
@@ -24,6 +25,7 @@ public sealed record McpServerStatus(
 internal sealed class McpClientManager : IHostedService, IAsyncDisposable
 {
     private readonly McpOptions _options;
+    private readonly ProculConfig _config;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<McpClientManager> _logger;
 
@@ -39,10 +41,12 @@ internal sealed class McpClientManager : IHostedService, IAsyncDisposable
 
     public McpClientManager(
         McpOptions options,
+        ProculConfig config,
         ILoggerFactory loggerFactory,
         ILogger<McpClientManager> logger)
     {
         _options = options;
+        _config = config;
         _loggerFactory = loggerFactory;
         _logger = logger;
     }
@@ -61,12 +65,12 @@ internal sealed class McpClientManager : IHostedService, IAsyncDisposable
     {
         if (!_options.Enabled)
         {
-            _logger.LogInformation("MCP: disabled via {Setting}.", McpOptions.EnabledSetting);
+            _logger.LogInformation("MCP: disabled via 'mcp.enabled'.");
             return;
         }
 
-        // A bad config file is fatal (fail fast); a dead server is not.
-        var definitions = McpConfigLoader.Load(_options, _logger);
+        // A bad config is fatal (fail fast); a dead server is not.
+        var definitions = McpConfigLoader.Load(_config.McpServers, _logger);
 
         var entries = definitions.Select(definition => new ServerEntry(definition)).ToList();
         lock (_stateLock)

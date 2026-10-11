@@ -48,6 +48,8 @@ against [OpenRouter](https://openrouter.ai/).
 
 - **Streaming replies** over SSE, with a `type`-tagged event protocol (`created`,
   `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`, `title`, `error`, `done`).
+- **Multiple models** declared in `config.jsonc`, each with its own client, capability metadata,
+  and live health (`GET /v1/models`); a conversation remembers and can switch its model.
 - **Token-usage tracking**: every model call (reply and title) records its input / output /
   cached / total tokens in PostgreSQL. The backend serves lifetime, per-day, and per-model
   totals from the authenticated `GET /v1/usage` endpoint (and per-conversation totals from
@@ -74,7 +76,8 @@ against [OpenRouter](https://openrouter.ai/).
 .
 ├── backend/                 # ASP.NET Core (.NET 10) API
 │   ├── src/Procul.Api/       # the API project
-│   │   ├── Chat/             # endpoints, streaming service, tools, DTOs, entities
+│   │   ├── Chat/             # endpoints, streaming service, model registry/catalog, tools, DTOs, entities
+│   │   ├── Configuration/    # config.jsonc loader (JSONC + schema + ${ENV}) + derived options
 │   │   ├── Usage/            # token-usage aggregation + `GET /v1/usage` endpoints
 │   │   ├── Cors/             # browser CORS policy
 │   │   ├── Security/         # shared-password auth: verifier, session JWTs, endpoints
@@ -164,45 +167,80 @@ server profiles** or log out.
 
 ## Configuration
 
-The backend reads its configuration from environment variables (and the git-ignored
-`.env` file in development):
+The backend reads its configuration from a single **`config.jsonc`** file (JSONC: comments and
+trailing commas are allowed). `.env` holds **secrets only**; `config.jsonc` references them as
+`${VAR}`. The loader resolves every reference from the process environment at startup, and an
+unresolved reference names the missing variable and aborts startup.
+
+Copy the example and edit it:
+
+```bash
+cp backend/src/Procul.Api/config.jsonc.example backend/src/Procul.Api/config.jsonc
+```
+
+| Section | Purpose |
+| ------- | ------- |
+| `server.corsAllowedOrigins[]` | Browser origins allowed to call the API |
+| `server.sessionLifetime` | Session-token lifetime, e.g. `12h` (default `30d`) |
+| `database.connectionString` | PostgreSQL connection string |
+| `attachments.*` | Upload storage (`postgres`/`s3`), size limit, allowed content types |
+| `models[]` | One or more chat models (slug, name, base URL, key, provider, capabilities, default) |
+| `titleModel` | Optional slug used for the AI title call (defaults to the conversation's model) |
+| `modelHealth.*` | Liveness-probe enable/interval/timeout/prompt |
+| `mcp` + `mcpServers` | MCP client settings and remote tool servers |
+
+Two environment variables remain outside `config.jsonc`:
 
 | Variable | Purpose |
 | -------- | ------- |
-| `ConnectionStrings__ChatContext` | PostgreSQL connection string |
-| `OPENROUTER_API_KEY` | OpenRouter API key (**required**) |
-| `OPENROUTER_MODEL_SLUG` | Model slug to use, e.g. `nvidia/nemotron-3-ultra-550b-a55b:free` (**required**) |
 | `PROCUL_API_PASSWORD` | Shared password protecting the API (**required**) |
-| `PROCUL_SESSION_LIFETIME` | Session-token lifetime, e.g. `12h` (default `30d`) |
-| `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API |
-| `PROCUL_CONFIG_PATH` | Path to the MCP config file (default `config.jsonc` next to the app) |
-| `MCP_ENABLED` | Master switch for MCP support (default `true`) |
-| `MCP_CONNECT_TIMEOUT` | Per-server connect/discover budget, e.g. `15s` |
-| `MCP_HEALTH_INTERVAL` | Background ping/reconnect cadence, e.g. `60s` |
+| `PROCUL_CONFIG_PATH` | Path to `config.jsonc` (default: `config.jsonc` next to the app) |
 
-`.env.example` documents the shape. **No secrets are committed to this repository**, and
-the container image is environment-agnostic — configuration is injected at run time.
+Secrets referenced from `config.jsonc` as `${VAR}` live in `.env` (git-ignored):
+`OPENROUTER_KEY`, `DB_CONNECTION_STRING`, optional `S3_*`, `GITHUB_MCP_TOKEN`, and
+`PROCUL_API_PASSWORD`. `.env.example` documents the shape. **No secrets are committed**, and the
+container image is environment-agnostic — configuration is injected at run time.
+
+### Multiple models
+
+`models[]` declares every model the backend can use. Each gets its own `IChatClient`, and the
+client can list them (with capabilities and live health) via the authenticated
+`GET /v1/models` endpoint (never returning API keys). A conversation remembers the model it was
+created with; the model can be changed with `PUT /v1/conversations/{id}/model`, and a stale slug
+falls back to the default.
+
+```jsonc
+"models": [
+  {
+    "slug": "openrouter/free",        // also the id sent on the wire
+    "name": "Free models",
+    "apiKey": "${OPENROUTER_KEY}",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "provider": "openrouter",         // optional; inferred from baseUrl otherwise
+    "capabilities": ["text", "image"],// optional; discovered from OpenRouter when omitted
+    "default": true,
+    "healthCheck": true
+  }
+]
+```
+
+On startup each model is probed once (unless `healthCheck: false`), and capabilities are
+discovered from OpenRouter's `/models` when possible. Every 30 minutes a model that had **no
+real traffic** in the window is probed again; models just used by live traffic are left alone.
 
 ### MCP tool servers
 
 The model can call tools from remote [MCP](https://modelcontextprotocol.io/) servers
-(Streamable HTTP and legacy SSE) in addition to the built-in ones. Servers are declared in a
-`config.jsonc` file, kept separate from secrets:
-
-- **Structure** lives in `config.jsonc` (bind-mountable, committable) — copy
-  `backend/src/Procul.Api/config.jsonc.example` to start.
-- **Secrets** stay in `.env`; the JSON references them as `${VAR}` in a URL or header value.
-  An unresolved reference fails startup and names the missing variable.
+(Streamable HTTP and legacy SSE) in addition to the built-in ones. Servers live under
+`mcpServers` in the same `config.jsonc`:
 
 ```jsonc
-{
-  "mcpServers": {
-    "github": {
-      "type": "http",                                  // "http" | "sse"
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": { "Authorization": "Bearer ${GITHUB_MCP_TOKEN}" },
-      "enabled": true                                  // optional, default true
-    }
+"mcpServers": {
+  "github": {
+    "type": "http",                                  // "http" | "sse"
+    "url": "https://api.githubcopilot.com/mcp/",
+    "headers": { "Authorization": "Bearer ${GITHUB_MCP_TOKEN}" },
+    "enabled": true                                  // optional, default true
   }
 }
 ```
@@ -217,11 +255,11 @@ live status (never headers or tokens), and the client shows it read-only in Sett
 Native desktop and mobile clients are not subject to CORS, but a **Flutter web build is**.
 The rules are:
 
-- **Development:** if `CORS_ALLOWED_ORIGINS` is unset, any origin is allowed (the web dev
+- **Development:** if `server.corsAllowedOrigins` is empty, any origin is allowed (the web dev
   server's port is ephemeral). This never applies outside development.
 - **Production (and any other environment):** there is **no wildcard**. Cross-origin
-  requests are denied until you set `CORS_ALLOWED_ORIGINS` to the frontend's real origin,
-  e.g. `CORS_ALLOWED_ORIGINS=https://app.example.com`. A wildcard (`*`) or a malformed
+  requests are denied until you set `server.corsAllowedOrigins` to the frontend's real origin,
+  e.g. `"corsAllowedOrigins": ["https://app.example.com"]`. A wildcard (`*`) or a malformed
   origin makes startup fail fast.
 
 Build the production web client against your API's public URL:
@@ -263,19 +301,17 @@ Build and run it locally:
 docker build -f backend/src/Procul.Api/Dockerfile -t procul-api backend
 
 docker run --rm -p 8080:8080 \
-  -e OPENROUTER_API_KEY=sk-or-v1-... \
-  -e OPENROUTER_MODEL_SLUG=nvidia/nemotron-3-ultra-550b-a55b:free \
-  -e ConnectionStrings__ChatContext="Host=...;Port=5432;Database=procul;Username=...;Password=..." \
-  -e CORS_ALLOWED_ORIGINS=https://app.example.com \
   -e PROCUL_API_PASSWORD=a-strong-shared-password \
+  -e OPENROUTER_KEY=sk-or-v1-... \
+  -e DB_CONNECTION_STRING="Host=...;Port=5432;Database=procul;Username=...;Password=..." \
   -e GITHUB_MCP_TOKEN=ghp_... \
   -v ./config.jsonc:/app/config.jsonc:ro \
   procul-api
 ```
 
-The `-v` mount injects the MCP config read-only; tokens referenced as `${VAR}` come from `-e`
-(or the environment), so the mounted file stays secret-free. The runtime image is ASP.NET-only,
-which is fine: remote MCP transports spawn no child processes.
+The `-v` mount injects `config.jsonc` read-only; the secrets it references as `${VAR}` come from
+`-e` (or the environment), so the mounted file stays secret-free. The runtime image is
+ASP.NET-only, which is fine: remote MCP transports spawn no child processes.
 
 ### Publishing
 

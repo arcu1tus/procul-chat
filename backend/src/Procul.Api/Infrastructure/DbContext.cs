@@ -15,6 +15,7 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
         {
             e.HasKey(c => c.Id);
             e.Property(c => c.Id).ValueGeneratedNever();
+            e.Property(c => c.Model).HasMaxLength(256);
             e.HasMany<ConversationMessage>()
                 .WithOne()
                 .HasForeignKey(m => m.ConversationId)

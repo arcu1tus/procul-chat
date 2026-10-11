@@ -1,5 +1,5 @@
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Procul.Api.Configuration;
 using Procul.Api.Mcp;
 
 namespace Procul.Api.Tests.Support;
@@ -9,30 +9,39 @@ namespace Procul.Api.Tests.Support;
 /// </summary>
 internal static class McpTestHelpers
 {
-    /// <summary>Builds <see cref="McpOptions"/> from a small in-memory configuration.</summary>
-    public static McpOptions Options(params (string Key, string? Value)[] settings) =>
-        McpOptions.FromConfiguration(BuildConfiguration(settings));
+    /// <summary>Builds a minimal <see cref="ProculConfig"/> with the given servers and MCP settings.</summary>
+    public static ProculConfig Config(
+        Dictionary<string, McpServerConfig>? servers = null,
+        bool enabled = true,
+        string? connectTimeout = null,
+        string? healthInterval = null) => new()
+    {
+        McpServers = servers ?? new(),
+        Mcp = new McpSettingsConfig
+        {
+            Enabled = enabled,
+            ConnectTimeout = connectTimeout,
+            HealthInterval = healthInterval,
+        },
+    };
+
+    /// <summary>Builds <see cref="McpOptions"/> from a small synthetic config.</summary>
+    public static McpOptions Options(
+        bool enabled = true,
+        string? connectTimeout = null,
+        string? healthInterval = null) =>
+        McpOptions.FromConfig(Config(enabled: enabled, connectTimeout: connectTimeout, healthInterval: healthInterval));
+
+    /// <summary>An MCP manager over the given config.</summary>
+    public static McpClientManager Manager(ProculConfig config, McpOptions? options = null) => new(
+        options ?? Options(),
+        config,
+        NullLoggerFactory.Instance,
+        NullLogger<McpClientManager>.Instance);
 
     /// <summary>An MCP manager whose master switch is off, so it publishes no tools.</summary>
-    public static McpClientManager DisabledManager() => new(
-        Options((McpOptions.EnabledSetting, "false")),
-        NullLoggerFactory.Instance,
-        NullLogger<McpClientManager>.Instance);
+    public static McpClientManager DisabledManager() => Manager(Config(), Options(enabled: false));
 
     /// <summary>An MCP manager with MCP enabled but no servers configured.</summary>
-    public static McpClientManager EmptyManager() => new(
-        Options(),
-        NullLoggerFactory.Instance,
-        NullLogger<McpClientManager>.Instance);
-
-    private static IConfiguration BuildConfiguration((string Key, string? Value)[] settings)
-    {
-        var data = new Dictionary<string, string?>();
-        foreach (var (key, value) in settings)
-        {
-            data[key] = value;
-        }
-
-        return new ConfigurationBuilder().AddInMemoryCollection(data).Build();
-    }
+    public static McpClientManager EmptyManager() => Manager(Config());
 }
