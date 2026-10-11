@@ -15,16 +15,22 @@ void main() {
     expect(controller.themeMode, ThemeMode.dark);
   });
 
-  test('theme mode persists across controllers', () async {
-    SharedPreferences.setMockInitialValues({});
+  test(
+    'theme mode round-trips across controllers (light, dark, system)',
+    () async {
+      SharedPreferences.setMockInitialValues({});
 
-    final first = SettingsController(store: SettingsStore());
-    await first.init();
-    await first.setDarkMode(false);
-    expect(first.themeMode, ThemeMode.light);
+      for (final mode in [ThemeMode.light, ThemeMode.dark, ThemeMode.system]) {
+        final first = SettingsController(store: SettingsStore());
+        await first.init();
+        await first.setThemeMode(mode);
+        expect(first.themeMode, mode);
+        expect(first.isDark, mode == ThemeMode.dark);
 
-    final second = SettingsController(store: SettingsStore());
-    await second.init();
-    expect(second.themeMode, ThemeMode.light);
-  });
+        final second = SettingsController(store: SettingsStore());
+        await second.init();
+        expect(second.themeMode, mode);
+      }
+    },
+  );
 }

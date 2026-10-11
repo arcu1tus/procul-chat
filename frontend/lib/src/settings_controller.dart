@@ -2,7 +2,8 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'settings_store.dart';
 
-/// App preferences. Currently a single switch: dark mode (the default).
+/// App preferences. Currently a single setting: the theme mode (dark is the
+/// default).
 class SettingsController extends ChangeNotifier {
   SettingsController({SettingsStore? store})
     : _store = store ?? SettingsStore();
@@ -13,6 +14,9 @@ class SettingsController extends ChangeNotifier {
 
   ThemeMode get themeMode => _themeMode;
 
+  /// Whether the explicitly selected theme is dark. When [themeMode] is
+  /// [ThemeMode.system] this is `false`; the active brightness is resolved by
+  /// the app from the platform.
   bool get isDark => _themeMode == ThemeMode.dark;
 
   /// Loads persisted preferences. Falls back to the defaults (dark) if nothing
@@ -29,8 +33,9 @@ class SettingsController extends ChangeNotifier {
     }
   }
 
-  Future<void> setDarkMode(bool dark) async {
-    final mode = dark ? ThemeMode.dark : ThemeMode.light;
+  /// Sets and persists the theme mode. The three values map to the
+  /// Light / Dark / System options in the settings dialog.
+  Future<void> setThemeMode(ThemeMode mode) async {
     if (mode == _themeMode) return;
     _themeMode = mode;
     notifyListeners();

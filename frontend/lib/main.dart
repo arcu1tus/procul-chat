@@ -1,3 +1,4 @@
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 
@@ -14,12 +15,22 @@ const apiBaseUrl = String.fromEnvironment(
   defaultValue: 'http://localhost:5010',
 );
 
-void main() {
-  runApp(const ProculChatApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Preload the stored theme and the web fonts *before* the first frame so the
+  // app never flashes the default theme or a fallback face.
+  final settings = SettingsController();
+  await settings.init();
+  await GoogleFonts.pendingFonts([interTextStyle, GoogleFonts.coiny()]);
+
+  runApp(ProculChatApp(settings: settings));
 }
 
 class ProculChatApp extends StatefulWidget {
-  const ProculChatApp({super.key});
+  const ProculChatApp({super.key, required this.settings});
+
+  final SettingsController settings;
 
   @override
   State<ProculChatApp> createState() => _ProculChatAppState();
@@ -27,38 +38,35 @@ class ProculChatApp extends StatefulWidget {
 
 class _ProculChatAppState extends State<ProculChatApp> {
   late final ChatController _chat;
-  late final SettingsController _settings;
 
   @override
   void initState() {
     super.initState();
     _chat = ChatController(api: ChatApi(baseUrl: apiBaseUrl));
-    _settings = SettingsController();
     _chat.init();
-    _settings.init();
   }
 
   @override
   void dispose() {
     _chat.dispose();
-    _settings.dispose();
+    widget.settings.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: _settings,
+      listenable: widget.settings,
       builder: (context, _) {
         return MaterialShadcnApp(
           title: 'Procul Chat',
           debugShowCheckedModeBanner: false,
           theme: proculLightTheme,
           darkTheme: proculDarkTheme,
-          themeMode: _settings.themeMode,
+          themeMode: widget.settings.themeMode,
           builder: (context, child) =>
               ShadcnMaterialBridge(child: child ?? const SizedBox.shrink()),
-          home: HomeShell(chat: _chat, settings: _settings),
+          home: HomeShell(chat: _chat, settings: widget.settings),
         );
       },
     );
