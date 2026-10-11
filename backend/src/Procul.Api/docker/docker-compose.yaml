@@ -1,14 +1,17 @@
+# This docker-compose.yaml file is used for ** DEVELOPMENT **
+# It does not even host the actual backend anywhere, just spins up a postgres container!!!
+
 services:
   postgres:
     image: postgres:alpine
-    container_name: procul_chat_postgres_dev
+    container_name: procul_postgres_dev
     restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: procul_chat
+      POSTGRES_DB: procul
     volumes:
       - postgres_data:/var/lib/postgresql
 

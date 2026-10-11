@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Procul.Api/">
+    <Project Path="src/Procul.Api/Procul.Api.csproj" />
+  </Folder>
+</Solution>

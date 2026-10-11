@@ -1,0 +1,43 @@
+@backend_HostAddress = http://localhost:5010
+
+# @name createConversation
+# Creates a conversation and streams the assistant's reply as SSE.
+# The first event is `created` and carries the new conversation's id.
+POST {{backend_HostAddress}}/v1/conversations/
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+    "initialMessage": "What's the capital of France?"
+}
+
+###
+
+# Paste the id from the `created` event of the request above.
+@conversationId = 00000000-0000-0000-0000-000000000000
+
+GET {{backend_HostAddress}}/v1/conversations/{{conversationId}}
+Accept: application/json
+
+###
+
+# @name sendMessage
+# Sends a message to an existing conversation and streams the reply as SSE.
+POST {{backend_HostAddress}}/v1/conversations/{{conversationId}}/messages
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+    "text": "And what about Italy?"
+}
+
+###
+
+# @name conversationMessagesFirstPage
+GET {{backend_HostAddress}}/v1/conversations/{{conversationId}}/messages?limit=2
+Accept: application/json
+
+###
+
+GET {{backend_HostAddress}}/v1/conversations/{{conversationId}}/messages?limit=2&afterMessageId={{conversationMessagesFirstPage.response.body.$.messages[1].id}}
+Accept: application/json

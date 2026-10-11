@@ -4,4 +4,8 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Debug-only: the dev backend is plain HTTP, reached on the phone via
+         `adb reverse tcp:5010 tcp:5010` (http://localhost:5010). Android 9+ blocks
+         cleartext by default, so opt in here. Release builds keep the secure default. -->
+    <application android:usesCleartextTraffic="true"/>
 </manifest>
