@@ -36,6 +36,7 @@ Pick the path that matches your task — you do not need to read everything.
 4. **`config.jsonc` shape** → [`docs/configuration.md`](docs/configuration.md).
 5. **Deploying the backend** → [`docs/docker-compose.md`](docs/docker-compose.md).
 6. **Building the client** → [`docs/flutter-builds.md`](docs/flutter-builds.md).
+7. **Deploying to a VPS** (backend + Caddy + Android) → [`docs/vps-deploy.md`](docs/vps-deploy.md).
 
 ## Repository layout
 
@@ -43,7 +44,7 @@ Pick the path that matches your task — you do not need to read everything.
 | ---- | ---- |
 | `README.md` | Human-facing overview: features, getting started, configuration, container usage |
 | `justfile` | Root task runner (**`just` modules**): `just backend …`, `just frontend …`, `just check` |
-| `docs/` | Operator guides: `docker-compose.md`, `flutter-builds.md`, `configuration.md` |
+| `docs/` | Operator guides: `docker-compose.md`, `flutter-builds.md`, `configuration.md`, `vps-deploy.md` |
 | `backend/AGENTS.md` | **Backend conventions & gotchas** — architecture, config, endpoints, tests |
 | `frontend/AGENTS.md` | **Frontend conventions & gotchas** — Flutter structure, state, API client, tests |
 | `backend/justfile` | Backend recipes (`build`, `test`, `run`, `dev-db-*`, `docker-*`, `publish`) |
@@ -74,6 +75,7 @@ guidance.
 | ----------- | ---- |
 | Shipping/deploying the backend | [`docs/docker-compose.md`](docs/docker-compose.md) |
 | Building the Flutter client | [`docs/flutter-builds.md`](docs/flutter-builds.md) |
+| Deploying backend + Android on one VPS | [`docs/vps-deploy.md`](docs/vps-deploy.md) |
 | Changing `config.jsonc` | [`docs/configuration.md`](docs/configuration.md) and `backend/AGENTS.md` |
 | Touching backend code | `backend/AGENTS.md` |
 | Touching frontend code | `frontend/AGENTS.md` |

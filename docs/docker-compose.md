@@ -360,6 +360,8 @@ docker compose up -d
 
 ## Related pages
 
+- **[`vps-deploy.md`](vps-deploy.md)** — a concrete single-VPS walkthrough (containerized Caddy,
+  shared network, sideloaded Android client).
 - **[`configuration.md`](configuration.md)** — every `config.jsonc` field and the `${VAR}` rule.
 - **[`../backend/AGENTS.md`](../backend/AGENTS.md#container-image--ci)** — how the image is built
   and published.
