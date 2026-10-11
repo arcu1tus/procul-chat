@@ -1,13 +1,25 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show TextInputAction;
+import 'package:gpt_markdown/gpt_markdown.dart';
+import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'chat_controller.dart';
+import 'conversation_actions.dart';
 import 'models.dart';
 
-/// Single-screen chat UI: message buffer, input box, and a "new chat" action.
+/// The chat pane: header, message list, and composer.
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key, required this.controller});
+  const ChatScreen({
+    super.key,
+    required this.chat,
+    this.showMenuButton = false,
+    this.onMenu,
+  });
 
-  final ChatController controller;
+  final ChatController chat;
+
+  /// Whether to show a leading button that opens the conversation drawer.
+  final bool showMenuButton;
+  final VoidCallback? onMenu;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -17,157 +29,336 @@ class _ChatScreenState extends State<ChatScreen> {
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
 
+  bool _pinnedToBottom = true;
+  String? _lastError;
+
   @override
   void initState() {
     super.initState();
-    widget.controller.init();
-    widget.controller.addListener(_onChanged);
+    widget.chat.addListener(_onChanged);
+    _scrollController.addListener(_trackPin);
   }
 
   @override
   void dispose() {
-    widget.controller.removeListener(_onChanged);
+    widget.chat.removeListener(_onChanged);
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
-  void _onChanged() {
-    final error = widget.controller.error;
-    if (error != null && mounted) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(error)));
-    }
-    _scrollToBottom();
+  void _trackPin() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    _pinnedToBottom = position.maxScrollExtent - position.pixels < 140;
   }
 
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-    });
+  void _onChanged() {
+    final error = widget.chat.error;
+    if (error != null && error != _lastError && mounted) {
+      _lastError = error;
+      _showError(error);
+    }
+    if (error == null) {
+      _lastError = null;
+    }
+    if (_pinnedToBottom) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scrollController.hasClients) return;
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      });
+    }
+  }
+
+  void _showError(String error) {
+    showToast(
+      context: context,
+      location: ToastLocation.topRight,
+      builder: (context, overlay) => SurfaceCard(
+        child: Basic(
+          leading: const Icon(LucideIcons.info, size: 18),
+          title: const Text('Something went wrong').semiBold,
+          subtitle: Text(error),
+        ),
+      ),
+    );
   }
 
   void _submit() {
     final text = _inputController.text;
-    if (text.trim().isEmpty) return;
+    if (text.trim().isEmpty || widget.chat.isStreaming) return;
     _inputController.clear();
-    widget.controller.send(text);
+    _pinnedToBottom = true;
+    widget.chat.send(text);
+  }
+
+  void _useSuggestion(String suggestion) {
+    _inputController.text = suggestion;
+    _inputController.selection = TextSelection.collapsed(
+      offset: suggestion.length,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Procul Chat'),
-        actions: [
-          IconButton(
-            tooltip: 'New chat',
-            onPressed: widget.controller.isStreaming
-                ? null
-                : widget.controller.newChat,
-            icon: const Icon(Icons.add_comment_outlined),
-          ),
-        ],
-      ),
-      body: ListenableBuilder(
-        listenable: widget.controller,
-        builder: (context, _) {
-          final controller = widget.controller;
+    return ListenableBuilder(
+      listenable: widget.chat,
+      builder: (context, _) {
+        final chat = widget.chat;
+        final active = chat.activeConversation;
 
-          if (controller.isLoading) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          return Column(
-            children: [
-              Expanded(
-                child: controller.messages.isEmpty
-                    ? const _EmptyState()
-                    : ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.all(12),
-                        itemCount: controller.messages.length,
-                        itemBuilder: (context, index) =>
-                            _MessageBubble(message: controller.messages[index]),
+        return Scaffold(
+          loadingProgressIndeterminate: chat.isStreaming,
+          headers: [
+            AppBar(
+              title: Text(active?.title ?? 'New chat'),
+              subtitle: active == null
+                  ? const Text('Ask Procul anything').muted.small
+                  : null,
+              leading: widget.showMenuButton
+                  ? [
+                      IconButton.ghost(
+                        icon: const Icon(LucideIcons.panelLeft),
+                        onPressed: widget.onMenu,
                       ),
-              ),
-              if (controller.isStreaming)
-                const LinearProgressIndicator(minHeight: 2),
+                    ]
+                  : const [],
+              trailing: active == null
+                  ? const []
+                  : [
+                      IconButton.ghost(
+                        icon: const Icon(LucideIcons.squarePen),
+                        onPressed: () =>
+                            renameConversationDialog(context, chat, active),
+                      ),
+                      IconButton.ghost(
+                        icon: const Icon(LucideIcons.trash2),
+                        onPressed: () =>
+                            confirmDeleteConversation(context, chat, active),
+                      ),
+                    ],
+            ),
+            const Divider(),
+          ],
+          child: Column(
+            children: [
+              Expanded(child: _body(chat)),
               _Composer(
                 controller: _inputController,
-                enabled: !controller.isStreaming,
+                enabled: !chat.isStreaming,
                 onSubmit: _submit,
               ),
             ],
-          );
-        },
-      ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _body(ChatController chat) {
+    if (chat.isLoadingMessages) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (chat.messages.isEmpty) {
+      return _EmptyState(onSuggestion: _useSuggestion);
+    }
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+      itemCount: chat.messages.length,
+      itemBuilder: (context, index) {
+        final message = chat.messages[index];
+        return _MessageBubble(
+          message: message,
+          isStreaming: chat.isStreaming && index == chat.messages.length - 1,
+        );
+      },
     );
   }
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  const _EmptyState({required this.onSuggestion});
+
+  final ValueChanged<String> onSuggestion;
+
+  static const _suggestions = [
+    'Explain a tricky concept in simple terms',
+    'Help me debug this code',
+    'Brainstorm ideas with me',
+    'Plan my week',
+  ];
 
   @override
   Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+
     return Center(
-      child: Text(
-        'Send a message to start a conversation.',
-        style: Theme.of(context).textTheme.bodyLarge,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: colors.primary,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(
+                  LucideIcons.sparkles,
+                  color: colors.primaryForeground,
+                  size: 28,
+                ),
+              ),
+              const Gap(18),
+              const Text('How can I help?').semiBold.xLarge,
+              const Gap(6),
+              const Text(
+                'Start a new chat by sending a message below.',
+                textAlign: TextAlign.center,
+              ).muted,
+              const Gap(22),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: [
+                  for (final suggestion in _suggestions)
+                    OutlineButton(
+                      onPressed: () => onSuggestion(suggestion),
+                      child: Text(suggestion).small,
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, required this.isStreaming});
 
   final ChatMessage message;
+  final bool isStreaming;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final colors = ColorScheme.of(context);
     final isUser = message.isUser;
     final hasTools = message.toolCalls.isNotEmpty;
     // While tools run there is no reply text yet, so don't also show the "…"
     // placeholder — the tool rows already signal activity.
     final showText = message.text.isNotEmpty || !hasTools;
 
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 560),
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: isUser
-              ? theme.colorScheme.primaryContainer
-              : theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final call in message.toolCalls) _ToolCallRow(call: call),
-            if (hasTools && showText) const SizedBox(height: 6),
-            if (showText)
-              Text(
-                message.text.isEmpty ? '…' : message.text,
-                style: theme.textTheme.bodyMedium,
-              ),
+    final bubble = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        color: isUser ? colors.primary : colors.card,
+        borderRadius: BorderRadius.circular(14),
+        border: isUser ? null : Border.all(color: colors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final call in message.toolCalls) _ToolCallRow(call: call),
+          if (hasTools && showText) const Gap(8),
+          if (showText)
+            isUser
+                ? Text(
+                    message.text,
+                    style: TextStyle(color: colors.primaryForeground),
+                  )
+                : _AssistantText(text: message.text, isStreaming: isStreaming),
+        ],
+      ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: isUser
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+            _Avatar(
+              icon: LucideIcons.sparkles,
+              background: colors.primary,
+              foreground: colors.primaryForeground,
+            ),
+            const Gap(10),
           ],
-        ),
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 680),
+              child: bubble,
+            ),
+          ),
+          if (isUser) ...[
+            const Gap(10),
+            _Avatar(
+              icon: LucideIcons.user,
+              background: colors.secondary,
+              foreground: colors.secondaryForeground,
+            ),
+          ],
+        ],
       ),
     );
   }
 }
 
-/// A compact, muted line summarising one tool invocation: a status glyph plus the
-/// tool name. Hovering reveals the arguments and the result or error.
+class _AssistantText extends StatelessWidget {
+  const _AssistantText({required this.text, required this.isStreaming});
+
+  final String text;
+  final bool isStreaming;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+    if (text.isEmpty) {
+      return Text('…', style: TextStyle(color: colors.mutedForeground));
+    }
+    return GptMarkdown(text, isStreaming: isStreaming);
+  }
+}
+
+class _Avatar extends StatelessWidget {
+  const _Avatar({
+    required this.icon,
+    required this.background,
+    required this.foreground,
+  });
+
+  final IconData icon;
+  final Color background;
+  final Color foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 30,
+      height: 30,
+      decoration: BoxDecoration(color: background, shape: BoxShape.circle),
+      child: Icon(icon, size: 16, color: foreground),
+    );
+  }
+}
+
+/// A compact, muted line summarising one tool invocation. Hovering reveals the
+/// arguments and the result or error.
 class _ToolCallRow extends StatelessWidget {
   const _ToolCallRow({required this.call});
 
@@ -175,8 +366,7 @@ class _ToolCallRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = theme.colorScheme.onSurfaceVariant;
+    final colors = ColorScheme.of(context);
 
     final label = switch (call) {
       ToolCall(isPending: true) => 'Running ${call.name}…',
@@ -185,7 +375,7 @@ class _ToolCallRow extends StatelessWidget {
     };
 
     return Tooltip(
-      message: _details,
+      tooltip: (context) => TooltipContainer(child: Text(_details)),
       child: Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: Row(
@@ -196,21 +386,22 @@ class _ToolCallRow extends StatelessWidget {
               SizedBox(
                 width: 13,
                 height: 13,
-                child: CircularProgressIndicator(strokeWidth: 2, color: color),
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: colors.mutedForeground,
+                ),
               )
             else
               Icon(
-                call.hasFailed
-                    ? Icons.error_outline
-                    : Icons.check_circle_outline,
+                call.hasFailed ? LucideIcons.info : LucideIcons.check,
                 size: 14,
-                color: color,
+                color: colors.mutedForeground,
               ),
-            const SizedBox(width: 6),
+            const Gap(6),
             Flexible(
               child: Text(
                 label,
-                style: theme.textTheme.labelSmall?.copyWith(color: color),
+                style: TextStyle(fontSize: 12, color: colors.mutedForeground),
               ),
             ),
           ],
@@ -250,29 +441,25 @@ class _Composer extends StatelessWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             Expanded(
               child: TextField(
                 controller: controller,
-                enabled: enabled,
                 minLines: 1,
-                maxLines: 5,
+                maxLines: 6,
                 textInputAction: TextInputAction.send,
+                placeholder: const Text('Message Procul…'),
                 onSubmitted: (_) => onSubmit(),
-                decoration: const InputDecoration(
-                  hintText: 'Type a message…',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton.filled(
+            const Gap(8),
+            PrimaryButton(
+              density: ButtonDensity.icon,
               onPressed: enabled ? onSubmit : null,
-              icon: const Icon(Icons.send),
+              child: const Icon(LucideIcons.sendHorizontal),
             ),
           ],
         ),

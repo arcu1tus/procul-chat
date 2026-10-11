@@ -31,6 +31,54 @@ class ChatApi {
   Uri _uri(String path, [Map<String, String>? query]) =>
       Uri.parse('$baseUrl$path').replace(queryParameters: query);
 
+  /// `GET /v1/conversations`
+  ///
+  /// Returns every conversation, most recently active first (as ordered by the
+  /// backend).
+  Future<List<Conversation>> listConversations() async {
+    final response = await _client.get(_uri('/v1/conversations'));
+
+    if (response.statusCode != 200) {
+      throw ChatApiException(response.body, statusCode: response.statusCode);
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    return (body['conversations'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(Conversation.fromJson)
+        .toList(growable: false);
+  }
+
+  /// `PATCH /v1/conversations/{id}` — renames a conversation, returning the
+  /// updated record.
+  Future<Conversation> renameConversation(String id, String title) async {
+    final response = await _client.patch(
+      _uri('/v1/conversations/$id'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'title': title}),
+    );
+
+    if (response.statusCode != 200) {
+      throw ChatApiException(response.body, statusCode: response.statusCode);
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    return Conversation.fromJson(
+      (body['conversation'] as Map).cast<String, dynamic>(),
+    );
+  }
+
+  /// `DELETE /v1/conversations/{id}` — removes a conversation and its messages.
+  ///
+  /// A 404 is treated as success: the goal state (gone) is already achieved.
+  Future<void> deleteConversation(String id) async {
+    final response = await _client.delete(_uri('/v1/conversations/$id'));
+
+    if (response.statusCode != 204 && response.statusCode != 404) {
+      throw ChatApiException(response.body, statusCode: response.statusCode);
+    }
+  }
+
   /// `GET /v1/conversations/{id}/messages`
   ///
   /// The backend returns messages newest-first (keyset paginated). This returns
@@ -146,6 +194,10 @@ class ChatApi {
       ),
       'acknowledge' => const AcknowledgeEvent(),
       'token' => TokenEvent('${value['content'] ?? ''}'),
+      'title' => TitleEvent(
+        conversationId: '${value['conversationId'] ?? ''}',
+        title: '${value['title'] ?? ''}',
+      ),
       'toolCall' => ToolCallEvent(
         callId: '${value['callId'] ?? ''}',
         name: '${value['name'] ?? ''}',

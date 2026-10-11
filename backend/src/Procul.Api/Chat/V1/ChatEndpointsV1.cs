@@ -10,11 +10,28 @@ internal static class ChatEndpointsV1
 {
     public static RouteGroupBuilder MapChatV1(this RouteGroupBuilder group)
     {
+        group.MapGet("/", GetConversationsAsync);
         group.MapPost("/", CreateConversationAsync);
         group.MapGet("/{conversationId:guid}", GetConversationAsync);
+        group.MapPatch("/{conversationId:guid}", RenameConversationAsync);
+        group.MapDelete("/{conversationId:guid}", DeleteConversationAsync);
         group.MapGet("/{conversationId:guid}/messages", GetConversationMessagesAsync);
         group.MapPost("/{conversationId:guid}/messages", SendMessageAsync);
         return group;
+    }
+
+    private static async Task<Ok<GetConversationsResponseV1>> GetConversationsAsync(
+        ProculDbContext db,
+        CancellationToken ct
+    )
+    {
+        var conversations = await db.Conversations
+            .OrderByDescending(c => c.UpdatedAt)
+            .ThenByDescending(c => c.Id)
+            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt))
+            .ToListAsync(ct);
+
+        return TypedResults.Ok(new GetConversationsResponseV1(conversations));
     }
 
     private static async Task<ServerSentEventsResult<ChatStreamEventV1>> CreateConversationAsync(
@@ -24,15 +41,16 @@ internal static class ChatEndpointsV1
         CancellationToken ct
     )
     {
-        var conversation = new Conversation();
+        var conversation = new Conversation { Title = ChatStreamServiceV1.FallbackTitle(body.InitialMessage) };
         db.Conversations.Add(conversation);
         await db.SaveChangesAsync(ct);
 
-        return TypedResults.ServerSentEvents(StreamAsync(conversation, body.InitialMessage, chat, ct));
+        return TypedResults.ServerSentEvents(StreamAsync(conversation, body.InitialMessage, db, chat, ct));
 
         static async IAsyncEnumerable<SseItem<ChatStreamEventV1>> StreamAsync(
             Conversation conversation,
             string initialMessage,
+            ProculDbContext db,
             ChatStreamServiceV1 chat,
             [EnumeratorCancellation] CancellationToken ct
         )
@@ -40,15 +58,28 @@ internal static class ChatEndpointsV1
             yield return new SseItem<ChatStreamEventV1>(
                 new ChatStreamEventV1.Created(
                     new ChatStreamCreatedV1(
-                        new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt)
+                        new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt)
                     )
                 )
             );
+
+            // Start the title model call now so it runs concurrently with the reply. It only
+            // produces a string; the DB write happens below, after the stream, so a single
+            // DbContext is never used from two places at once.
+            var titleTask = chat.GenerateTitleAsync(initialMessage, ct);
 
             await foreach (var streamEvent in chat.StreamAssistantReplyAsync(conversation.Id, initialMessage, ct))
             {
                 yield return new SseItem<ChatStreamEventV1>(streamEvent);
             }
+
+            var title = await titleTask ?? ChatStreamServiceV1.FallbackTitle(initialMessage);
+            conversation.Title = title;
+            await db.SaveChangesAsync(ct);
+
+            yield return new SseItem<ChatStreamEventV1>(
+                new ChatStreamEventV1.Title(new ChatStreamTitleV1(conversation.Id, title))
+            );
         }
     }
 
@@ -60,7 +91,7 @@ internal static class ChatEndpointsV1
     {
         var conversation = await db.Conversations
             .Where(c => c.Id == conversationId)
-            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt))
+            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt))
             .FirstOrDefaultAsync(ct);
 
         if (conversation is null)
@@ -69,6 +100,55 @@ internal static class ChatEndpointsV1
         }
 
         return TypedResults.Ok(new GetConversationResponseV1(conversation));
+    }
+
+    private static async Task<Results<Ok<GetConversationResponseV1>, NotFound, ProblemHttpResult>> RenameConversationAsync(
+        Guid conversationId,
+        ProculDbContext db,
+        RenameConversationRequestV1 body,
+        CancellationToken ct
+    )
+    {
+        var title = (body.Title ?? string.Empty).Trim();
+        if (title.Length is 0 or > ChatStreamServiceV1.MaxTitleLength)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                detail: $"'title' must be between 1 and {ChatStreamServiceV1.MaxTitleLength} characters"
+            );
+        }
+
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        if (conversation is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        conversation.Title = title;
+        await db.SaveChangesAsync(ct);
+
+        return TypedResults.Ok(new GetConversationResponseV1(
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt)
+        ));
+    }
+
+    private static async Task<Results<NoContent, NotFound>> DeleteConversationAsync(
+        Guid conversationId,
+        ProculDbContext db,
+        CancellationToken ct
+    )
+    {
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        if (conversation is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        // Messages are removed by the cascade configured on the foreign key.
+        db.Conversations.Remove(conversation);
+        await db.SaveChangesAsync(ct);
+
+        return TypedResults.NoContent();
     }
 
     private static async Task<Results<Ok<GetConversationMessagesResponsev1>, ProblemHttpResult>> GetConversationMessagesAsync(

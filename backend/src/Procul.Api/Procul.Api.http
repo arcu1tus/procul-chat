@@ -1,8 +1,16 @@
 @backend_HostAddress = http://localhost:5010
 
+# @name listConversations
+# Lists all conversations, most recently active first.
+GET {{backend_HostAddress}}/v1/conversations
+Accept: application/json
+
+###
+
 # @name createConversation
 # Creates a conversation and streams the assistant's reply as SSE.
-# The first event is `created` and carries the new conversation's id.
+# The first event is `created` and carries the new conversation's id. A `title`
+# event with the model-generated title arrives after the reply.
 POST {{backend_HostAddress}}/v1/conversations/
 Content-Type: application/json
 Accept: text/event-stream
@@ -17,6 +25,23 @@ Accept: text/event-stream
 @conversationId = 00000000-0000-0000-0000-000000000000
 
 GET {{backend_HostAddress}}/v1/conversations/{{conversationId}}
+Accept: application/json
+
+###
+
+# @name renameConversation
+PATCH {{backend_HostAddress}}/v1/conversations/{{conversationId}}
+Content-Type: application/json
+Accept: application/json
+
+{
+    "title": "France capitals"
+}
+
+###
+
+# @name deleteConversation
+DELETE {{backend_HostAddress}}/v1/conversations/{{conversationId}}
 Accept: application/json
 
 ###

@@ -82,10 +82,22 @@ Base: `/v{version}/conversations` (e.g. `/v1/conversations`).
 
 | Method | Route | Result |
 | --- | --- | --- |
-| POST | `/` | **SSE** stream. Creates a conversation, streams the assistant reply. |
+| GET | `/` | JSON `GetConversationsResponseV1`. All conversations, newest activity first. |
+| POST | `/` | **SSE** stream. Creates a conversation, streams the assistant reply, then a `title` event. |
 | GET | `/{conversationId:guid}` | JSON `ConversationV1` or 404. |
+| PATCH | `/{conversationId:guid}` | Rename. Body `{"title":"..."}` (1–60 chars). `ConversationV1`, 400, or 404. |
+| DELETE | `/{conversationId:guid}` | Deletes the conversation and its messages (cascade). 204 or 404. |
 | GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). |
 | POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. 404 if missing. |
+
+**Conversation titles.** A conversation starts with a placeholder title (the first line of the
+initial message, truncated). On `POST /` the backend fires a *second*, tiny model call
+(`ChatStreamServiceV1.GenerateTitleAsync`, capped at `TitleOptions` = 24 output tokens, no
+tools, 8s timeout) **concurrently** with the reply, then emits a `title` event and persists
+the result. The title call only produces a string — it never touches the `DbContext`, so it
+can run alongside the reply stream without sharing a context; the write happens after the
+stream completes. If it fails/times out, `FallbackTitle` is used. Rename/delete do not change
+`UpdatedAt`; only new messages do.
 
 ## Conventions & patterns
 
