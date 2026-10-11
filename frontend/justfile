@@ -6,7 +6,7 @@
 #
 # Platform prerequisites, output paths, and gotchas: ../docs/flutter-builds.md
 
-api := env_var_or_default('PROCUL_API_BASE', 'http://localhost:5010')
+api := env_var_or_default('PROCUL_API_BASE', 'https://procul-api.natix.dev')
 
 # --- Develop ---------------------------------------------------------------
 
