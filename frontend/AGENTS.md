@@ -6,17 +6,20 @@
 
 ## What this is
 
-A deliberately minimal Flutter chat client ("Procul") for the Procul backend. It is a
-proof-of-concept: one screen, one conversation, in-memory message buffer, no routing, no
-state-management package. It talks to the backend's versioned `/v1/conversations` API,
-creating a conversation on the first message and streaming assistant replies over SSE.
+The Flutter chat client ("Procul") for the Procul backend. It supports **multiple
+conversations** (list, switch, rename, delete), streams assistant replies over SSE, shows
+tool activity, renders assistant Markdown, and has a persisted **settings** dialog (dark
+mode, default on). It talks to the backend's versioned `/v1/conversations` API.
 
-- **Flutter** (Material 3), Dart `^3.13.5`.
+- **Flutter** (Dart `^3.13.5`).
+- **UI:** [`shadcn_flutter`](https://pub.dev/packages/shadcn_flutter) (`^0.0.55`) — the app
+  is built on shadcn components and the **New York** theme, not Material.
+  `shadcn_flutter_material` provides a Material interop layer (see gotchas).
+- **Markdown:** `gpt_markdown` (`^1.3.4`) renders assistant replies (code, lists, bold).
 - **HTTP:** `package:http` (manual SSE parsing; no SSE package).
-- **Persistence:** `package:shared_preferences` — only to remember the active
-  conversation id across launches.
-- **State:** a single `ChangeNotifier` (`ChatController`) surfaced with
-  `ListenableBuilder`. No provider/riverpod/bloc.
+- **Persistence:** `package:shared_preferences` — the active conversation id and settings.
+- **State:** plain `ChangeNotifier`s surfaced with `ListenableBuilder`. No
+  provider/riverpod/bloc.
 
 The backend lives in `../backend` and its contract is documented in `../backend/AGENTS.md`.
 
@@ -25,15 +28,21 @@ The backend lives in `../backend` and its contract is documented in `../backend/
 ```
 frontend/
   lib/
-    main.dart                     # entrypoint, MaterialApp, base-URL const
+    main.dart                     # entrypoint, MaterialShadcnApp, base-URL const
     src/
       models.dart                 # Conversation, ChatMessage (+ToolCall), ChatStreamEvent hierarchy
-      chat_api.dart               # ChatApi: REST + SSE client over package:http
-      conversation_store.dart     # ConversationStore: shared_preferences wrapper
-      chat_controller.dart        # ChatController: ChangeNotifier, buffer + turn logic
-      chat_screen.dart            # ChatScreen: message list, composer, "new chat"
-  test/
-    chat_tool_events_test.dart    # controller tool-call handling (MockClient SSE)
+      chat_api.dart               # ChatApi: REST (list/rename/delete) + SSE client
+      conversation_store.dart     # ConversationStore: active conversation id (shared_preferences)
+      settings_store.dart         # SettingsStore: persisted preferences (shared_preferences)
+      settings_controller.dart    # SettingsController: theme mode (dark default)
+      chat_controller.dart        # ChatController: conversation list + active buffer + turn logic
+      app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData)
+      home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow)
+      conversation_sidebar.dart   # conversation list, new chat, settings footer
+      conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
+      settings_dialog.dart        # settings dialog (dark mode switch)
+      chat_screen.dart            # chat pane: header, message list, composer
+  test/                           # controller, API, settings, and widget tests
   linux/ android/ ios/ ...        # platform shells (generated)
   pubspec.yaml
 ```
@@ -45,8 +54,9 @@ The backend must already be running (dev: `http://localhost:5010`).
 ```bash
 cd frontend
 flutter pub get
-flutter analyze
-flutter test                       # unit tests (no backend needed)
+flutter analyze                    # must stay clean
+flutter test                       # unit + widget tests (no backend needed)
+dart format lib test               # before committing
 flutter run -d linux              # native Linux desktop
 flutter run -d chrome             # web (needs CORS on the backend — see gotchas)
 flutter build linux --debug
@@ -64,31 +74,37 @@ Base: `{PROCUL_API_BASE}/v1/conversations`.
 
 | Action | Request | Response |
 | --- | --- | --- |
+| List chats | `GET /` | JSON `{"conversations":[...]}`, newest activity first |
 | Start chat | `POST /` body `{"initialMessage":"..."}` | SSE |
 | Send message | `POST /{id}/messages` body `{"text":"..."}` | SSE |
 | History | `GET /{id}/messages?limit=1..100&afterMessageId=<guid>` | JSON |
+| Rename | `PATCH /{id}` body `{"title":"..."}` | JSON `{"conversation":{...}}` |
+| Delete | `DELETE /{id}` | `204` (404 treated as success) |
 
 **SSE wire format.** There is **no `event:` field**; each event is a `data: <json>` line
 followed by a blank line, and the kind is a `type` discriminator *inside* the JSON under
 `value`:
 
 ```
-data: {"value":{"conversation":{"id":"…","title":"…","createdAt":"…"},"type":"created"}}
+data: {"value":{"conversation":{"id":"…","title":"…","createdAt":"…","updatedAt":"…"},"type":"created"}}
 data: {"value":{"message":"received","type":"acknowledge"}}
 data: {"value":{"callId":"…","name":"get_current_time","arguments":"{\"utcOffsetMinutes\":120}","type":"toolCall"}}
 data: {"value":{"callId":"…","result":"2026-10-11T15:38:44+02:00","error":null,"type":"toolResult"}}
 data: {"value":{"content":"Hello","type":"token"}}
 data: {"value":{"error":"…","type":"error"}}
 data: {"value":{"type":"done"}}
+data: {"value":{"conversationId":"…","title":"France's capital","type":"title"}}
 ```
 
 `created` is only emitted by `POST /`; `POST /{id}/messages` emits
-`acknowledge` → (`toolCall` → `toolResult`)* → `token`* → (`error` | `done`). Tool events
+`acknowledge` → (`toolCall` → `toolResult`)* → `token`* → (`error` | `done`). `title` is only
+emitted by `POST /`, **after** `done` — the model-generated title arrives a moment after the
+reply, so the client must treat `done` (not stream close) as the end of a turn. Tool events
 only appear when the model actually calls a tool, and correlate via `callId` (`arguments` is a
 JSON object string; `result` is the tool output and `error` its failure message). Parse
 accordingly in `ChatApi._decodeEvent`.
 
-**JSON is camelCase** (`initialMessage`, `messageRole`, `createdAt`).
+**JSON is camelCase** (`initialMessage`, `messageRole`, `createdAt`, `updatedAt`).
 
 **`messageRole` is an integer**, not a string: `0=System, 1=User, 2=Assistant, 3=Tool`
 (the C# enum ordinal). Map it in `models.dart` via `messageRoleFromValue`; unknown values
@@ -100,26 +116,47 @@ reaches the buffer.
 
 ## Conventions & patterns
 
-- **In-memory buffer, fetch once.** `ChatController.init()` loads the persisted
-  conversation id and does a single `GET .../messages` into `messages`. Assistant replies
-  are then **appended from the SSE stream** — do **not** re-fetch history after a turn.
-  If you add pagination, load older pages into the front of the buffer rather than
-  replacing it.
+- **One `ChatController` owns both the list and the active conversation.** It holds
+  `conversations`, `activeConversationId`, and `messages`. `init()` loads the list and reopens
+  the persisted id; `selectConversation` fetches a history once; replies are appended from the
+  SSE stream (never re-fetched). List mutations (`renameConversation`, `deleteConversation`)
+  update the local list optimistically/after the call so the sidebar stays in sync.
+- **`done` ends the turn.** `ChatController.send` sets `isStreaming = false` on `DoneEvent`
+  (not in `finally`), so the composer re-enables while the trailing `title` event is still in
+  flight. The `title` event then updates the conversation's title in the list.
 - **`ChatMessage.text` is mutable** on purpose: an empty assistant bubble is inserted up
   front and filled in token-by-token as `TokenEvent`s arrive.
 - **Tool activity lives on the assistant message.** `ToolCallEvent`/`ToolResultEvent` are
   folded into the streaming assistant `ChatMessage.toolCalls` (matched by `callId`), not added
-  as separate buffer entries, so the call/result rows render above the reply text in order.
-  Tool calls are not persisted, so they vanish when history is reloaded — that's expected.
-- **Errors are user-facing strings** on `ChatController.error`; the screen shows them via a
-  `SnackBar`. Streaming failures still leave the partial reply in the bubble.
-- **One conversation at a time.** `newChat()` clears the buffer and the stored id so the
-  next send hits `POST /` again. There is intentionally no conversation list.
-- **Dependencies stay minimal.** Reach for a package only when it removes real complexity;
-  this is a PoC, not the product.
+  as separate buffer entries. Tool calls are not persisted, so they vanish on reload.
+- **Errors are user-facing strings** on `ChatController.error`; `ChatScreen` shows them as a
+  shadcn toast. Streaming failures still leave the partial reply in the bubble.
+- **Settings are a `ChangeNotifier` + `shared_preferences`.** `SettingsController.themeMode`
+  defaults to `ThemeMode.dark`. `main.dart` rebuilds `MaterialShadcnApp` from it.
+- **All UI is shadcn_flutter.** Use shadcn components (`Scaffold` + `headers: [AppBar(...)]`,
+  `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `TextField`, `Switch`,
+  `AlertDialog` via `showOverlay`, `DropdownMenu` via `showDropdown`, `showToast`,
+  `Clickable`) and `LucideIcons`. There is no Material `ScaffoldMessenger`/`SnackBar` usage.
+- **Text styles are extension getters**, e.g. `Text('x').muted.small`, `.semiBold.large`.
 
 ## Gotchas (learned the hard way)
 
+- **`gpt_markdown` imports `package:flutter/material.dart`, so it needs Material ancestors.**
+  The app therefore uses `MaterialShadcnApp` (from `shadcn_flutter_material`) instead of
+  `ShadcnApp`; it installs the Material `Theme`/`Material`/`ScaffoldMessenger` layer while the
+  UI still uses shadcn components. Don't switch to plain `ShadcnApp` without wrapping the
+  markdown subtree in a `MaterialLayer`.
+- **shadcn `DrawerConfiguration` needs a `DrawerOverlay` ancestor** (`openRawDrawer` asserts
+  `parentLayer != null`), which the default app does not provide. The narrow-screen sidebar is
+  therefore a hand-rolled slide-in panel in `home_shell.dart`, not a shadcn drawer.
+- **`ThemeMode` and `ColorScheme` are shadcn's**, re-exported by
+  `package:shadcn_flutter/shadcn_flutter.dart` (not Material's). `ColorSchemes.darkZinc` etc.
+  are **consts**, not functions (`ColorSchemes.darkZinc`, not `darkZinc()`).
+- **`AppBar.leading`/`trailing` are non-nullable `List<Widget>`** — pass `const []`, not null.
+- **`MenuButton.onPressed` is a `ContextedCallback`** (`void Function(BuildContext)`), not a
+  `VoidCallback`.
+- **`showOverlay(...)` returns an `OverlayCompleter`; use `.future`** to await the dialog's
+  result. Pop with `Navigator.pop(context, value)`.
 - **Use `http.Client.send()` with a `http.Request`, not `client.post()`.** `post()` buffers
   the whole body into a `Response`; SSE needs the `StreamedResponse` from `send()`.
 - **`Client.send()` only streams on real IO clients.** Fine on desktop/mobile; on web the
@@ -142,7 +179,6 @@ reaches the buffer.
 - **Android blocks cleartext HTTP by default (API 28+).** `android/app/src/debug/AndroidManifest.xml`
   sets `android:usesCleartextTraffic="true"` so debug builds can talk to the plain-HTTP dev
   backend. Release builds keep the secure default. If you switch to HTTPS, remove it.
-- **`flutter analyze` must stay clean.** `dart format lib` before committing.
-- **The persisted conversation id can dangle.** If the backend's DB was reset, `init()`'s
-  `GET` 404s; the controller catches it, clears the stored id, and starts fresh instead of
-  crashing.
+- **`flutter analyze` must stay clean.** `dart format lib test` before committing.
+- **The persisted conversation id can dangle.** If the backend's DB was reset, `init()`'s list
+  won't contain it; the controller clears the stored id and starts fresh instead of crashing.

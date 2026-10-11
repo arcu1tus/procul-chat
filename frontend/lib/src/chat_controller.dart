@@ -4,10 +4,12 @@ import 'chat_api.dart';
 import 'conversation_store.dart';
 import 'models.dart';
 
-/// Holds the chat state in memory and drives the SSE turn lifecycle.
+/// Holds the conversation list and the active conversation's messages, and
+/// drives the SSE turn lifecycle.
 ///
-/// History is fetched **once** on [init] into an in-memory buffer; subsequent
-/// assistant replies are appended from the stream rather than re-fetched.
+/// The conversation list is fetched from the backend; the active conversation's
+/// history is fetched **once** when it is opened. Assistant replies are then
+/// appended from the stream rather than re-fetched.
 class ChatController extends ChangeNotifier {
   ChatController({required this.api, ConversationStore? store})
     : _store = store ?? ConversationStore();
@@ -15,12 +17,19 @@ class ChatController extends ChangeNotifier {
   final ChatApi api;
   final ConversationStore _store;
 
+  /// All known conversations, most recently active first.
+  final List<Conversation> conversations = [];
+
+  /// Messages of the active conversation, oldest first.
   final List<ChatMessage> messages = [];
 
   String? _conversationId;
 
-  /// True while the initial history fetch is running.
-  bool isLoading = false;
+  /// True while the conversation list is being fetched.
+  bool isLoadingConversations = false;
+
+  /// True while the active conversation's history is being fetched.
+  bool isLoadingMessages = false;
 
   /// True while an assistant reply is being streamed.
   bool isStreaming = false;
@@ -28,38 +37,80 @@ class ChatController extends ChangeNotifier {
   /// The most recent user-facing error, if any.
   String? error;
 
+  String? get activeConversationId => _conversationId;
+
   /// Whether a conversation is already established on the backend.
   bool get hasConversation => _conversationId != null;
 
-  /// Loads the persisted conversation id (if any) and fills the buffer with its
-  /// message history. A missing/removed conversation is treated as "start fresh".
+  /// The active conversation's record from [conversations], if any.
+  Conversation? get activeConversation {
+    final id = _conversationId;
+    if (id == null) return null;
+    for (final conversation in conversations) {
+      if (conversation.id == id) return conversation;
+    }
+    return null;
+  }
+
+  /// Loads the conversation list and reopens the previously active conversation.
   Future<void> init() async {
-    isLoading = true;
+    isLoadingConversations = true;
     notifyListeners();
 
     try {
       final storedId = await _store.read();
-      if (storedId != null) {
-        final history = await api.fetchMessages(storedId);
-        _conversationId = storedId;
-        messages
-          ..clear()
-          ..addAll(history);
+      final list = await api.listConversations();
+      conversations
+        ..clear()
+        ..addAll(list);
+
+      if (storedId != null && conversations.any((c) => c.id == storedId)) {
+        await _openConversation(storedId);
+      } else {
+        _conversationId = null;
+        messages.clear();
+        await _store.clear();
       }
     } catch (e) {
-      // Most likely the stored conversation no longer exists on the backend.
-      _conversationId = null;
-      messages.clear();
-      await _store.clear();
-      error = 'Could not load the previous conversation: $e';
+      error = 'Could not load your chats: $e';
     } finally {
-      isLoading = false;
+      isLoadingConversations = false;
       notifyListeners();
     }
   }
 
+  /// Re-fetches the conversation list (used after a failed load, for example).
+  Future<void> refreshConversations() async {
+    try {
+      final list = await api.listConversations();
+      conversations
+        ..clear()
+        ..addAll(list);
+      notifyListeners();
+    } catch (e) {
+      error = 'Could not refresh your chats: $e';
+      notifyListeners();
+    }
+  }
+
+  /// Opens [id], loading its history into the buffer.
+  Future<void> selectConversation(String id) async {
+    if (id == _conversationId && messages.isNotEmpty) return;
+    await _openConversation(id);
+  }
+
+  /// Starts a fresh, unsaved conversation. The backend record is created on the
+  /// first [send].
+  Future<void> newChat() async {
+    _conversationId = null;
+    messages.clear();
+    error = null;
+    await _store.clear();
+    notifyListeners();
+  }
+
   /// Sends [text]. Creates a conversation on the first message, otherwise
-  /// appends to the existing one. The reply is streamed into the buffer.
+  /// appends to the active one. The reply is streamed into the buffer.
   Future<void> send(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || isStreaming) return;
@@ -68,6 +119,7 @@ class ChatController extends ChangeNotifier {
     messages.add(ChatMessage(text: trimmed, role: MessageRole.user));
     final assistant = ChatMessage(text: '', role: MessageRole.assistant);
     messages.add(assistant);
+    _promoteActive();
     isStreaming = true;
     notifyListeners();
 
@@ -81,11 +133,14 @@ class ChatController extends ChangeNotifier {
         switch (event) {
           case CreatedEvent(:final conversation):
             _conversationId = conversation.id;
+            _upsertConversation(conversation);
             await _store.write(conversation.id);
           case TokenEvent(:final content):
             reply.write(content);
             assistant.text = reply.toString();
             notifyListeners();
+          case TitleEvent(:final conversationId, :final title):
+            _applyTitle(conversationId, title);
           case ToolCallEvent(:final callId, :final name, :final arguments):
             assistant.toolCalls.add(
               ToolCall(id: callId, name: name, arguments: arguments),
@@ -102,8 +157,13 @@ class ChatController extends ChangeNotifier {
             notifyListeners();
           case ErrorEvent(:final error):
             this.error = error;
-          case AcknowledgeEvent():
           case DoneEvent():
+            // The reply is complete. Stop treating the turn as streaming now, so
+            // the composer is usable even if the `title` event is still in
+            // flight (it is emitted after the reply).
+            isStreaming = false;
+            notifyListeners();
+          case AcknowledgeEvent():
         }
       }
     } catch (e) {
@@ -117,13 +177,99 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  /// Clears the buffer and forgets the conversation so the next send starts a
-  /// brand-new conversation.
-  Future<void> newChat() async {
-    _conversationId = null;
+  /// Renames [id]. Applies optimistically and rolls back on failure.
+  Future<void> renameConversation(String id, String title) async {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty) return;
+
+    final index = conversations.indexWhere((c) => c.id == id);
+    final previous = index == -1 ? null : conversations[index];
+    if (index != -1) {
+      conversations[index] = conversations[index].copyWith(title: trimmed);
+      notifyListeners();
+    }
+
+    try {
+      final updated = await api.renameConversation(id, trimmed);
+      _replaceConversation(updated);
+    } catch (e) {
+      if (previous != null) {
+        _replaceConversation(previous);
+      }
+      error = 'Could not rename the chat: $e';
+      notifyListeners();
+    }
+  }
+
+  /// Deletes [id] and its messages. If it was active, the view is cleared.
+  Future<void> deleteConversation(String id) async {
+    try {
+      await api.deleteConversation(id);
+      conversations.removeWhere((c) => c.id == id);
+      if (_conversationId == id) {
+        _conversationId = null;
+        messages.clear();
+        await _store.clear();
+      }
+      notifyListeners();
+    } catch (e) {
+      error = 'Could not delete the chat: $e';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _openConversation(String id) async {
+    _conversationId = id;
+    isLoadingMessages = true;
     messages.clear();
     error = null;
-    await _store.clear();
+    notifyListeners();
+
+    try {
+      final history = await api.fetchMessages(id);
+      messages
+        ..clear()
+        ..addAll(history);
+      await _store.write(id);
+    } catch (e) {
+      error = 'Could not load the chat: $e';
+    } finally {
+      isLoadingMessages = false;
+      notifyListeners();
+    }
+  }
+
+  /// Moves the active conversation to the top of the list after new activity.
+  void _promoteActive() {
+    final id = _conversationId;
+    if (id == null) return;
+    final index = conversations.indexWhere((c) => c.id == id);
+    if (index == -1) return;
+    final conversation = conversations
+        .removeAt(index)
+        .copyWith(updatedAt: DateTime.now());
+    conversations.insert(0, conversation);
+    notifyListeners();
+  }
+
+  void _upsertConversation(Conversation conversation) {
+    conversations.removeWhere((c) => c.id == conversation.id);
+    conversations.insert(0, conversation);
+    notifyListeners();
+  }
+
+  void _replaceConversation(Conversation conversation) {
+    final index = conversations.indexWhere((c) => c.id == conversation.id);
+    if (index == -1) return;
+    conversations[index] = conversation;
+    notifyListeners();
+  }
+
+  void _applyTitle(String conversationId, String title) {
+    if (title.trim().isEmpty) return;
+    final index = conversations.indexWhere((c) => c.id == conversationId);
+    if (index == -1) return;
+    conversations[index] = conversations[index].copyWith(title: title.trim());
     notifyListeners();
   }
 

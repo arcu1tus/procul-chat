@@ -22,19 +22,35 @@ MessageRole messageRoleFromValue(Object? value) {
   };
 }
 
-/// A conversation as returned by `POST /v1/conversations` (the `created` event)
-/// and `GET /v1/conversations/{id}`.
+/// A conversation as returned by the list, `created` event, and `GET /{id}`.
 class Conversation {
-  const Conversation({required this.id, required this.title, this.createdAt});
+  const Conversation({
+    required this.id,
+    required this.title,
+    this.createdAt,
+    this.updatedAt,
+  });
 
   final String id;
   final String title;
   final DateTime? createdAt;
 
+  /// When a message was last added. Drives list ordering; also updated locally
+  /// when the user sends a message so the sidebar re-sorts without a refetch.
+  final DateTime? updatedAt;
+
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
     id: json['id'] as String,
     title: (json['title'] as String?) ?? 'Untitled',
     createdAt: DateTime.tryParse('${json['createdAt']}'),
+    updatedAt: DateTime.tryParse('${json['updatedAt']}'),
+  );
+
+  Conversation copyWith({String? title, DateTime? updatedAt}) => Conversation(
+    id: id,
+    title: title ?? this.title,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
   );
 }
 
@@ -115,6 +131,17 @@ class AcknowledgeEvent extends ChatStreamEvent {
 class TokenEvent extends ChatStreamEvent {
   const TokenEvent(this.content);
   final String content;
+}
+
+/// `type: "title"` — the model-generated title for a newly created conversation.
+///
+/// Only emitted by `POST /v1/conversations`, and only after the reply finished.
+/// Arriving after [DoneEvent] is expected: it must not keep the composer busy.
+class TitleEvent extends ChatStreamEvent {
+  const TitleEvent({required this.conversationId, required this.title});
+
+  final String conversationId;
+  final String title;
 }
 
 /// `type: "toolCall"` — the model asked to run a tool.
