@@ -1,5 +1,3 @@
-using Microsoft.Extensions.AI;
-
 namespace Procul.Api.Chat;
 
 public class ConversationMessage

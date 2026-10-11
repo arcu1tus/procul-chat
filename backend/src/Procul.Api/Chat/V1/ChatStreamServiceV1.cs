@@ -79,6 +79,36 @@ internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatCl
         "as an ai",
     ];
 
+    /// <summary>
+    /// Streams a brand-new conversation: emits <c>created</c>, streams the assistant's first
+    /// reply, then emits the model-generated <c>title</c>. The title call runs concurrently
+    /// with the reply, but its DB write happens after the stream, so the injected
+    /// <see cref="ProculDbContext"/> is never used from two places at once.
+    /// </summary>
+    public async IAsyncEnumerable<ChatStreamEventV1> StreamNewConversationAsync(
+        Conversation conversation,
+        string initialMessage,
+        [EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        yield return new ChatStreamEventV1.Created(new ChatStreamCreatedV1(
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt)
+        ));
+
+        var titleTask = GenerateTitleAsync(initialMessage, ct);
+
+        await foreach (var streamEvent in StreamAssistantReplyAsync(conversation.Id, initialMessage, ct))
+        {
+            yield return streamEvent;
+        }
+
+        var title = await titleTask ?? FallbackTitle(initialMessage);
+        conversation.Title = title;
+        await db.SaveChangesAsync(ct);
+
+        yield return new ChatStreamEventV1.Title(new ChatStreamTitleV1(conversation.Id, title));
+    }
+
     public async IAsyncEnumerable<ChatStreamEventV1> StreamAssistantReplyAsync(
         Guid conversationId,
         string userText,

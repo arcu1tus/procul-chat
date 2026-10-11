@@ -1,5 +1,4 @@
 using System.Net.ServerSentEvents;
-using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using Procul.Api.Infrastructure;
@@ -45,42 +44,9 @@ internal static class ChatEndpointsV1
         db.Conversations.Add(conversation);
         await db.SaveChangesAsync(ct);
 
-        return TypedResults.ServerSentEvents(StreamAsync(conversation, body.InitialMessage, db, chat, ct));
-
-        static async IAsyncEnumerable<SseItem<ChatStreamEventV1>> StreamAsync(
-            Conversation conversation,
-            string initialMessage,
-            ProculDbContext db,
-            ChatStreamServiceV1 chat,
-            [EnumeratorCancellation] CancellationToken ct
-        )
-        {
-            yield return new SseItem<ChatStreamEventV1>(
-                new ChatStreamEventV1.Created(
-                    new ChatStreamCreatedV1(
-                        new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt)
-                    )
-                )
-            );
-
-            // Start the title model call now so it runs concurrently with the reply. It only
-            // produces a string; the DB write happens below, after the stream, so a single
-            // DbContext is never used from two places at once.
-            var titleTask = chat.GenerateTitleAsync(initialMessage, ct);
-
-            await foreach (var streamEvent in chat.StreamAssistantReplyAsync(conversation.Id, initialMessage, ct))
-            {
-                yield return new SseItem<ChatStreamEventV1>(streamEvent);
-            }
-
-            var title = await titleTask ?? ChatStreamServiceV1.FallbackTitle(initialMessage);
-            conversation.Title = title;
-            await db.SaveChangesAsync(ct);
-
-            yield return new SseItem<ChatStreamEventV1>(
-                new ChatStreamEventV1.Title(new ChatStreamTitleV1(conversation.Id, title))
-            );
-        }
+        return TypedResults.ServerSentEvents(
+            chat.StreamNewConversationAsync(conversation, body.InitialMessage, ct)
+        );
     }
 
     private static async Task<Results<Ok<GetConversationResponseV1>, NotFound>> GetConversationAsync(
@@ -151,7 +117,7 @@ internal static class ChatEndpointsV1
         return TypedResults.NoContent();
     }
 
-    private static async Task<Results<Ok<GetConversationMessagesResponsev1>, ProblemHttpResult>> GetConversationMessagesAsync(
+    private static async Task<Results<Ok<GetConversationMessagesResponseV1>, ProblemHttpResult>> GetConversationMessagesAsync(
         Guid conversationId,
         ProculDbContext db,
         CancellationToken ct,
@@ -207,7 +173,7 @@ internal static class ChatEndpointsV1
             .Select(m => new ConversationMessageV1(Id: m.Id, ConversationId: conversationId, Text: m.Text, MessageRole: m.MessageRole, CreatedAt: m.CreatedAt))
             .ToListAsync(ct);
 
-        return TypedResults.Ok(new GetConversationMessagesResponsev1(messages));
+        return TypedResults.Ok(new GetConversationMessagesResponseV1(messages));
     }
 
     private static async Task<Results<ServerSentEventsResult<ChatStreamEventV1>, NotFound>> SendMessageAsync(
