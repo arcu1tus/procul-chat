@@ -46,9 +46,17 @@ class ChatController extends ChangeNotifier {
   /// True while an attachment upload is in flight.
   bool isUploadingAttachment = false;
 
-  /// Byte cache for the attachment surface, so a message rebuild does not
-  /// refetch every image.
-  final Map<String, Uint8List> _attachmentBytes = {};
+  /// The id of the user message currently being edited, or null when not editing.
+  String? editingMessageId;
+
+  /// Whether the composer is in edit mode.
+  bool get isEditing => editingMessageId != null;
+
+  /// Byte futures for the attachment surface, so a message rebuild does not
+  /// refetch (or restart the `FutureBuilder` for) every image. Caching the
+  /// *future* — not just the resolved bytes — is what stops a later rebuild from
+  /// resetting a loaded image back to its placeholder.
+  final Map<String, Future<Uint8List>> _attachmentBytes = {};
 
   /// Cumulative token usage for the active conversation. Seeded from
   /// `GET /v1/usage/conversations/{id}` when it is opened, then incremented by
@@ -167,6 +175,7 @@ class ChatController extends ChangeNotifier {
     _conversationId = null;
     messages.clear();
     pendingAttachments.clear();
+    editingMessageId = null;
     activeUsage = const TokenUsage();
     lastTurnUsage = null;
     error = null;
@@ -235,12 +244,23 @@ class ChatController extends ChangeNotifier {
 
   /// The bytes for an attachment, fetched through the authenticated [api] and
   /// cached for the lifetime of the controller.
-  Future<Uint8List> loadAttachmentBytes(String id) async {
+  ///
+  /// Returns the same [Future] for the same id so an `Image`'s `FutureBuilder`
+  /// does not reset on every rebuild (the flicker fix); a failed fetch is
+  /// dropped from the cache so a later attempt can retry.
+  Future<Uint8List> loadAttachmentBytes(String id) {
     final cached = _attachmentBytes[id];
     if (cached != null) return cached;
-    final bytes = await api.fetchAttachmentBytes(id);
-    _attachmentBytes[id] = bytes;
-    return bytes;
+
+    final future = api.fetchAttachmentBytes(id);
+    _attachmentBytes[id] = future;
+    future.then(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {
+        _attachmentBytes.remove(id);
+      },
+    );
+    return future;
   }
 
   /// Sends [text]. Creates a conversation on the first message, otherwise
@@ -267,6 +287,7 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
 
     final reply = StringBuffer();
+    var hardFailure = false;
     try {
       final stream = _conversationId == null
           ? api.createConversation(
@@ -280,57 +301,172 @@ class ChatController extends ChangeNotifier {
               attachmentIds: attachmentIds,
             );
 
-      await for (final event in stream) {
-        switch (event) {
-          case CreatedEvent(:final conversation):
-            _conversationId = conversation.id;
-            _upsertConversation(conversation);
-            await _store.write(conversation.id);
-          case TokenEvent(:final content):
-            reply.write(content);
-            assistant.text = reply.toString();
-            notifyListeners();
-          case TitleEvent(:final conversationId, :final title):
-            _applyTitle(conversationId, title);
-          case ToolCallEvent(:final callId, :final name, :final arguments):
-            assistant.toolCalls.add(
-              ToolCall(id: callId, name: name, arguments: arguments),
-            );
-            notifyListeners();
-          case ToolResultEvent(:final callId, :final result, :final error):
-            for (final call in assistant.toolCalls) {
-              if (call.id == callId) {
-                call.result = result;
-                call.error = error;
-                break;
-              }
-            }
-            notifyListeners();
-          case ErrorEvent(:final error):
-            this.error = error;
-          case DoneEvent():
-            // The reply is complete. Stop treating the turn as streaming now, so
-            // the composer is usable even if the `title` event is still in
-            // flight (it is emitted after the reply).
-            isStreaming = false;
-            notifyListeners();
-          case UsageEvent(:final usage):
-            // The turn's token usage, summed across any tool-loop calls. Add it
-            // to the conversation's running total and remember it for the chip.
-            activeUsage = activeUsage + usage;
-            lastTurnUsage = usage;
-            notifyListeners();
-          case AcknowledgeEvent():
-        }
-      }
+      await _consumeReply(
+        stream,
+        assistant: assistant,
+        reply: reply,
+        handleCreated: true,
+      );
     } catch (e) {
       error = '$e';
+      hardFailure = true;
     } finally {
       if (assistant.text.isEmpty) {
         assistant.text = error == null ? '(no reply)' : '(failed)';
       }
       isStreaming = false;
       notifyListeners();
+    }
+
+    // A hard failure (e.g. the connection dropped) can leave a local-only user
+    // message — or a conversation the server never finished creating. Resync so
+    // the buffer matches the server.
+    if (hardFailure && hasConversation) {
+      await reloadActiveConversation();
+    }
+  }
+
+  /// Enters edit mode for [message] (a user message): remembers its id and seeds
+  /// the pending queue with its current attachments so the composer shows them.
+  /// The caller fills the input field from the message's text.
+  void beginEdit(ChatMessage message) {
+    if (isStreaming) return;
+    editingMessageId = message.id;
+    pendingAttachments
+      ..clear()
+      ..addAll(message.attachments);
+    notifyListeners();
+  }
+
+  /// Leaves edit mode and drops the seeded attachments.
+  void cancelEdit() {
+    editingMessageId = null;
+    pendingAttachments.clear();
+    notifyListeners();
+  }
+
+  /// Rewrites the message being edited and re-prompts the model.
+  ///
+  /// Editing is destructive (v1): the local tail is discarded to mirror the
+  /// backend, which deletes every message after the edited one and their
+  /// attachments.
+  Future<void> editMessage(String text) async {
+    final trimmed = text.trim();
+    final messageId = editingMessageId;
+    if (trimmed.isEmpty ||
+        isStreaming ||
+        messageId == null ||
+        !hasConversation) {
+      return;
+    }
+
+    final index = messages.indexWhere((message) => message.id == messageId);
+    if (index == -1) {
+      cancelEdit();
+      return;
+    }
+
+    error = null;
+    // The pending queue is the desired attachment set (seeded by [beginEdit] and
+    // edited by the user); send it as a full replacement.
+    final attachments = List<Attachment>.of(pendingAttachments);
+    final attachmentIds = [for (final attachment in attachments) attachment.id];
+
+    final edited = messages[index];
+    edited.text = trimmed;
+    edited.attachments
+      ..clear()
+      ..addAll(attachments);
+    messages.removeRange(index + 1, messages.length);
+    final assistant = ChatMessage(text: '', role: MessageRole.assistant);
+    messages.add(assistant);
+    pendingAttachments.clear();
+    editingMessageId = null;
+    isStreaming = true;
+    notifyListeners();
+
+    final reply = StringBuffer();
+    var hardFailure = false;
+    try {
+      await _consumeReply(
+        api.editMessage(
+          _conversationId!,
+          messageId,
+          trimmed,
+          attachmentIds: attachmentIds,
+        ),
+        assistant: assistant,
+        reply: reply,
+      );
+    } catch (e) {
+      error = '$e';
+      hardFailure = true;
+    } finally {
+      if (assistant.text.isEmpty) {
+        assistant.text = error == null ? '(no reply)' : '(failed)';
+      }
+      isStreaming = false;
+      notifyListeners();
+    }
+
+    // A hard failure means the server may hold a different branch; resync.
+    if (hardFailure) {
+      await reloadActiveConversation();
+    }
+  }
+
+  /// Folds an SSE event stream into [assistant] (and the conversation list).
+  /// Shared by [send] and [editMessage]; only [send] handles `created`.
+  Future<void> _consumeReply(
+    Stream<ChatStreamEvent> stream, {
+    required ChatMessage assistant,
+    required StringBuffer reply,
+    bool handleCreated = false,
+  }) async {
+    await for (final event in stream) {
+      switch (event) {
+        case CreatedEvent(:final conversation):
+          if (handleCreated) {
+            _conversationId = conversation.id;
+            _upsertConversation(conversation);
+            await _store.write(conversation.id);
+          }
+        case TokenEvent(:final content):
+          reply.write(content);
+          assistant.text = reply.toString();
+          notifyListeners();
+        case TitleEvent(:final conversationId, :final title):
+          _applyTitle(conversationId, title);
+        case ToolCallEvent(:final callId, :final name, :final arguments):
+          assistant.toolCalls.add(
+            ToolCall(id: callId, name: name, arguments: arguments),
+          );
+          notifyListeners();
+        case ToolResultEvent(:final callId, :final result, :final error):
+          for (final call in assistant.toolCalls) {
+            if (call.id == callId) {
+              call.result = result;
+              call.error = error;
+              break;
+            }
+          }
+          notifyListeners();
+        case ErrorEvent(:final error):
+          this.error = error;
+        case DoneEvent():
+          // The reply is complete. Stop treating the turn as streaming now, so
+          // the composer is usable even if the `title` event is still in
+          // flight (it is emitted after the reply).
+          isStreaming = false;
+          notifyListeners();
+        case UsageEvent(:final usage):
+          // The turn's token usage, summed across any tool-loop calls. Add it
+          // to the conversation's running total and remember it for the chip.
+          activeUsage = activeUsage + usage;
+          lastTurnUsage = usage;
+          notifyListeners();
+        case AcknowledgeEvent():
+      }
     }
   }
 
@@ -399,6 +535,8 @@ class ChatController extends ChangeNotifier {
       if (_conversationId == id) {
         _conversationId = null;
         messages.clear();
+        pendingAttachments.clear();
+        editingMessageId = null;
         activeUsage = const TokenUsage();
         lastTurnUsage = null;
         await _store.clear();
@@ -415,6 +553,7 @@ class ChatController extends ChangeNotifier {
     isLoadingMessages = true;
     messages.clear();
     pendingAttachments.clear();
+    editingMessageId = null;
     activeUsage = const TokenUsage();
     lastTurnUsage = null;
     error = null;

@@ -45,7 +45,7 @@ internal sealed class ChatStreamServiceV1(
     /// </summary>
     private const string TitleSystemPrompt = """
         You write short titles for chat conversations. Given the first message of a
-        chat, output a title of at most 5 words. Output the title text only.
+        chat, output a title of at most 8 words. Output the title text only.
 
         Rules:
         - No quotes, no leading "Title:", no trailing punctuation.
@@ -67,7 +67,11 @@ internal sealed class ChatStreamServiceV1(
         Temperature = 0.2f,
     };
 
-    /// <summary>Upper bound on the number of words a generated title may contain.</summary>
+    /// <summary>
+    /// Upper bound on the number of words a generated title may contain. The prompt asks the
+    /// model for at most this many; a longer result is treated as a failed generation and the
+    /// caller falls back to <see cref="FallbackTitle"/>.
+    /// </summary>
     private const int MaxTitleWords = 8;
 
     /// <summary>
@@ -131,6 +135,10 @@ internal sealed class ChatStreamServiceV1(
         yield return new ChatStreamEventV1.Title(new ChatStreamTitleV1(conversation.Id, conversation.Title));
     }
 
+    /// <summary>
+    /// Persists a new user message (with its attachments), then streams the assistant's reply.
+    /// Shared by the create and send endpoints; the reply core is <see cref="StreamReplyAsync"/>.
+    /// </summary>
     public async IAsyncEnumerable<ChatStreamEventV1> StreamAssistantReplyAsync(
         Guid conversationId,
         string userText,
@@ -139,22 +147,6 @@ internal sealed class ChatStreamServiceV1(
         [EnumeratorCancellation] CancellationToken ct
     )
     {
-        // The conversation remembers its model; an unknown/stale slug falls back to the default.
-        // Loading the entity (not just the column) lets us bump UpdatedAt with the same save,
-        // which also keeps the in-memory provider used by tests happy.
-        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
-        var definition = registry.ResolveOrDefault(conversation?.Model);
-        var chatClient = registry.GetClient(definition.Slug);
-
-        yield return new ChatStreamEventV1.Processing(new(Message: "received"));
-
-        var history = await db.ConversationMessages
-            .Where(m => m.ConversationId == conversationId)
-            .Include(m => m.Attachments)
-            .OrderBy(m => m.CreatedAt)
-            .ThenBy(m => m.Id)
-            .ToListAsync(ct);
-
         var userMessage = new ConversationMessage
         {
             ConversationId = conversationId,
@@ -173,7 +165,9 @@ internal sealed class ChatStreamServiceV1(
 
         db.ConversationMessages.Add(userMessage);
 
-        // Bump the conversation's activity timestamp so it floats to the top of the list.
+        // Bump the conversation's activity timestamp so it floats to the top of the list. Mutating
+        // the tracked entity (rather than ExecuteUpdateAsync) keeps the in-memory provider happy.
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
         if (conversation is not null)
         {
             conversation.UpdatedAt = DateTimeOffset.UtcNow;
@@ -181,7 +175,148 @@ internal sealed class ChatStreamServiceV1(
 
         await db.SaveChangesAsync(ct);
 
-        history.Add(userMessage);
+        await foreach (var streamEvent in StreamReplyAsync(conversationId, userMessage, capabilities, ct))
+        {
+            yield return streamEvent;
+        }
+    }
+
+    /// <summary>
+    /// Edits an existing user message: truncates every message after it (deleting their attachment
+    /// bytes), drops their usage rows, rewrites the text, optionally replaces the attachments, and
+    /// re-prompts the model. Editing is **destructive in v1** — see the future-branching note in the
+    /// docs.
+    /// </summary>
+    public async IAsyncEnumerable<ChatStreamEventV1> EditMessageAsync(
+        Guid conversationId,
+        Guid messageId,
+        string newText,
+        IReadOnlyList<Attachment>? replacementAttachments,
+        IReadOnlySet<ModelInputModality> capabilities,
+        [EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        var message = await db.ConversationMessages
+            .Include(m => m.Attachments)
+            .FirstOrDefaultAsync(m => m.Id == messageId && m.ConversationId == conversationId, ct);
+
+        if (message is null)
+        {
+            // The endpoint validates existence/role before streaming; guard direct callers.
+            yield return new ChatStreamEventV1.Failed(new(Error: "The message was not found."));
+            yield break;
+        }
+
+        // 1. Truncate every message after the edited one, using the same (CreatedAt, Id) keyset
+        //    order the history uses. Delete the bytes *before* the rows: metadata and Postgres
+        //    blobs cascade, but S3 objects do not.
+        var discarded = await db.ConversationMessages
+            .Where(m => m.ConversationId == conversationId
+                && (m.CreatedAt > message.CreatedAt
+                    || (m.CreatedAt == message.CreatedAt && m.Id.CompareTo(message.Id) > 0)))
+            .Include(m => m.Attachments)
+            .ToListAsync(ct);
+
+        await attachmentStore.DeleteBytesAsync(discarded.SelectMany(m => m.Attachments), ct);
+        db.ConversationMessages.RemoveRange(discarded);
+
+        // 2. Drop the discarded turns' usage rows so the counter matches the visible branch. The
+        //    edited turn's reply row is included (it is created after the user message) and is
+        //    replaced by the new reply's row.
+        var discardedUsage = await db.TurnUsages
+            .Where(u => u.ConversationId == conversationId && u.CreatedAt > message.CreatedAt)
+            .ToListAsync(ct);
+        db.TurnUsages.RemoveRange(discardedUsage);
+
+        // 3. Rewrite the edited message.
+        message.Text = newText;
+
+        // 4. Reconcile attachments when the client supplied a replacement set (null = keep current).
+        if (replacementAttachments is not null)
+        {
+            await ApplyReplacementAttachmentsAsync(message, conversationId, replacementAttachments, ct);
+        }
+
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        if (conversation is not null)
+        {
+            conversation.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        await foreach (var streamEvent in StreamReplyAsync(conversationId, message, capabilities, ct))
+        {
+            yield return streamEvent;
+        }
+    }
+
+    /// <summary>
+    /// Reconciles a message's attachments against a replacement set: removes (bytes + metadata)
+    /// any not in the set, attaches the new ones, and applies the client's order. The set's items
+    /// are already validated and tracked by <see cref="AttachmentGate"/>.
+    /// </summary>
+    private async Task ApplyReplacementAttachmentsAsync(
+        ConversationMessage message,
+        Guid conversationId,
+        IReadOnlyList<Attachment> replacement,
+        CancellationToken ct)
+    {
+        var keepIds = replacement.Select(a => a.Id).ToHashSet();
+
+        var removed = message.Attachments.Where(a => !keepIds.Contains(a.Id)).ToList();
+        await attachmentStore.DeleteBytesAsync(removed, ct);
+        foreach (var attachment in removed)
+        {
+            message.Attachments.Remove(attachment);
+            db.Attachments.Remove(attachment);
+        }
+
+        var ordered = new List<Attachment>(replacement.Count);
+        foreach (var attachment in replacement)
+        {
+            var existing = message.Attachments.FirstOrDefault(a => a.Id == attachment.Id);
+            if (existing is not null)
+            {
+                ordered.Add(existing);
+                continue;
+            }
+
+            attachment.ConversationId = conversationId;
+            attachment.MessageId = message.Id;
+            ordered.Add(attachment);
+        }
+
+        // Preserve the client's order for this turn.
+        message.Attachments.Clear();
+        message.Attachments.AddRange(ordered);
+    }
+
+    /// <summary>
+    /// The reply core: given an already-persisted <paramref name="userMessage"/>, loads history,
+    /// resolves the conversation's model, streams the reply, and persists the assistant message
+    /// plus its usage. The edited message and the last message of a send both flow through here.
+    /// </summary>
+    private async IAsyncEnumerable<ChatStreamEventV1> StreamReplyAsync(
+        Guid conversationId,
+        ConversationMessage userMessage,
+        IReadOnlySet<ModelInputModality> capabilities,
+        [EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        // The conversation remembers its model; an unknown/stale slug falls back to the default.
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        var definition = registry.ResolveOrDefault(conversation?.Model);
+        var chatClient = registry.GetClient(definition.Slug);
+
+        yield return new ChatStreamEventV1.Processing(new(Message: "received"));
+
+        var history = await db.ConversationMessages
+            .Where(m => m.ConversationId == conversationId)
+            .Include(m => m.Attachments)
+            .OrderBy(m => m.CreatedAt)
+            .ThenBy(m => m.Id)
+            .ToListAsync(ct);
 
         var messages = new List<ChatMessage>(history.Count + 1)
         {
@@ -194,7 +329,7 @@ internal sealed class ChatStreamServiceV1(
                 role: message.MessageRole.ToChatRole(),
                 contents: await BuildMessageContentAsync(
                     message,
-                    isCurrentTurn: ReferenceEquals(message, userMessage),
+                    isCurrentTurn: message.Id == userMessage.Id,
                     capabilities,
                     ct)));
         }

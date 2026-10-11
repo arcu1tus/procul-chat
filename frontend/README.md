@@ -1,11 +1,11 @@
 # procul_chat_flutter
 
 The Flutter client for **Procul**, a chat app. It supports multiple conversations
-(list, switch, rename, delete), streams assistant replies over SSE, shows tool
-activity, renders assistant Markdown, attaches files (images render inline), lets
-you pick the model per conversation and browse a Models catalog, tracks token
-usage, and has a persisted settings dialog (dark mode by default). It talks to the
-backend's versioned `/v1/conversations` API.
+(list, switch, rename, delete), streams assistant replies over SSE, lets you edit an
+earlier message (destructive in v1), shows tool activity, renders assistant Markdown,
+attaches files (images render inline), picks the model per conversation, browses a
+Models catalog, tracks token usage, and has a persisted settings dialog (dark mode by
+default). It talks to the backend's versioned `/v1/conversations` API.
 
 The backend lives in [`../backend`](../backend); its contract is documented in
 [`../backend/AGENTS.md`](../backend/AGENTS.md). Per-platform build instructions are

@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
@@ -10,6 +12,7 @@ import 'chat_controller.dart';
 import 'conversation_actions.dart';
 import 'model_catalog_controller.dart';
 import 'models.dart';
+import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/model_badges.dart';
 import 'widgets/skeleton.dart';
@@ -23,6 +26,7 @@ class ChatScreen extends StatefulWidget {
     this.picker = const FilePickerAttachmentPicker(),
     this.showMenuButton = false,
     this.compactModelPicker = false,
+    this.compactActions = false,
     this.onMenu,
   });
 
@@ -43,6 +47,9 @@ class ChatScreen extends StatefulWidget {
   /// Collapse the model picker to an icon, for narrow app bars.
   final bool compactModelPicker;
 
+  /// Collapse rename/delete into an overflow menu, for narrow app bars.
+  final bool compactActions;
+
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
@@ -50,6 +57,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
+  final _inputFocus = FocusNode();
 
   bool _pinnedToBottom = true;
   String? _lastError;
@@ -75,6 +83,7 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.chat.removeListener(_onChanged);
     _inputController.dispose();
     _scrollController.dispose();
+    _inputFocus.dispose();
     super.dispose();
   }
 
@@ -128,9 +137,56 @@ class _ChatScreenState extends State<ChatScreen> {
   void _submit() {
     final text = _inputController.text;
     if (text.trim().isEmpty || widget.chat.isStreaming) return;
+    final editing = widget.chat.isEditing;
     _inputController.clear();
     _pinnedToBottom = true;
-    widget.chat.send(text);
+    if (editing) {
+      widget.chat.editMessage(text);
+    } else {
+      widget.chat.send(text);
+    }
+  }
+
+  /// Enters edit mode for a user message: the controller remembers it and seeds
+  /// the pending attachments; here the input is prefilled, focused and pinned.
+  void _beginEdit(ChatMessage message) {
+    if (widget.chat.isStreaming) return;
+    widget.chat.beginEdit(message);
+    _inputController.text = message.text;
+    _inputController.selection = TextSelection.collapsed(
+      offset: message.text.length,
+    );
+    _pinnedToBottom = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _inputFocus.requestFocus();
+    });
+  }
+
+  /// Leaves edit mode, clearing the composer.
+  void _cancelEdit() {
+    widget.chat.cancelEdit();
+    _inputController.clear();
+  }
+
+  /// The overflow menu shown on narrow app bars (rename/delete collapse here).
+  void _showChatMenu(Conversation conversation) {
+    showDropdown(
+      context: context,
+      builder: (context) => DropdownMenu(
+        children: [
+          MenuButton(
+            onPressed: (context) =>
+                renameConversationDialog(context, widget.chat, conversation),
+            child: const Text('Rename'),
+          ),
+          MenuButton(
+            onPressed: (context) =>
+                confirmDeleteConversation(context, widget.chat, conversation),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _useSuggestion(String suggestion) {
@@ -227,20 +283,28 @@ class _ChatScreenState extends State<ChatScreen> {
                   label: 'Refresh',
                   onPressed: chat.refreshAll,
                 ),
-                if (active != null) ...[
-                  IconAction(
-                    icon: LucideIcons.squarePen,
-                    label: 'Rename chat',
-                    onPressed: () =>
-                        renameConversationDialog(context, chat, active),
-                  ),
-                  IconAction(
-                    icon: LucideIcons.trash2,
-                    label: 'Delete chat',
-                    onPressed: () =>
-                        confirmDeleteConversation(context, chat, active),
-                  ),
-                ],
+                if (active != null)
+                  if (widget.compactActions)
+                    IconAction(
+                      key: const Key('chat-options'),
+                      icon: LucideIcons.ellipsis,
+                      label: 'Chat options',
+                      onPressed: () => _showChatMenu(active),
+                    )
+                  else ...[
+                    IconAction(
+                      icon: LucideIcons.squarePen,
+                      label: 'Rename chat',
+                      onPressed: () =>
+                          renameConversationDialog(context, chat, active),
+                    ),
+                    IconAction(
+                      icon: LucideIcons.trash2,
+                      label: 'Delete chat',
+                      onPressed: () =>
+                          confirmDeleteConversation(context, chat, active),
+                    ),
+                  ],
               ],
             ),
             const Divider(),
@@ -258,9 +322,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               _Composer(
                 controller: _inputController,
+                focusNode: _inputFocus,
                 chat: chat,
                 onSubmit: _submit,
                 onAttach: _attach,
+                onCancelEdit: _cancelEdit,
               ),
             ],
           ),
@@ -283,22 +349,29 @@ class _ChatScreenState extends State<ChatScreen> {
       _suppressEntrance = false;
     }
 
-    return ListView.builder(
-      controller: _scrollController,
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
-      itemCount: chat.messages.length,
-      itemBuilder: (context, index) {
-        final message = chat.messages[index];
-        final animate = !_seenMessages.contains(message);
-        if (animate) _seenMessages.add(message);
-        return _MessageEntrance(
-          animate: animate,
-          child: _MessageBubble(
-            message: message,
-            chat: chat,
-            isStreaming: chat.isStreaming && index == chat.messages.length - 1,
-            onSaveAttachment: _saveAttachment,
-          ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final side = centeredSidePadding(constraints.maxWidth);
+        return ListView.builder(
+          controller: _scrollController,
+          padding: EdgeInsets.fromLTRB(16 + side, 20, 16 + side, 12),
+          itemCount: chat.messages.length,
+          itemBuilder: (context, index) {
+            final message = chat.messages[index];
+            final animate = !_seenMessages.contains(message);
+            if (animate) _seenMessages.add(message);
+            return _MessageEntrance(
+              animate: animate,
+              child: _MessageBubble(
+                message: message,
+                chat: chat,
+                isStreaming:
+                    chat.isStreaming && index == chat.messages.length - 1,
+                onSaveAttachment: _saveAttachment,
+                onEdit: _beginEdit,
+              ),
+            );
+          },
         );
       },
     );
@@ -425,22 +498,33 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
     required this.message,
     required this.chat,
     required this.isStreaming,
     required this.onSaveAttachment,
+    required this.onEdit,
   });
 
   final ChatMessage message;
   final ChatController chat;
   final bool isStreaming;
   final ValueChanged<Attachment> onSaveAttachment;
+  final ValueChanged<ChatMessage> onEdit;
+
+  @override
+  State<_MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<_MessageBubble> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
+    final message = widget.message;
+    final chat = widget.chat;
     final isUser = message.isUser;
     final hasTools = message.toolCalls.isNotEmpty;
     final hasAttachments = message.attachments.isNotEmpty;
@@ -465,7 +549,7 @@ class _MessageBubble extends StatelessWidget {
             _AttachmentList(
               chat: chat,
               attachments: message.attachments,
-              onTap: onSaveAttachment,
+              onTap: widget.onSaveAttachment,
             ),
             if (showText) const Gap(8),
           ],
@@ -475,42 +559,63 @@ class _MessageBubble extends StatelessWidget {
                     message.text,
                     style: TextStyle(color: colors.primaryForeground),
                   )
-                : _AssistantText(text: message.text, isStreaming: isStreaming),
+                : _AssistantText(
+                    text: message.text,
+                    isStreaming: widget.isStreaming,
+                  ),
         ],
       ),
     );
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: isUser
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
-        children: [
-          if (!isUser) ...[
-            _Avatar(
-              icon: LucideIcons.sparkles,
-              background: colors.primary,
-              foreground: colors.primaryForeground,
+    // The edit affordance is a user-message action, revealed on hover (the same
+    // pattern as the conversation tile's options) and hidden mid-turn.
+    final canEdit = isUser && !widget.isStreaming && !chat.isEditing;
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: isUser
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            if (!isUser) ...[
+              _Avatar(
+                icon: LucideIcons.sparkles,
+                background: colors.primary,
+                foreground: colors.primaryForeground,
+              ),
+              const Gap(10),
+            ],
+            if (isUser && canEdit && _hovered) ...[
+              IconAction(
+                key: const Key('edit-message'),
+                icon: LucideIcons.squarePen,
+                label: 'Edit message',
+                size: 16,
+                onPressed: () => widget.onEdit(message),
+              ),
+              const Gap(6),
+            ],
+            Flexible(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 680),
+                child: bubble,
+              ),
             ),
-            const Gap(10),
+            if (isUser) ...[
+              const Gap(10),
+              _Avatar(
+                icon: LucideIcons.user,
+                background: colors.secondary,
+                foreground: colors.secondaryForeground,
+              ),
+            ],
           ],
-          Flexible(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 680),
-              child: bubble,
-            ),
-          ),
-          if (isUser) ...[
-            const Gap(10),
-            _Avatar(
-              icon: LucideIcons.user,
-              background: colors.secondary,
-              foreground: colors.secondaryForeground,
-            ),
-          ],
-        ],
+        ),
       ),
     );
   }
@@ -1212,21 +1317,31 @@ class _ToolCallRow extends StatelessWidget {
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
+    required this.focusNode,
     required this.chat,
     required this.onSubmit,
     required this.onAttach,
+    required this.onCancelEdit,
   });
 
   final TextEditingController controller;
+  final FocusNode focusNode;
   final ChatController chat;
   final VoidCallback onSubmit;
   final VoidCallback onAttach;
+  final VoidCallback onCancelEdit;
 
   @override
   Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
     final enabled = !chat.isStreaming;
     final canAttach = enabled && !chat.isUploadingAttachment;
     final pending = chat.pendingAttachments;
+    final isEditing = chat.isEditing;
+    // The Enter / Shift+Enter hint is meaningless without a hardware keyboard.
+    final isTouch =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
 
     return SafeArea(
       top: false,
@@ -1236,6 +1351,29 @@ class _Composer extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (isEditing)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      LucideIcons.squarePen,
+                      size: 14,
+                      color: colors.mutedForeground,
+                    ),
+                    const Gap(6),
+                    const Text('Editing message').muted.small,
+                    const Spacer(),
+                    IconAction(
+                      key: const Key('cancel-edit'),
+                      icon: LucideIcons.x,
+                      label: 'Cancel edit',
+                      size: 16,
+                      onPressed: onCancelEdit,
+                    ),
+                  ],
+                ),
+              ),
             if (pending.isNotEmpty || chat.isUploadingAttachment)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -1274,21 +1412,25 @@ class _Composer extends StatelessWidget {
                     },
                     child: TextField(
                       controller: controller,
+                      focusNode: focusNode,
                       minLines: 1,
                       maxLines: 6,
                       textInputAction: TextInputAction.send,
-                      placeholder: const Text('Message Procul…'),
+                      placeholder: Text(
+                        isEditing ? 'Edit your message…' : 'Message Procul…',
+                      ),
                       onSubmitted: (_) => onSubmit(),
                     ),
                   ),
                 ),
                 const Gap(8),
                 Tooltip(
-                  tooltip: (context) =>
-                      const TooltipContainer(child: Text('Send')),
+                  tooltip: (context) => TooltipContainer(
+                    child: Text(isEditing ? 'Save changes' : 'Send'),
+                  ),
                   child: Semantics(
                     button: true,
-                    label: 'Send message',
+                    label: isEditing ? 'Save changes' : 'Send message',
                     child: PrimaryButton(
                       density: ButtonDensity.icon,
                       onPressed: enabled ? onSubmit : null,
@@ -1298,23 +1440,28 @@ class _Composer extends StatelessWidget {
                 ),
               ],
             ),
-            const Gap(6),
-            Padding(
-              padding: const EdgeInsets.only(left: 4),
-              child: Row(
-                children: [
-                  const KeyboardDisplay(keys: [LogicalKeyboardKey.enter]),
-                  const Gap(6),
-                  const Text('send').muted.xSmall,
-                  const Gap(12),
-                  const KeyboardDisplay(
-                    keys: [LogicalKeyboardKey.shift, LogicalKeyboardKey.enter],
-                  ),
-                  const Gap(6),
-                  const Text('new line').muted.xSmall,
-                ],
+            if (!isTouch) ...[
+              const Gap(6),
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Row(
+                  children: [
+                    const KeyboardDisplay(keys: [LogicalKeyboardKey.enter]),
+                    const Gap(6),
+                    const Text('send').muted.xSmall,
+                    const Gap(12),
+                    const KeyboardDisplay(
+                      keys: [
+                        LogicalKeyboardKey.shift,
+                        LogicalKeyboardKey.enter,
+                      ],
+                    ),
+                    const Gap(6),
+                    const Text('new line').muted.xSmall,
+                  ],
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),

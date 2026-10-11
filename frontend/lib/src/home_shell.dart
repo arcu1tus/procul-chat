@@ -176,6 +176,7 @@ class _HomeShellState extends State<HomeShell>
                       picker: widget.attachmentPicker,
                       showMenuButton: true,
                       compactModelPicker: true,
+                      compactActions: true,
                       onMenu: _openSidebar,
                     ),
                   ),

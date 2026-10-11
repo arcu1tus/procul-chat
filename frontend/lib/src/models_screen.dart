@@ -2,6 +2,8 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'model_catalog_controller.dart';
 import 'models.dart';
+import 'time_format.dart';
+import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/model_badges.dart';
 import 'widgets/skeleton.dart';
@@ -80,32 +82,37 @@ class _ModelsScreenState extends State<ModelsScreen> {
   }
 
   Widget _body(ModelCatalogController catalog) {
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
-      children: [
-        if (catalog.error != null) ...[
-          _ErrorNote(message: catalog.error!),
-          const Gap(16),
-        ],
-        if (catalog.models.isEmpty)
-          // Only shimmer while the first load is genuinely in flight; after a
-          // failed first load the error note above is the whole state.
-          catalog.isLoading
-              ? const _ModelsSkeleton()
-              : catalog.error == null
-              ? const _EmptyModels()
-              : const SizedBox.shrink()
-        else ...[
-          for (final model in catalog.models)
-            _ModelCard(model: model, catalog: catalog),
-          const Gap(8),
-          const Text(
-            'Unhealthy models are re-checked periodically, and a model with '
-            'recent traffic is considered live.',
-          ).muted.small,
-        ],
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final side = centeredSidePadding(constraints.maxWidth);
+        return ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.fromLTRB(20 + side, 20, 20 + side, 28),
+          children: [
+            if (catalog.error != null) ...[
+              _ErrorNote(message: catalog.error!),
+              const Gap(16),
+            ],
+            if (catalog.models.isEmpty)
+              // Only shimmer while the first load is genuinely in flight; after a
+              // failed first load the error note above is the whole state.
+              catalog.isLoading
+                  ? const _ModelsSkeleton()
+                  : catalog.error == null
+                  ? const _EmptyModels()
+                  : const SizedBox.shrink()
+            else ...[
+              for (final model in catalog.models)
+                _ModelCard(model: model, catalog: catalog),
+              const Gap(8),
+              const Text(
+                'Unhealthy models are re-checked periodically, and a model with '
+                'recent traffic is considered live.',
+              ).muted.small,
+            ],
+          ],
+        );
+      },
     );
   }
 }
@@ -212,9 +219,8 @@ class _HealthRow extends StatelessWidget {
       ModelHealthDot.labelFor(health.status),
       if (health.latencyMs != null) '${health.latencyMs} ms',
       if (health.lastCheckedAt != null)
-        'checked ${_relativeTime(health.lastCheckedAt!)}',
-      if (health.lastUsedAt != null)
-        'used ${_relativeTime(health.lastUsedAt!)}',
+        'checked ${relativeTime(health.lastCheckedAt!)}',
+      if (health.lastUsedAt != null) 'used ${relativeTime(health.lastUsedAt!)}',
     ];
     final lastError = health.lastError?.trim();
 
@@ -334,17 +340,4 @@ class _ModelCardSkeleton extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Renders a timestamp as `just now`, `5m ago`, `3h ago`, `2d ago` or a date.
-String _relativeTime(DateTime time) {
-  final difference = DateTime.now().difference(time.toLocal());
-  if (difference.inSeconds < 60) return 'just now';
-  if (difference.inMinutes < 60) return '${difference.inMinutes}m ago';
-  if (difference.inHours < 24) return '${difference.inHours}h ago';
-  if (difference.inDays < 7) return '${difference.inDays}d ago';
-  final local = time.toLocal();
-  final month = local.month.toString().padLeft(2, '0');
-  final day = local.day.toString().padLeft(2, '0');
-  return '${local.year}-$month-$day';
 }

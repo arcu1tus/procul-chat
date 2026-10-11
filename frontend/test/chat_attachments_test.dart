@@ -262,4 +262,95 @@ void main() {
     expect(picker.saved.single.$2, _textBytes);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'a later rebuild does not reset a loaded image to its placeholder',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      var fetchCount = 0;
+      final client = MockClient((request) async {
+        final path = request.url.path;
+        if (path == '/v1/conversations' && request.method == 'GET') {
+          return http.Response(
+            jsonEncode({
+              'conversations': [
+                {
+                  'id': 'c1',
+                  'title': 'Files',
+                  'createdAt': '2026-10-11T10:00:00Z',
+                  'updatedAt': '2026-10-11T10:00:00Z',
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        if (path == '/v1/conversations/c1/messages' &&
+            request.method == 'GET') {
+          return http.Response(
+            jsonEncode({
+              'messages': [
+                {
+                  'id': 'm1',
+                  'conversationId': 'c1',
+                  'text': 'look at this',
+                  'messageRole': 1,
+                  'createdAt': '2026-10-11T10:00:00Z',
+                  'attachments': [
+                    {
+                      'id': 'a1',
+                      'fileName': 'photo.png',
+                      'contentType': 'image/png',
+                      'sizeBytes': _pngBytes.length,
+                      'createdAt': '2026-10-11T10:00:00Z',
+                    },
+                  ],
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        if (path == '/v1/usage/conversations/c1') {
+          return http.Response('{}', 200);
+        }
+        if (path == '/v1/attachments/a1') {
+          fetchCount++;
+          return http.Response.bytes(_pngBytes, 200);
+        }
+        return http.Response('{}', 200);
+      });
+      final chat = _chat(client, stored: 'c1');
+      await chat.init();
+
+      await tester.pumpWidget(_app(ChatScreen(chat: chat)));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is Image && widget.image is MemoryImage,
+        ),
+        findsOneWidget,
+      );
+      expect(fetchCount, 1);
+
+      // Force a rebuild the way a later streaming token would. The memoized
+      // future must keep the FutureBuilder in its done state: no placeholder, no
+      // second fetch.
+      chat.removePendingAttachment('missing');
+      await tester.pump();
+
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is Image && widget.image is MemoryImage,
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(fetchCount, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

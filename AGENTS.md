@@ -14,16 +14,28 @@ development. It has two halves:
   PostgreSQL (EF Core), streams assistant replies over Server-Sent Events (SSE), calls the model
   through `Microsoft.Extensions.AI`, supports **multiple configured models** (one client each,
   selected per conversation), runs agent tools (current time + a sandboxed Python interpreter),
-  connects to remote **MCP** tool servers, tracks **token usage**, and stores/serves **file
-  attachments** (PostgreSQL or S3). Configuration lives in a single `config.jsonc`; only secrets
-  and the config path are environment variables.
+  connects to remote **MCP** tool servers, tracks **token usage**, stores/serves **file
+  attachments** (PostgreSQL or S3), and supports **editing a user message** (destructive in v1).
+  Configuration lives in a single `config.jsonc`; only secrets and the config path are environment
+  variables.
 - **`frontend/`** — a Flutter client (Linux desktop, web, mobile) with multiple conversations,
-  streaming replies, tool-activity display, Markdown rendering, a **model picker** and a **Models**
-  catalog screen, **file attachments** with inline image rendering, a **token-usage dashboard**,
-  and multiple saved server profiles behind a shared-password sign-in.
+  streaming replies, **message editing**, tool-activity display, Markdown rendering, a **model
+  picker** and a **Models** catalog screen, **file attachments** with inline image rendering, a
+  **token-usage dashboard**, and multiple saved server profiles behind a shared-password sign-in.
 
 The project is explicitly a demonstration, not a hardened product — read the code before trusting
 it. See the top-level `README.md` for the human-facing overview.
+
+## Read order (start here)
+
+Pick the path that matches your task — you do not need to read everything.
+
+1. **Any change** → this file (rules, layout, timeouts) → then the area's `AGENTS.md`.
+2. **Backend code** → [`backend/AGENTS.md`](backend/AGENTS.md) — architecture, contracts, gotchas.
+3. **Frontend code** → [`frontend/AGENTS.md`](frontend/AGENTS.md).
+4. **`config.jsonc` shape** → [`docs/configuration.md`](docs/configuration.md).
+5. **Deploying the backend** → [`docs/docker-compose.md`](docs/docker-compose.md).
+6. **Building the client** → [`docs/flutter-builds.md`](docs/flutter-builds.md).
 
 ## Repository layout
 

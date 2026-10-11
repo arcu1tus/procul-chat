@@ -20,7 +20,30 @@ internal static class ChatEndpointsV1
         group.MapPut("/{conversationId:guid}/model", SetConversationModelAsync);
         group.MapGet("/{conversationId:guid}/messages", GetConversationMessagesAsync);
         group.MapPost("/{conversationId:guid}/messages", SendMessageAsync);
+        group.MapPost("/{conversationId:guid}/messages/{messageId:guid}/edit", EditMessageAsync);
         return group;
+    }
+
+    /// <summary>Upper bound on a user message's text length (64 KiB, matching common model limits).</summary>
+    internal const int MaxMessageLength = 64 * 1024;
+
+    /// <summary>
+    /// The user-facing problem with a message text, or null when it is valid. Rejects empty
+    /// (after trim) and oversized text; <paramref name="field"/> names the JSON field.
+    /// </summary>
+    private static string? ValidateMessageText(string? text, string field)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return $"'{field}' must not be empty.";
+        }
+
+        if (text.Length > MaxMessageLength)
+        {
+            return $"'{field}' must be at most {MaxMessageLength} characters.";
+        }
+
+        return null;
     }
 
     private static async Task<Ok<GetConversationsResponseV1>> GetConversationsAsync(
@@ -52,6 +75,11 @@ internal static class ChatEndpointsV1
             return TypedResults.Problem(
                 statusCode: StatusCodes.Status400BadRequest,
                 detail: $"Unknown model '{model}'. Use GET /v1/models to list configured models.");
+        }
+
+        if (ValidateMessageText(body.InitialMessage, "initialMessage") is { } textProblem)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: textProblem);
         }
 
         var slug = model.Length > 0 ? model : null;
@@ -158,6 +186,7 @@ internal static class ChatEndpointsV1
     private static async Task<Results<NoContent, NotFound>> DeleteConversationAsync(
         Guid conversationId,
         ProculDbContext db,
+        IAttachmentStore attachmentStore,
         CancellationToken ct
     )
     {
@@ -167,7 +196,14 @@ internal static class ChatEndpointsV1
             return TypedResults.NotFound();
         }
 
-        // Messages are removed by the cascade configured on the foreign key.
+        // Messages (and their attachment metadata + Postgres blobs) are removed by the cascade,
+        // but the bytes in the configured store are not — delete them first.
+        var attachments = await db.ConversationMessages
+            .Where(m => m.ConversationId == conversationId)
+            .SelectMany(m => m.Attachments)
+            .ToListAsync(ct);
+        await attachmentStore.DeleteBytesAsync(attachments, ct);
+
         db.Conversations.Remove(conversation);
         await db.SaveChangesAsync(ct);
 
@@ -257,6 +293,11 @@ internal static class ChatEndpointsV1
             return TypedResults.NotFound();
         }
 
+        if (ValidateMessageText(body.Text, "text") is { } textProblem)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: textProblem);
+        }
+
         var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, body.AttachmentIds, conversation.Model, ct);
         if (!gate.IsValid)
         {
@@ -267,6 +308,64 @@ internal static class ChatEndpointsV1
 
         return TypedResults.ServerSentEvents(
             chat.StreamAssistantReplyAsync(conversationId, body.Text, gate.Attachments, capabilities, ct)
+        );
+    }
+
+    private static async Task<Results<ServerSentEventsResult<ChatStreamEventV1>, NotFound, ProblemHttpResult>> EditMessageAsync(
+        ProculDbContext db,
+        ChatStreamServiceV1 chat,
+        ChatModelRegistry registry,
+        ModelCatalogService catalog,
+        Guid conversationId,
+        Guid messageId,
+        EditMessageRequestV1 body,
+        CancellationToken ct
+    )
+    {
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        if (conversation is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        if (ValidateMessageText(body.Text, "text") is { } textProblem)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: textProblem);
+        }
+
+        var message = await db.ConversationMessages
+            .FirstOrDefaultAsync(m => m.Id == messageId && m.ConversationId == conversationId, ct);
+        if (message is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        if (message.MessageRole != MessageRole.User)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                detail: "Only user messages can be edited.");
+        }
+
+        // Absent attachmentIds keeps the current attachments; a list (even empty) replaces them.
+        // An id already attached to *this* message is allowed.
+        IReadOnlyList<Attachment>? replacement = null;
+        if (body.AttachmentIds is not null)
+        {
+            var gate = await AttachmentGate.ResolveAsync(
+                db, registry, catalog, body.AttachmentIds, conversation.Model, ct, allowMessageId: messageId);
+            if (!gate.IsValid)
+            {
+                return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: gate.Error);
+            }
+
+            replacement = gate.Attachments;
+        }
+
+        var capabilities = catalog.GetCapabilities(registry.ResolveOrDefault(conversation.Model)).Input;
+
+        return TypedResults.ServerSentEvents(
+            chat.EditMessageAsync(conversationId, messageId, body.Text, replacement, capabilities, ct)
         );
     }
 }

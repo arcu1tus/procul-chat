@@ -33,3 +33,26 @@ public interface IAttachmentStore
 
 /// <summary>The configured store could not be created (e.g. S3 without a bucket).</summary>
 public sealed class AttachmentStoreException(string message) : Exception(message);
+
+/// <summary>
+/// Shared helpers for cleaning up attachment bytes. Metadata rows cascade on their own; the bytes
+/// behind a storage key do not, so every path that removes attachment rows must delete the bytes
+/// first with <see cref="IAttachmentStore.DeleteAsync"/> (best-effort and idempotent).
+/// </summary>
+internal static class AttachmentStoreExtensions
+{
+    /// <summary>Deletes the stored bytes for each attachment, skipping any without a key.</summary>
+    public static async Task DeleteBytesAsync(
+        this IAttachmentStore store,
+        IEnumerable<Attachment> attachments,
+        CancellationToken ct)
+    {
+        foreach (var attachment in attachments)
+        {
+            if (!string.IsNullOrWhiteSpace(attachment.StorageKey))
+            {
+                await store.DeleteAsync(attachment.StorageKey, ct);
+            }
+        }
+    }
+}

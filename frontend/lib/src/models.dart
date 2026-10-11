@@ -101,7 +101,7 @@ class ChatMessage {
     this.id,
     this.createdAt,
     List<Attachment> attachments = const [],
-  }) : attachments = List.unmodifiable(attachments);
+  }) : attachments = List.of(attachments);
 
   final String? id;
   String text;
@@ -109,6 +109,10 @@ class ChatMessage {
   final DateTime? createdAt;
 
   /// Files attached to this (user) message; empty for every other role.
+  ///
+  /// A mutable list (not `List.unmodifiable`) so an edit can replace the attachments while
+  /// preserving the object's identity — which keeps the entrance-animation tracking in
+  /// `ChatScreen` stable across the change.
   final List<Attachment> attachments;
 
   /// Tool invocations the model made while producing this assistant message.

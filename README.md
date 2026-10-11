@@ -69,6 +69,9 @@ against [OpenRouter](https://openrouter.ai/).
   types, has removable preview chips, and renders images and files inline; reloaded conversations
   show their attachments (and, by default, re-sends them to the model on later turns).
 - **AI-generated conversation titles** produced concurrently with the first reply.
+- **Message editing** (destructive in v1): rewrite an earlier user message, optionally swap its
+  attachments, and re-prompt the model. Every later message — and its attachments — is discarded,
+  and the model replies afresh. A future version could branch instead (keep both versions).
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
   motion (including a shimmer sweep over assistant text while it streams).

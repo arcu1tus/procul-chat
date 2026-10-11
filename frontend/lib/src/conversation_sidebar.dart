@@ -7,6 +7,7 @@ import 'conversation_actions.dart';
 import 'models.dart';
 import 'settings_controller.dart';
 import 'settings_dialog.dart';
+import 'time_format.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/skeleton.dart';
 
@@ -346,7 +347,7 @@ class _ConversationTileState extends State<_ConversationTile> {
                     if (conversation.updatedAt != null) ...[
                       const Gap(1),
                       Text(
-                        _relativeTime(conversation.updatedAt!),
+                        relativeTime(conversation.updatedAt!),
                         style: TextStyle(
                           fontSize: 11,
                           color: colors.mutedForeground,
@@ -441,16 +442,4 @@ class _SkeletonTile extends StatelessWidget {
       ),
     );
   }
-}
-
-String _relativeTime(DateTime time) {
-  final local = time.toLocal();
-  final difference = DateTime.now().difference(local);
-  if (difference.inSeconds < 60) return 'just now';
-  if (difference.inMinutes < 60) return '${difference.inMinutes}m ago';
-  if (difference.inHours < 24) return '${difference.inHours}h ago';
-  if (difference.inDays < 7) return '${difference.inDays}d ago';
-  final month = local.month.toString().padLeft(2, '0');
-  final day = local.day.toString().padLeft(2, '0');
-  return '${local.year}-$month-$day';
 }
