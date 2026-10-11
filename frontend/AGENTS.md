@@ -474,6 +474,11 @@ surfaces the error rather than downgrading the token to plaintext.
 - **Android blocks cleartext HTTP by default (API 28+).** `android/app/src/debug/AndroidManifest.xml`
   sets `android:usesCleartextTraffic="true"` so debug builds can talk to the plain-HTTP dev
   backend. Release builds keep the secure default. If you switch to HTTPS, remove it.
+- **The `INTERNET` permission lives in the main manifest, not just debug/profile.**
+  `android/app/src/main/AndroidManifest.xml` declares
+  `<uses-permission android:name="android.permission.INTERNET"/>` so **release** builds can
+  reach the backend; the debug/profile manifests keep their own copy for the Flutter tool's
+  hot reload. Without it in `main`, a release APK/AAB silently has no network access.
 - **`flutter analyze` must stay clean.** `dart format lib test` before committing.
 - **Tests must not touch the secure storage or `shared_preferences` channels.** Inject
   `FakeCredentialStore` / `FakeServerStore` (in `test/support/`) into `AuthController`, and

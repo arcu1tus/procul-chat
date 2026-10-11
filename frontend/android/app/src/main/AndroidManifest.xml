@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for the app to reach the backend over the network. Debug and
+         profile manifests declare it too (the Flutter tool needs it there for
+         hot reload), but release builds only inherit what is declared here. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="procul_chat_flutter"
         android:name="${applicationName}"
