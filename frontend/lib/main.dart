@@ -56,6 +56,8 @@ class _ProculChatAppState extends State<ProculChatApp> {
           theme: proculLightTheme,
           darkTheme: proculDarkTheme,
           themeMode: _settings.themeMode,
+          builder: (context, child) =>
+              ShadcnMaterialBridge(child: child ?? const SizedBox.shrink()),
           home: HomeShell(chat: _chat, settings: _settings),
         );
       },

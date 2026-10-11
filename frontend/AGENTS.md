@@ -38,6 +38,7 @@ frontend/
       settings_controller.dart    # SettingsController: theme mode (dark default)
       chat_controller.dart        # ChatController: conversation list + active buffer + turn logic
       app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData)
+                                  #   + ShadcnMaterialBridge (flutter/material theme for markdown)
       home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow)
       conversation_sidebar.dart   # conversation list, new chat, settings footer
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
@@ -143,11 +144,15 @@ reaches the buffer.
 
 ## Gotchas (learned the hard way)
 
-- **`gpt_markdown` imports `package:flutter/material.dart`, so it needs Material ancestors.**
-  The app therefore uses `MaterialShadcnApp` (from `shadcn_flutter_material`) instead of
-  `ShadcnApp`; it installs the Material `Theme`/`Material`/`ScaffoldMessenger` layer while the
-  UI still uses shadcn components. Don't switch to plain `ShadcnApp` without wrapping the
-  markdown subtree in a `MaterialLayer`.
+- **`gpt_markdown` imports `package:flutter/material.dart`, so it needs a Material theme
+  from *that* library.** `MaterialShadcnApp` (from `shadcn_flutter_material`) only installs
+  the **`material_ui`** theme — a separate library — which `gpt_markdown` cannot see. Without
+  a bridge the markdown falls back to Material's default *light* scheme, so in dark mode its
+  code blocks turn near-white and its headings, rules and list markers use the wrong greys.
+  `main.dart` therefore wraps the app in `ShadcnMaterialBridge` (in `app_theme.dart`), which
+  derives a `package:flutter/material.dart` `ThemeData` from the ambient shadcn theme. Keep
+  that bridge when changing the theme wiring; don't assume `MaterialShadcnApp` alone covers
+  `gpt_markdown`.
 - **shadcn `DrawerConfiguration` needs a `DrawerOverlay` ancestor** (`openRawDrawer` asserts
   `parentLayer != null`), which the default app does not provide. The narrow-screen sidebar is
   therefore a hand-rolled slide-in panel in `home_shell.dart`, not a shadcn drawer.
