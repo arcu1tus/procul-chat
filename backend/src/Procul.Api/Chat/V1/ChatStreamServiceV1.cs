@@ -19,6 +19,7 @@ internal sealed class ChatStreamServiceV1(
     ProculDbContext db,
     IChatClient chatClient,
     McpClientManager mcp,
+    ChatModelOptions model,
     ILogger<ChatStreamServiceV1> logger)
 {
     /// <summary>Upper bound on the generated title length (characters).</summary>
@@ -107,11 +108,18 @@ internal sealed class ChatStreamServiceV1(
             yield return streamEvent;
         }
 
-        var title = await titleTask ?? FallbackTitle(initialMessage);
-        conversation.Title = title;
+        // The title call runs concurrently with the reply, but its usage write happens here,
+        // after the reply's write, so the injected DbContext is never used from two places.
+        var titleResult = await titleTask;
+        conversation.Title = titleResult.Title ?? FallbackTitle(initialMessage);
+        if (titleResult.Usage.HasUsage)
+        {
+            db.TurnUsages.Add(titleResult.Usage.ToTurnUsage(conversation.Id, model.Model, TurnKind.Title));
+        }
+
         await db.SaveChangesAsync(ct);
 
-        yield return new ChatStreamEventV1.Title(new ChatStreamTitleV1(conversation.Id, title));
+        yield return new ChatStreamEventV1.Title(new ChatStreamTitleV1(conversation.Id, conversation.Title));
     }
 
     public async IAsyncEnumerable<ChatStreamEventV1> StreamAssistantReplyAsync(
@@ -172,11 +180,13 @@ internal sealed class ChatStreamServiceV1(
 
         var reply = new StringBuilder();
         var failed = false;
+        var usage = new TurnUsageTotals();
 
         await foreach (var streamEvent in CatchToEvent(
             StreamTokens(
                 chatClient.GetStreamingResponseAsync(messages, options, ct),
                 reply,
+                usage,
                 ct
             ),
             ex => new ChatStreamEventV1.Failed(new(Error: ex.Message)),
@@ -202,6 +212,12 @@ internal sealed class ChatStreamServiceV1(
             Text = reply.ToString(),
             MessageRole = MessageRole.Assistant
         });
+
+        if (usage.HasUsage)
+        {
+            db.TurnUsages.Add(usage.ToTurnUsage(conversationId, model.Model, TurnKind.Chat));
+        }
+
         await db.SaveChangesAsync(ct);
 
         yield return new ChatStreamEventV1.Done(new());
@@ -227,10 +243,13 @@ internal sealed class ChatStreamServiceV1(
     /// Asks the model for a short title for a brand-new conversation. Purely a model call:
     /// it does not touch the <see cref="ProculDbContext"/>, so it can safely run
     /// concurrently with <see cref="StreamAssistantReplyAsync"/> on the same request.
-    /// Returns null when the call fails or times out (the caller falls back).
+    /// Returns an unusable title (null) when the call fails or times out (the caller falls
+    /// back), along with whatever usage the call reported.
     /// </summary>
-    public async Task<string?> GenerateTitleAsync(string initialMessage, CancellationToken ct)
+    public async Task<TitleGenerationResult> GenerateTitleAsync(string initialMessage, CancellationToken ct)
     {
+        var usage = new TurnUsageTotals();
+
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -243,6 +262,7 @@ internal sealed class ChatStreamServiceV1(
             };
 
             var response = await chatClient.GetResponseAsync(messages, TitleOptions, timeoutCts.Token);
+            usage.Add(response.Usage);
             logger.LogDebug("Title model output: {RawTitle}", Truncate(response.Text, 600));
             var title = SanitizeTitle(response.Text);
             if (title is null)
@@ -250,13 +270,13 @@ internal sealed class ChatStreamServiceV1(
                 logger.LogWarning("Title generation produced unusable output: {RawTitle}", Truncate(response.Text, 200));
             }
 
-            return title;
+            return new TitleGenerationResult(title, usage);
         }
         catch (Exception ex)
         {
             // A failed title is never fatal: the caller uses FallbackTitle instead.
             logger.LogWarning(ex, "Title generation failed; falling back to the first message.");
-            return null;
+            return new TitleGenerationResult(null, usage);
         }
     }
 
@@ -331,9 +351,10 @@ internal sealed class ChatStreamServiceV1(
         return string.IsNullOrWhiteSpace(title) ? null : title;
     }
 
-    private static async IAsyncEnumerable<ChatStreamEventV1> StreamTokens(
+    internal static async IAsyncEnumerable<ChatStreamEventV1> StreamTokens(
         IAsyncEnumerable<ChatResponseUpdate> updates,
         StringBuilder reply,
+        TurnUsageTotals usage,
         [EnumeratorCancellation] CancellationToken ct
     )
     {
@@ -361,6 +382,12 @@ internal sealed class ChatStreamServiceV1(
                             Error: result.Exception?.Message
                         ));
                         break;
+
+                    // A turn can make several underlying model calls (the tool-invocation
+                    // loop); their usage payloads are summed rather than replaced.
+                    case UsageContent usageContent:
+                        usage.Add(usageContent.Details);
+                        break;
                 }
             }
 
@@ -371,6 +398,18 @@ internal sealed class ChatStreamServiceV1(
 
             reply.Append(update.Text);
             yield return new ChatStreamEventV1.Token(new(Content: update.Text));
+        }
+
+        // Emit a single usage event once the reply is fully streamed (just before `done`),
+        // so the client can add this turn's tokens to the conversation's running total.
+        if (usage.HasUsage)
+        {
+            yield return new ChatStreamEventV1.Usage(new(
+                InputTokens: usage.InputTokens,
+                OutputTokens: usage.OutputTokens,
+                CachedInputTokens: usage.CachedInputTokens,
+                TotalTokens: usage.TotalTokens
+            ));
         }
     }
 

@@ -109,3 +109,55 @@ class ChatMessage {
     createdAt: DateTime.tryParse('${json['createdAt']}'),
   );
 }
+
+/// Token counts for a model call or a running total.
+///
+/// Mirrors the backend's usage shape (input / output / cached / total). [turns]
+/// is only present on aggregates fetched from the usage endpoints, where it is
+/// the number of model calls the totals cover.
+class TokenUsage {
+  const TokenUsage({
+    this.inputTokens = 0,
+    this.outputTokens = 0,
+    this.cachedInputTokens = 0,
+    this.totalTokens = 0,
+    this.turns = 0,
+  });
+
+  final int inputTokens;
+  final int outputTokens;
+  final int cachedInputTokens;
+  final int totalTokens;
+  final int turns;
+
+  factory TokenUsage.fromJson(Map<String, dynamic> json) => TokenUsage(
+    inputTokens: (json['inputTokens'] as num?)?.toInt() ?? 0,
+    outputTokens: (json['outputTokens'] as num?)?.toInt() ?? 0,
+    cachedInputTokens: (json['cachedInputTokens'] as num?)?.toInt() ?? 0,
+    totalTokens: (json['totalTokens'] as num?)?.toInt() ?? 0,
+    turns: (json['turns'] as num?)?.toInt() ?? 0,
+  );
+
+  /// Whether any token has been counted yet.
+  bool get hasTokens =>
+      inputTokens != 0 ||
+      outputTokens != 0 ||
+      cachedInputTokens != 0 ||
+      totalTokens != 0;
+
+  TokenUsage operator +(TokenUsage other) => TokenUsage(
+    inputTokens: inputTokens + other.inputTokens,
+    outputTokens: outputTokens + other.outputTokens,
+    cachedInputTokens: cachedInputTokens + other.cachedInputTokens,
+    totalTokens: totalTokens + other.totalTokens,
+    turns: turns + other.turns,
+  );
+}
+
+/// Renders a token count compactly: `999`, `1.0k`, `12.4k`, `1.2M`.
+String formatTokenCount(int value) {
+  final magnitude = value.abs();
+  if (magnitude < 1000) return '$value';
+  if (magnitude < 1000000) return '${(value / 1000).toStringAsFixed(1)}k';
+  return '${(value / 1000000).toStringAsFixed(1)}M';
+}

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Procul.Api.Chat;
 using Procul.Api.Chat.V1;
 using Procul.Api.Infrastructure;
 using Procul.Api.Tests.Support;
@@ -14,7 +15,12 @@ namespace Procul.Api.Tests.Chat;
 public class TitleGenerationTests
 {
     private static ChatStreamServiceV1 NewService(FakeChatClient client) =>
-        new(NewDbContext(), client, McpTestHelpers.DisabledManager(), NullLogger<ChatStreamServiceV1>.Instance);
+        new(
+            NewDbContext(),
+            client,
+            McpTestHelpers.DisabledManager(),
+            new ChatModelOptions("test/model"),
+            NullLogger<ChatStreamServiceV1>.Instance);
 
     // The title call never touches the context, so an unconfigured one is enough: no provider
     // (and therefore no database) is ever needed.
@@ -31,9 +37,9 @@ public class TitleGenerationTests
     {
         var service = NewService(new FakeChatClient(raw));
 
-        var title = await service.GenerateTitleAsync("What is the capital of France?", CancellationToken.None);
+        var result = await service.GenerateTitleAsync("What is the capital of France?", CancellationToken.None);
 
-        Assert.Equal("France's capital", title);
+        Assert.Equal("France's capital", result.Title);
     }
 
     [Theory]
@@ -45,9 +51,9 @@ public class TitleGenerationTests
     {
         var service = NewService(new FakeChatClient(raw));
 
-        var title = await service.GenerateTitleAsync("hi", CancellationToken.None);
+        var result = await service.GenerateTitleAsync("hi", CancellationToken.None);
 
-        Assert.Null(title);
+        Assert.Null(result.Title);
     }
 
     [Fact]
@@ -56,9 +62,9 @@ public class TitleGenerationTests
         var service = NewService(new FakeChatClient((_, _, _) =>
             throw new InvalidOperationException("boom")));
 
-        var title = await service.GenerateTitleAsync("hi", CancellationToken.None);
+        var result = await service.GenerateTitleAsync("hi", CancellationToken.None);
 
-        Assert.Null(title);
+        Assert.Null(result.Title);
     }
 
     [Fact]
@@ -67,9 +73,9 @@ public class TitleGenerationTests
         var raw = new string('a', 120);
         var service = NewService(new FakeChatClient(raw));
 
-        var title = await service.GenerateTitleAsync("hi", CancellationToken.None);
+        var result = await service.GenerateTitleAsync("hi", CancellationToken.None);
 
-        Assert.NotNull(title);
-        Assert.True(title!.Length <= ChatStreamServiceV1.MaxTitleLength);
+        Assert.NotNull(result.Title);
+        Assert.True(result.Title!.Length <= ChatStreamServiceV1.MaxTitleLength);
     }
 }

@@ -32,9 +32,12 @@ backend/
     Dockerfile                     # multi-stage container build (build context: backend/)
     Chat/
       ChatServiceCollectionExtensions.cs  # AddProculChat: IChatClient + ChatStreamServiceV1
+      ChatModelOptions.cs          # startup-captured OPENROUTER_MODEL_SLUG (stamped on usage rows)
       Conversation.cs              # entity
       ConversationMessage.cs       # ConversationMessage entity
       MessageRole.cs               # enum + MessageRoleExtensions.ToChatRole() (namespace Procul.Api.Chat)
+      TurnUsage.cs                 # entity: one model call's token usage (TurnKind Chat | Title)
+      TurnUsageTotals.cs           # mutable accumulator for a turn's UsageContent payloads
       Tools/
         AgentTools.cs              # AITool registry + system prompt (source of ChatOptions.Tools)
         TimeTool.cs                # get_current_time
@@ -44,6 +47,7 @@ backend/
         ChatStreamServiceV1.cs     # conversation-turn streaming (create + reply + title)
         DataTypesV1.cs             # request/response DTOs for v1
         ChatStreamEventsV1.cs      # SSE event payloads + ChatStreamEventV1 hierarchy
+        TitleGenerationResult.cs   # title + its token usage (returned by GenerateTitleAsync)
     Configuration/
       DurationParser.cs            # shared <number><unit> duration parsing (d/h/m/s)
     Mcp/
@@ -57,6 +61,11 @@ backend/
       V1/
         McpEndpointsV1.cs          # GET /v1/mcp/servers (authenticated) + reconnect
         DataTypesV1.cs             # response DTOs
+    Usage/
+      UsageAggregator.cs           # pure UTC-day bucketing + totals (no Postgres needed)
+      V1/
+        UsageEndpointsV1.cs        # GET /v1/usage ; GET /v1/usage/conversations/{id}
+        DataTypesV1.cs             # usage response DTOs (camelCase; tokens only)
     Infrastructure/
       DbContext.cs                 # ProculDbContext + model config
       DbContextExtensions.cs       # AddProculDbContext
@@ -203,6 +212,8 @@ the auth and health routes do not (see Authentication).
 | POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. 404 if missing. |
 | GET | `/v{version}/mcp/servers` | JSON `McpServersResponseV1`: live per-server status. Authenticated. No secrets. |
 | POST | `/v{version}/mcp/servers/{name}/reconnect` | Force a reconnect. `McpReconnectResponseV1`; 404 if unknown. |
+| GET | `/v{version}/usage` | JSON `GetUsageResponseV1`: lifetime totals + per-UTC-day series + per-model breakdown (`days` 1–366, default 30). |
+| GET | `/v{version}/usage/conversations/{conversationId:guid}` | JSON `UsageTotalsV1`: all-time totals for one conversation. |
 
 **Conversation titles.** A conversation starts with a placeholder title (the first line of the
 initial message, truncated). On `POST /` the backend fires a *second*, tiny model call
@@ -223,8 +234,8 @@ stream completes. If it fails/times out, `FallbackTitle` is used. Rename/delete 
 - **SSE:** return `TypedResults.ServerSentEvents(IAsyncEnumerable<SseItem<ChatStreamEventV1>>)`
   (or the `IAsyncEnumerable<T>` overload). The response is `text/event-stream`, no `event:`
   name is emitted, and the event kind is carried by a `type` discriminator **inside the JSON
-  payload** (e.g. `created`, `acknowledge`, `token`, `toolCall`, `toolResult`, `error`,
-  `done`).
+  payload** (e.g. `created`, `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`,
+  `error`, `done`).
 - **Streaming turn logic** lives once in `ChatStreamServiceV1`. `StreamAssistantReplyAsync`
   is the shared reply turn; create wraps it with `StreamNewConversationAsync` (which emits
   `created` and the trailing `title`), and send calls it directly. Keep new streaming
@@ -266,6 +277,33 @@ activity **is surfaced** in the SSE stream: the streaming turn logic scans each
 (then `toolResult`, correlated by `callId`) events around the assistant's `token`s. The client
 can therefore show which tools ran during a turn; a reloaded conversation only replays the
 final assistant text.
+
+## Token usage
+
+Every model call the backend makes records its token usage so it survives restarts, and the
+client can show a per-conversation counter and a dashboard. There is **no dollar-cost
+estimate** — tokens only, bucketed by **UTC** calendar day.
+
+- **Entity.** `Chat/TurnUsage.cs`: one row per model call, with `Kind` (`TurnKind.Chat` for the
+  reply, `TurnKind.Title` for the concurrent title call), the `Model` slug, and
+  input/output/cached/total counts. Registered in `ProculDbContext` with a cascade delete from
+  the conversation and indexes on `ConversationId`/`CreatedAt`.
+- **Capture seam.** In `ChatStreamServiceV1.StreamTokens`, a `case UsageContent usageContent:`
+  feeds a `TurnUsageTotals` accumulator. Because `UseFunctionInvocation()` can make several
+  underlying model calls, the payloads are **summed**, not replaced; a single `usage` SSE event
+  is emitted just before `done` when any usage was seen, and the reply's total is persisted as a
+  `TurnKind.Chat` row in the same save as the assistant message. The title call's
+  `ChatResponse.Usage` is persisted as a `TurnKind.Title` row (`GenerateTitleAsync` returns a
+  `TitleGenerationResult` carrying it).
+- **Model slug.** `ChatModelOptions` (registered in `AddProculChat`) captures
+  `OPENROUTER_MODEL_SLUG` at startup, so each row records which model produced it.
+- **Aggregation.** `Usage/UsageAggregator.cs` is a pure function over `TurnUsage` rows: it
+  buckets by UTC day, zero-fills every day in the window, and totals per model — kept in C# so
+  it is testable without Postgres.
+- **Endpoints.** `GET /v{version}/usage?days=` (lifetime totals + per-day series + per-model
+  breakdown; `days` 1–366, default 30) and
+  `GET /v{version}/usage/conversations/{id}` (all-time totals for one conversation). Both are
+  authenticated like the rest of `/v1`.
 
 ## MCP (remote tool servers)
 
@@ -338,7 +376,9 @@ image is ASP.NET-only (no node/npx for stdio).
   `PrivateAssets=all` on the API, so it does not flow to `Procul.Api.Tests`, while Npgsql pulls
   an older EF Core. The test project references `Microsoft.EntityFrameworkCore.Relational`
   10.0.12 directly to keep its compile-time view in sync with the API assembly (otherwise
-  `CS1705`).
+  `CS1705`). It also references `Microsoft.EntityFrameworkCore.InMemory` (10.0.12): the usage
+  pipeline integration tests register it in place of Npgsql (leaving the connection string
+  unset, so migrations are skipped) and seed rows directly.
 - **Tests reach internals via `InternalsVisibleTo`.** `Procul.Api.csproj` exposes internals to
   `Procul.Api.Tests`, and `Program.cs` ends with a `public partial class Program` so the
   integration tests can boot the real app with `WebApplicationFactory<Program>`. CORS preflight

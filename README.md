@@ -38,8 +38,8 @@ Procul is a small ChatGPT-style chat application:
   **tools** (current time, and a sandboxed Python interpreter).
 - A **Flutter client** (Linux desktop, web, and mobile) with multiple conversations
   (list / switch / rename / delete), streaming replies, tool-activity display, Markdown
-  rendering, a persisted light/dark theme, and **multiple saved server profiles** behind a
-  shared-password sign-in.
+  rendering, a persisted light/dark theme, a **token-usage dashboard**, and **multiple saved
+  server profiles** behind a shared-password sign-in.
 
 The model is reached through [`Microsoft.Extensions.AI`](https://learn.microsoft.com/dotnet/ai/microsoft-extensions-ai)
 against [OpenRouter](https://openrouter.ai/).
@@ -47,7 +47,12 @@ against [OpenRouter](https://openrouter.ai/).
 ## Features
 
 - **Streaming replies** over SSE, with a `type`-tagged event protocol (`created`,
-  `acknowledge`, `token`, `toolCall`, `toolResult`, `title`, `error`, `done`).
+  `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`, `title`, `error`, `done`).
+- **Token-usage tracking**: every model call (reply and title) records its input / output /
+  cached / total tokens in PostgreSQL. The backend serves lifetime, per-day, and per-model
+  totals from the authenticated `GET /v1/usage` endpoint (and per-conversation totals from
+  `GET /v1/usage/conversations/{id}`); the client shows a live counter in the chat app bar and
+  a **Usage** dashboard (daily chart, lifetime cards, per-model breakdown).
 - **Agent tools** the model can call mid-turn: `get_current_time` and `run_python`
   (a contained, file/network-denying Python subset via `Lokad.Lython`).
 - **MCP tool servers**: connect to remote Streamable HTTP / SSE MCP servers, discover their
@@ -56,7 +61,7 @@ against [OpenRouter](https://openrouter.ai/).
 - **AI-generated conversation titles** produced concurrently with the first reply.
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
-  motion.
+  motion (including a shimmer sweep over assistant text while it streams).
 - **Password-protected API** with expiring HS256 session tokens stored in the device's secure
   storage, plus a public `/health` probe.
 - **Multiple server profiles** the client can add, switch between, and remove.
@@ -70,6 +75,7 @@ against [OpenRouter](https://openrouter.ai/).
 ├── backend/                 # ASP.NET Core (.NET 10) API
 │   ├── src/Procul.Api/       # the API project
 │   │   ├── Chat/             # endpoints, streaming service, tools, DTOs, entities
+│   │   ├── Usage/            # token-usage aggregation + `GET /v1/usage` endpoints
 │   │   ├── Cors/             # browser CORS policy
 │   │   ├── Security/         # shared-password auth: verifier, session JWTs, endpoints
 │   │   ├── Infrastructure/   # EF Core DbContext
@@ -97,7 +103,7 @@ architecture, conventions, and hard-won gotchas. Those are the best place to sta
 | -------- | ---------- |
 | Backend  | .NET 10, ASP.NET Core minimal APIs, EF Core 10 + Npgsql, `Microsoft.Extensions.AI`, `Asp.Versioning`, `Lokad.Lython` |
 | Database | PostgreSQL |
-| Frontend | Flutter (Dart 3), `shadcn_flutter`, `gpt_markdown`, `google_fonts`, `package:http`, `flutter_secure_storage` |
+| Frontend | Flutter (Dart 3), `shadcn_flutter`, `gpt_markdown`, `google_fonts`, `fl_chart`, `package:http`, `flutter_secure_storage` |
 | Model    | OpenRouter (any model slug you configure) |
 | CI/CD    | GitHub Actions, Docker Buildx, GitHub Container Registry |
 
@@ -236,7 +242,8 @@ cd frontend && flutter analyze     # must stay clean
 ```
 
 The backend suite covers title generation and sanitization, tool invocation (time and the
-Python sandbox), the SSE/JSON wire contract, API versioning, and the CORS policy —
+Python sandbox), token-usage aggregation and its HTTP pipeline, the SSE/JSON wire contract,
+API versioning, and the CORS policy —
 including a full `WebApplicationFactory` preflight test against the real pipeline.
 
 ## Container image

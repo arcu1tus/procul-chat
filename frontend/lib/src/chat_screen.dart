@@ -147,6 +147,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     ]
                   : const [],
               trailing: [
+                if (active != null && chat.activeUsage.hasTokens)
+                  _UsageChip(usage: chat.activeUsage),
                 IconAction(
                   icon: LucideIcons.refreshCw,
                   label: 'Refresh',
@@ -436,8 +438,168 @@ class _AssistantText extends StatelessWidget {
           ? const _ThinkingDots()
           : Text('…', style: TextStyle(color: colors.mutedForeground));
     }
-    return GptMarkdown(text, isStreaming: isStreaming);
+    return _ShimmerText(
+      active: isStreaming,
+      child: GptMarkdown(text, isStreaming: isStreaming),
+    );
   }
+}
+
+/// A compact app-bar chip showing the active conversation's cumulative token
+/// count; tapping reveals the input / output / cached / total breakdown.
+class _UsageChip extends StatelessWidget {
+  const _UsageChip({required this.usage});
+
+  final TokenUsage usage;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+
+    return Semantics(
+      button: true,
+      label: 'Token usage',
+      child: Tooltip(
+        tooltip: (context) =>
+            const TooltipContainer(child: Text('Token usage')),
+        child: Clickable(
+          onPressed: () => _showBreakdown(context),
+          disableHoverEffect: true,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: colors.muted,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: colors.border),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  LucideIcons.coins,
+                  size: 14,
+                  color: colors.mutedForeground,
+                ),
+                const Gap(6),
+                Text('${formatTokenCount(usage.totalTokens)} tokens').small,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showBreakdown(BuildContext context) {
+    showDropdown(
+      context: context,
+      builder: (context) => DropdownMenu(
+        children: [
+          _usageLabel('Input', usage.inputTokens),
+          _usageLabel('Output', usage.outputTokens),
+          _usageLabel('Cached', usage.cachedInputTokens),
+          const MenuDivider(),
+          _usageLabel('Total', usage.totalTokens, emphasized: true),
+        ],
+      ),
+    );
+  }
+
+  /// A read-only labelled token count for the usage popover.
+  static MenuLabel _usageLabel(
+    String label,
+    int value, {
+    bool emphasized = false,
+  }) => MenuLabel(
+    trailing: Text(
+      formatTokenCount(value),
+      style: TextStyle(
+        fontWeight: emphasized ? FontWeight.w600 : FontWeight.w500,
+      ),
+    ),
+    child: Text(label),
+  );
+}
+
+/// Sweeps a gradient highlight across [child] while [active], so streaming
+/// assistant text shimmers. It owns its own controller, so per-token rebuilds of
+/// the text do not restart the sweep; once [active] is false the overlay is
+/// removed and the text renders normally.
+class _ShimmerText extends StatefulWidget {
+  const _ShimmerText({required this.active, required this.child});
+
+  final bool active;
+  final Widget child;
+
+  @override
+  State<_ShimmerText> createState() => _ShimmerTextState();
+}
+
+class _ShimmerTextState extends State<_ShimmerText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _controller.repeat();
+  }
+
+  @override
+  void didUpdateWidget(_ShimmerText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !_controller.isAnimating) {
+      _controller.repeat();
+    } else if (!widget.active && _controller.isAnimating) {
+      _controller.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.active) {
+      return widget.child;
+    }
+
+    final foreground = ColorScheme.of(context).foreground;
+    final base = foreground.withValues(alpha: 0.45);
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) => ShaderMask(
+        blendMode: BlendMode.srcIn,
+        shaderCallback: (bounds) => LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [base, foreground, base],
+          stops: const [0.35, 0.5, 0.65],
+          transform: _SlidingGradientTransform(_controller.value * 2 - 1),
+        ).createShader(bounds),
+        child: child,
+      ),
+      child: widget.child,
+    );
+  }
+}
+
+/// Slides a gradient horizontally by a fraction of its bounds.
+class _SlidingGradientTransform extends GradientTransform {
+  const _SlidingGradientTransform(this.slidePercent);
+
+  final double slidePercent;
+
+  @override
+  Matrix4? transform(Rect bounds, {TextDirection? textDirection}) =>
+      Matrix4.translationValues(bounds.width * slidePercent, 0, 0);
 }
 
 /// Three softly pulsing dots shown in an assistant bubble until the first token

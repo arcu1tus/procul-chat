@@ -20,6 +20,8 @@ class ConversationSidebar extends StatelessWidget {
     required this.settings,
     required this.auth,
     this.onClose,
+    this.onOpenUsage,
+    this.onOpenChat,
   });
 
   final ChatController chat;
@@ -28,6 +30,12 @@ class ConversationSidebar extends StatelessWidget {
 
   /// Called after an action that should dismiss a drawer-hosted sidebar.
   final VoidCallback? onClose;
+
+  /// Opens the usage dashboard in the main pane.
+  final VoidCallback? onOpenUsage;
+
+  /// Returns the main pane to the active conversation.
+  final VoidCallback? onOpenChat;
 
   @override
   Widget build(BuildContext context) {
@@ -61,22 +69,50 @@ class ConversationSidebar extends StatelessWidget {
                   ),
                 ),
                 Expanded(
-                  child: _ConversationList(chat: chat, onClose: onClose),
+                  child: _ConversationList(
+                    chat: chat,
+                    onClose: onClose,
+                    onOpenChat: onOpenChat,
+                  ),
                 ),
                 const Divider(),
                 Padding(
                   padding: const EdgeInsets.all(8),
-                  child: GhostButton(
-                    alignment: Alignment.centerLeft,
-                    onPressed: () =>
-                        showSettingsDialog(context, settings, auth, chat.api),
-                    child: const Row(
-                      children: [
-                        Icon(LucideIcons.settings, size: 16),
-                        Gap(10),
-                        Text('Settings'),
-                      ],
-                    ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: GhostButton(
+                          alignment: Alignment.centerLeft,
+                          onPressed: onOpenUsage,
+                          child: const Row(
+                            children: [
+                              Icon(LucideIcons.chartColumn, size: 16),
+                              Gap(10),
+                              Text('Usage'),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const Gap(4),
+                      Expanded(
+                        child: GhostButton(
+                          alignment: Alignment.centerLeft,
+                          onPressed: () => showSettingsDialog(
+                            context,
+                            settings,
+                            auth,
+                            chat.api,
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(LucideIcons.settings, size: 16),
+                              Gap(10),
+                              Text('Settings'),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -89,6 +125,7 @@ class ConversationSidebar extends StatelessWidget {
 
   Future<void> _newChat(BuildContext context) async {
     await chat.newChat();
+    onOpenChat?.call();
     onClose?.call();
   }
 }
@@ -151,10 +188,11 @@ class _Header extends StatelessWidget {
 }
 
 class _ConversationList extends StatelessWidget {
-  const _ConversationList({required this.chat, this.onClose});
+  const _ConversationList({required this.chat, this.onClose, this.onOpenChat});
 
   final ChatController chat;
   final VoidCallback? onClose;
+  final VoidCallback? onOpenChat;
 
   @override
   Widget build(BuildContext context) {
@@ -193,6 +231,7 @@ class _ConversationList extends StatelessWidget {
             selected: conversation.id == chat.activeConversationId,
             onSelect: () {
               chat.selectConversation(conversation.id);
+              onOpenChat?.call();
               onClose?.call();
             },
             onRename: () =>

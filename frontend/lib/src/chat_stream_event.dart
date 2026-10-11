@@ -69,6 +69,15 @@ class ErrorEvent extends ChatStreamEvent {
   final String error;
 }
 
+/// `type: "usage"` — token usage for the reply, emitted once just before `done`.
+///
+/// The counts are summed across every underlying model call on the turn (the
+/// tool-invocation loop can make several).
+class UsageEvent extends ChatStreamEvent {
+  const UsageEvent(this.usage);
+  final TokenUsage usage;
+}
+
 /// `type: "done"` — the assistant's reply is complete and persisted.
 class DoneEvent extends ChatStreamEvent {
   const DoneEvent();

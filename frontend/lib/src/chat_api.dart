@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'chat_stream_event.dart';
 import 'mcp_status.dart';
 import 'models.dart';
+import 'usage.dart';
 
 /// Thrown when the backend returns a non-success HTTP status.
 class ChatApiException implements Exception {
@@ -158,6 +159,41 @@ class ChatApi {
         .toList(growable: false);
   }
 
+  /// `GET /v1/usage/conversations/{id}` — all-time token totals for one conversation.
+  ///
+  /// Seeds the in-chat counter when a conversation is opened; the client then adds
+  /// each turn's `usage` event to the running total.
+  Future<TokenUsage> fetchConversationUsage(String conversationId) async {
+    final response = await _client.get(
+      _uri('/v1/usage/conversations/$conversationId'),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+
+    return TokenUsage.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// `GET /v1/usage?days=n` — lifetime totals plus a per-day / per-model breakdown.
+  Future<UsageSummary> fetchUsage({int days = 30}) async {
+    final response = await _client.get(
+      _uri('/v1/usage', {'days': '$days'}),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+
+    return UsageSummary.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   /// `POST /v1/conversations` — creates a conversation and streams the reply.
   Stream<ChatStreamEvent> createConversation(String initialMessage) => _stream(
     _postSse('/v1/conversations/', {'initialMessage': initialMessage}),
@@ -276,6 +312,14 @@ class ChatApi {
         error: value['error'] as String?,
       ),
       'error' => ErrorEvent('${value['error'] ?? 'unknown error'}'),
+      'usage' => UsageEvent(
+        TokenUsage(
+          inputTokens: (value['inputTokens'] as num?)?.toInt() ?? 0,
+          outputTokens: (value['outputTokens'] as num?)?.toInt() ?? 0,
+          cachedInputTokens: (value['cachedInputTokens'] as num?)?.toInt() ?? 0,
+          totalTokens: (value['totalTokens'] as num?)?.toInt() ?? 0,
+        ),
+      ),
       'done' => const DoneEvent(),
       _ => null,
     };

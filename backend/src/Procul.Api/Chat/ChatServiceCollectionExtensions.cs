@@ -32,6 +32,7 @@ public static class ChatServiceCollectionExtensions
             .UseFunctionInvocation();
 
         services.AddScoped<ChatStreamServiceV1>();
+        services.AddSingleton(new ChatModelOptions(model));
         return services;
     }
 }
