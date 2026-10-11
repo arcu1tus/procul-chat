@@ -17,17 +17,42 @@ class ChatApiException implements Exception {
   String toString() => 'ChatApiException($statusCode): $message';
 }
 
+/// Thrown when the backend rejects the session token (`401`). The caller should
+/// sign in again.
+class UnauthorizedException extends ChatApiException {
+  UnauthorizedException([
+    super.message =
+        'Your session has expired or is no longer valid. Please sign in again.',
+  ]) : super(statusCode: 401);
+}
+
 /// Minimal client for the Procul backend's `/v1/conversations` surface.
+///
+/// Every request carries the session token as `Authorization: Bearer …`. A
+/// `401` raises [UnauthorizedException] and invokes [onUnauthorized] once, so
+/// the app can bounce back to the Connect screen.
 ///
 /// SSE is consumed manually: the backend emits `data: {json}` lines (with no
 /// `event:` name) followed by a blank line, and carries the event kind inside
 /// the JSON as `value.type`.
 class ChatApi {
-  ChatApi({required this.baseUrl, http.Client? client})
-    : _client = client ?? http.Client();
+  ChatApi({
+    required this.baseUrl,
+    required this.token,
+    http.Client? client,
+    this.onUnauthorized,
+  }) : _client = client ?? http.Client();
 
   final String baseUrl;
+  final String token;
   final http.Client _client;
+
+  /// Called at most once, on the first `401`, so the app can log out.
+  final void Function()? onUnauthorized;
+
+  bool _unauthorizedNotified = false;
+
+  Map<String, String> get _authHeaders => {'Authorization': 'Bearer $token'};
 
   Uri _uri(String path, [Map<String, String>? query]) =>
       Uri.parse('$baseUrl$path').replace(queryParameters: query);
@@ -37,10 +62,13 @@ class ChatApi {
   /// Returns every conversation, most recently active first (as ordered by the
   /// backend).
   Future<List<Conversation>> listConversations() async {
-    final response = await _client.get(_uri('/v1/conversations'));
+    final response = await _client.get(
+      _uri('/v1/conversations'),
+      headers: _authHeaders,
+    );
 
     if (response.statusCode != 200) {
-      throw ChatApiException(response.body, statusCode: response.statusCode);
+      _throwHttpError(response.statusCode, response.body);
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -55,12 +83,12 @@ class ChatApi {
   Future<Conversation> renameConversation(String id, String title) async {
     final response = await _client.patch(
       _uri('/v1/conversations/$id'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {..._authHeaders, 'Content-Type': 'application/json'},
       body: jsonEncode({'title': title}),
     );
 
     if (response.statusCode != 200) {
-      throw ChatApiException(response.body, statusCode: response.statusCode);
+      _throwHttpError(response.statusCode, response.body);
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -73,10 +101,13 @@ class ChatApi {
   ///
   /// A 404 is treated as success: the goal state (gone) is already achieved.
   Future<void> deleteConversation(String id) async {
-    final response = await _client.delete(_uri('/v1/conversations/$id'));
+    final response = await _client.delete(
+      _uri('/v1/conversations/$id'),
+      headers: _authHeaders,
+    );
 
     if (response.statusCode != 204 && response.statusCode != 404) {
-      throw ChatApiException(response.body, statusCode: response.statusCode);
+      _throwHttpError(response.statusCode, response.body);
     }
   }
 
@@ -90,10 +121,11 @@ class ChatApi {
   }) async {
     final response = await _client.get(
       _uri('/v1/conversations/$conversationId/messages', {'limit': '$limit'}),
+      headers: _authHeaders,
     );
 
     if (response.statusCode != 200) {
-      throw ChatApiException(response.body, statusCode: response.statusCode);
+      _throwHttpError(response.statusCode, response.body);
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -121,7 +153,7 @@ class ChatApi {
     Map<String, Object?> body,
   ) {
     final request = http.Request('POST', _uri(path))
-      ..headers.addAll(_sseHeaders)
+      ..headers.addAll({..._authHeaders, ..._sseHeaders})
       ..body = jsonEncode(body);
     return _client.send(request);
   }
@@ -133,6 +165,19 @@ class ChatApi {
     'Accept': 'text/event-stream',
   };
 
+  /// Raises the appropriate exception for a non-success response, notifying
+  /// [onUnauthorized] once on the first `401`.
+  Never _throwHttpError(int statusCode, String body) {
+    if (statusCode == 401) {
+      if (!_unauthorizedNotified) {
+        _unauthorizedNotified = true;
+        onUnauthorized?.call();
+      }
+      throw UnauthorizedException();
+    }
+    throw ChatApiException(body, statusCode: statusCode);
+  }
+
   Stream<ChatStreamEvent> _stream(
     Future<http.StreamedResponse> request,
   ) async* {
@@ -140,7 +185,7 @@ class ChatApi {
 
     if (response.statusCode != 200) {
       final body = await response.stream.bytesToString();
-      throw ChatApiException(body, statusCode: response.statusCode);
+      _throwHttpError(response.statusCode, body);
     }
 
     final lines = response.stream

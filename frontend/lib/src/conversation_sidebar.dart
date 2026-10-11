@@ -1,6 +1,7 @@
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
+import 'auth_controller.dart';
 import 'chat_controller.dart';
 import 'conversation_actions.dart';
 import 'models.dart';
@@ -17,11 +18,13 @@ class ConversationSidebar extends StatelessWidget {
     super.key,
     required this.chat,
     required this.settings,
+    required this.auth,
     this.onClose,
   });
 
   final ChatController chat;
   final SettingsController settings;
+  final AuthController auth;
 
   /// Called after an action that should dismiss a drawer-hosted sidebar.
   final VoidCallback? onClose;
@@ -65,7 +68,8 @@ class ConversationSidebar extends StatelessWidget {
                   padding: const EdgeInsets.all(8),
                   child: GhostButton(
                     alignment: Alignment.centerLeft,
-                    onPressed: () => showSettingsDialog(context, settings),
+                    onPressed: () =>
+                        showSettingsDialog(context, settings, auth),
                     child: const Row(
                       children: [
                         Icon(LucideIcons.settings, size: 16),

@@ -10,7 +10,9 @@ The Flutter chat client ("Procul") for the Procul backend. It supports **multipl
 conversations** (list, switch, rename, delete), streams assistant replies over SSE, shows
 tool activity, renders assistant Markdown, and has a persisted **settings** dialog (theme:
 light / dark / system, dark default). It talks to the backend's versioned
-`/v1/conversations` API.
+`/v1/conversations` API, which is **password-protected**: the app signs in with a shared
+password, keeps the returned session token in secure storage, and can save and switch between
+**multiple server profiles**.
 
 - **Flutter** (Dart `^3.13.5`).
 - **UI:** [`shadcn_flutter`](https://pub.dev/packages/shadcn_flutter) (`^0.0.55`) — the app
@@ -22,7 +24,9 @@ light / dark / system, dark default). It talks to the backend's versioned
   bundled **GeistMono**.
 - **Markdown:** `gpt_markdown` (`^1.3.4`) renders assistant replies (code, lists, bold).
 - **HTTP:** `package:http` (manual SSE parsing; no SSE package).
-- **Persistence:** `package:shared_preferences` — the active conversation id and settings.
+- **Persistence:** `package:shared_preferences` — server profiles (without tokens), the active
+  server id, the active conversation id and settings.
+- **Secure storage:** `package:flutter_secure_storage` — per-profile session tokens only.
 - **State:** plain `ChangeNotifier`s surfaced with `ListenableBuilder`. No
   provider/riverpod/bloc.
 
@@ -33,11 +37,20 @@ The backend lives in `../backend` and its contract is documented in `../backend/
 ```
 frontend/
   lib/
-    main.dart                     # entrypoint: preloads settings + fonts, then MaterialShadcnApp
+    main.dart                     # entrypoint: preloads settings + auth + fonts; routes between
+                                  #   ConnectScreen (signed out) and the keyed AuthenticatedShell
     src/
+      config.dart                 # apiBaseUrl (PROCUL_API_BASE dart-define)
       models.dart                 # domain types: Conversation, ChatMessage, ToolCall, MessageRole
       chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/ToolCall/...)
-      chat_api.dart               # ChatApi: REST (list/rename/delete) + SSE client
+      chat_api.dart               # ChatApi: authenticated REST + SSE client (Bearer token)
+      auth_api.dart               # AuthApi: unauthenticated POST /v1/auth/session
+      auth_controller.dart        # AuthController: server profiles + active session
+      server_profile.dart         # ServerProfile + URL parsing/normalization helpers
+      server_store.dart           # ServerStore: profile list + active id (shared_preferences)
+      credential_store.dart       # CredentialStore: per-profile token (flutter_secure_storage)
+      connect_screen.dart         # signed-out screen: saved servers + add-server form
+      server_form.dart            # shared add-server form + add/remove dialogs
       conversation_store.dart     # ConversationStore: active conversation id (shared_preferences)
       settings_store.dart         # SettingsStore: persisted preferences (shared_preferences)
       settings_controller.dart    # SettingsController: theme mode (dark default)
@@ -47,13 +60,14 @@ frontend/
       home_shell.dart             # responsive shell: sidebar (wide) / animated slide-in panel (narrow)
       conversation_sidebar.dart   # conversation list, new chat, settings footer
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
-      settings_dialog.dart        # settings dialog (Light/Dark/System segmented control)
+      settings_dialog.dart        # settings dialog (theme selector + server management)
       chat_screen.dart            # chat pane: header, message list, composer
       widgets/
         skeleton.dart             # Shimmer + Skeleton loading placeholders
         icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label
-  test/                           # controller, API, settings, and widget tests
-  test/support/                   # shared test doubles (e.g. FakeConversationStore)
+  test/                           # controller, API, auth, settings, and widget tests
+  test/support/                   # shared test doubles (FakeConversationStore, FakeCredentialStore,
+                                  #   FakeServerStore)
   test/flutter_test_config.dart   # disables google_fonts runtime fetching for all tests
   linux/ android/ ios/ ...        # platform shells (generated)
   pubspec.yaml
@@ -90,7 +104,14 @@ flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.co
 
 ## Backend contract (v1) as consumed here
 
-Base: `{PROCUL_API_BASE}/v1/conversations`.
+**Authentication.** Every `/v1/conversations` request carries `Authorization: Bearer <token>`.
+The token comes from `POST {baseUrl}/v1/auth/session` with body `{"password":"…"}` →
+`200 {"token":"…","expiresAt":"…"}` or `401`. A `401` on any request raises
+`UnauthorizedException` and fires `ChatApi.onUnauthorized` once, which the app wires to
+`AuthController.logout()` — so an expired token (or a server-side password change) drops the
+user back to the Connect screen. `GET {baseUrl}/health` is public.
+
+Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's saved URL.
 
 | Action | Request | Response |
 | --- | --- | --- |
@@ -156,6 +177,17 @@ reaches the buffer.
   `isDark` is a derived getter. `main.dart` rebuilds `MaterialShadcnApp` from it, and
   **awaits `settings.init()` (plus `GoogleFonts.pendingFonts`) before `runApp`** so the
   stored theme and fonts are in place on the first frame (no startup flash).
+- **Auth is a `ChangeNotifier` + two stores.** `AuthController` owns the saved `ServerProfile`
+  list and the active session. Profiles (and the active id) persist in `shared_preferences`
+  via `ServerStore`; **session tokens persist only in secure storage** via `CredentialStore`.
+  `main.dart` builds the controller, awaits `init()`, and renders `ConnectScreen` when
+  `auth.active == null`, else an `AuthenticatedShell` **keyed by the profile id** so switching
+  servers disposes the old `ChatController`/`ChatApi` and starts clean. `logout()` clears the
+  active token (keeping the profile); `removeProfile(id)` also drops the profile.
+- **The "add server" form is one widget, used twice.** `ServerForm` (`server_form.dart`) is
+  embedded on the Connect screen and wrapped in a modal by `showAddServerDialog`, which
+  Settings also calls. It owns its own validation and inline error; the modal's Save action
+  drives `ServerFormState.submit()` so there is a single implementation.
 - **Composer keyboard.** On desktop **Enter sends** and **Shift+Enter inserts a newline**
   (`CallbackShortcuts` bound to `SingleActivator(enter)`; the shifted variant falls through
   to the field). The on-screen send button and `onSubmitted` are kept, so
@@ -176,6 +208,21 @@ reaches the buffer.
   `DropdownMenu` via `showDropdown`, `showToast`, `Clickable`) and `LucideIcons`. There is no
   Material `ScaffoldMessenger`/`SnackBar` usage.
 - **Text styles are extension getters**, e.g. `Text('x').muted.small`, `.semiBold.large`.
+
+## Secure storage & platforms
+
+Session tokens live in `flutter_secure_storage` (a per-profile key, `procul.session.<id>`).
+There is **no fallback to `shared_preferences`** — if secure storage is unavailable the app
+surfaces the error rather than downgrading the token to plaintext.
+
+- **Linux** (the main target): needs `libsecret` at build *and* runtime, plus a running keyring
+  (`gnome-keyring`, `kwallet` or another Secret Service implementation). Without one, reads
+  and writes fail.
+- **Web**: needs HTTPS or `localhost` (both fine); the implementation is experimental.
+- **Windows**: needs the C++ ATL build tools.
+- **macOS**: `SecureCredentialStore` passes `MacOsOptions(usesDataProtectionKeychain: false)`
+  so the app does not need a provisioning profile / the data-protection-keychain entitlement.
+- **Android/iOS**: use the platform Keystore/Keychain with no extra setup.
 
 ## Gotchas (learned the hard way)
 
@@ -239,5 +286,19 @@ reaches the buffer.
   sets `android:usesCleartextTraffic="true"` so debug builds can talk to the plain-HTTP dev
   backend. Release builds keep the secure default. If you switch to HTTPS, remove it.
 - **`flutter analyze` must stay clean.** `dart format lib test` before committing.
+- **Tests must not touch the secure storage or `shared_preferences` channels.** Inject
+  `FakeCredentialStore` / `FakeServerStore` (in `test/support/`) into `AuthController`, and
+  `FakeConversationStore` into `ChatController`; `flutter_secure_storage` has no test double in
+  the plugin, so a real `SecureCredentialStore` would fail on the platform channel.
+- **The 401 path is the sign-out path.** `ChatApi` fires `onUnauthorized` once (wired to
+  `auth.logout()`), and `main.dart` keys `AuthenticatedShell` by profile id. If you add a new
+  authenticated call, route it through `ChatApi` so it inherits both the bearer header and the
+  401 handling — don't build a second HTTP client.
+- **shadcn `Text` has no `.destructive` style.** The text extensions only cover sizes, weights
+  and a few colors (`muted`, `primaryForeground`, …). For error text use
+  `Text(x, style: TextStyle(color: ColorScheme.of(context).destructive))`.
+- **`Uri.replace` cannot clear a query/fragment.** Passing `query: ''`/`fragment: ''` yields a
+  trailing `?#`. `normalizeBaseUrl` (in `server_profile.dart`) builds `uri.origin + path`
+  instead, which also strips the trailing slash.
 - **The persisted conversation id can dangle.** If the backend's DB was reset, `init()`'s list
   won't contain it; the controller clears the stored id and starts fresh instead of crashing.

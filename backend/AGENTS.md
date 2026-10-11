@@ -46,6 +46,14 @@ backend/
       DbContext.cs                 # ProculDbContext + model config
       DbContextExtensions.cs       # AddProculDbContext
     Cors/CorsExtensions.cs         # AddProculCors/UseProculCors (browser/web origin policy)
+    Security/
+      AuthOptions.cs               # PROCUL_API_PASSWORD + PROCUL_SESSION_LIFETIME (fail fast)
+      PasswordVerifier.cs          # constant-time password check (SHA-256 + FixedTimeEquals)
+      SessionTokenService.cs       # issues HS256 session JWTs (key derived from the password)
+      AuthExtensions.cs            # AddProculAuth/UseProculAuth (JWT bearer + authorization)
+      V1/
+        AuthEndpointsV1.cs         # /v1/auth/session: exchange password -> token, probe
+        DataTypesV1.cs             # request/response DTOs for the auth endpoints
     Versioning/                    # ApiVersions + AddProculApiVersioning
     Migrations/                    # EF Core migrations
     docker/docker-compose.yaml     # dev-only Postgres
@@ -85,12 +93,19 @@ Loaded by `DotNetEnv.Env.Load()` at startup from `src/Procul.Api/.env` (gitignor
 
 - `ConnectionStrings__ChatContext` — Postgres connection string.
 - `OPENROUTER_API_KEY`, `OPENROUTER_MODEL_SLUG` — read once at startup; app throws if missing.
+- `PROCUL_API_PASSWORD` — the shared password protecting the whole API. **Required**: startup
+  fails fast when it is unset/empty. The client exchanges it for a session token (see
+  Authentication). Use a strong random value.
+- `PROCUL_SESSION_LIFETIME` — how long an issued session token stays valid. Optional; defaults
+  to `30d`. Accepts one or more `<number><unit>` segments with unit `d`/`h`/`m`/`s`
+  (e.g. `12h`, `1h30m`); a malformed value fails startup.
 - `CORS_ALLOWED_ORIGINS` — comma-separated browser origins allowed to call the API
   (e.g. `https://app.example.com`). In **development** only, when unset, any origin is allowed
   (the Flutter web dev server uses an ephemeral `localhost` port, so pinning an origin is
   impractical). In every other environment the policy allows **no** cross-origin request until
   this is set — there is no wildcard in production. A `*` or a malformed value makes startup
-  fail fast. The API is unauthenticated and cookie-less, so no credentials travel.
+  fail fast. The API is cookie-less: clients send a bearer token (see Authentication), so CORS
+  never enables `AllowCredentials`.
 
 The app manages its own schema: on startup it applies pending EF Core migrations (see
 Build / run / test). There is no flag for this — it happens whenever a database is configured.
@@ -107,6 +122,7 @@ docker build -f backend/src/Procul.Api/Dockerfile -t procul-api backend
 docker run --rm -p 8080:8080 \
   -e OPENROUTER_API_KEY=... -e OPENROUTER_MODEL_SLUG=... \
   -e ConnectionStrings__ChatContext="..." -e CORS_ALLOWED_ORIGINS=https://app.example.com \
+  -e PROCUL_API_PASSWORD=... \
   procul-api
 ```
 
@@ -122,12 +138,39 @@ docker run --rm -p 8080:8080 \
   `.github/workflows/publish-backend-image.yml` tests and pushes
   `ghcr.io/<owner>/<repo>/backend-api` on `v*` tags (via `GITHUB_TOKEN`, `packages: write`).
 
+## Authentication
+
+The whole `/v1` API is gated by a single shared password (`PROCUL_API_PASSWORD`). There are no
+users and no token store.
+
+- `POST /v1/auth/session` — body `{"password":"…"}`. Correct → `200 {"token":"…","expiresAt":"…"}`;
+  wrong/empty → `401` (generic body, never says why). Unauthenticated.
+- `GET /v1/auth/session` — authenticated probe: `204` when the bearer token is valid, else `401`.
+- `GET /health` — unauthenticated liveness probe.
+- Every `/v1/conversations` route requires `Authorization: Bearer <token>`.
+
+The token is an **HS256 JWT** (`sub="procul"`, `iat`, `exp`) issued by `SessionTokenService`.
+Its signing key is `SHA-256(password + fixed context)`, so **changing the password invalidates
+every existing token** with no server-side state. Validation uses
+`Microsoft.AspNetCore.Authentication.JwtBearer` with `ClockSkew = TimeSpan.Zero` (the `exp`
+claim is honored exactly). `PasswordVerifier` compares candidate passwords in constant time
+(SHA-256 both sides, then `FixedTimeEquals`) so timing leaks neither length nor prefix.
+
+`UseProculAuth()` (`UseAuthentication`/`UseAuthorization`) runs **after** `UseProculCors()`, so
+CORS preflight (`OPTIONS`) short-circuits before authorization and stays unauthenticated — the
+browser flow is unchanged. `Authorization` is a normal header already covered by
+`AllowAnyHeader()`.
+
 ## API surface (v1)
 
-Base: `/v{version}/conversations` (e.g. `/v1/conversations`).
+Base: `/v{version}/conversations` (e.g. `/v1/conversations`). All routes require a bearer token;
+the auth and health routes do not (see Authentication).
 
 | Method | Route | Result |
 | --- | --- | --- |
+| GET | `/health` | JSON `{"status":"healthy"}`. Unauthenticated. |
+| POST | `/v{version}/auth/session` | Exchange the password for a session token. 200 or 401. Unauthenticated. |
+| GET | `/v{version}/auth/session` | Authenticated probe: 204 if the token is valid, else 401. |
 | GET | `/` | JSON `GetConversationsResponseV1`. All conversations, newest activity first. |
 | POST | `/` | **SSE** stream. Creates a conversation, streams the assistant reply, then a `title` event. |
 | GET | `/{conversationId:guid}` | JSON `ConversationV1` or 404. |
@@ -246,3 +289,8 @@ final assistant text.
   `Procul.Api.Tests`, and `Program.cs` ends with a `public partial class Program` so the
   integration tests can boot the real app with `WebApplicationFactory<Program>`. CORS preflight
   tests need no database; keep it that way (the app connects to Postgres lazily).
+- **The app fails fast without `PROCUL_API_PASSWORD`.** Any test that boots the real app
+  (`WebApplicationFactory<Program>`) must set it via
+  `UseSetting("PROCUL_API_PASSWORD", …)`, or startup throws. The authenticated probe
+  (`GET /v1/auth/session`) is the DB-free way to assert a token was accepted; a request to
+  `/v1/conversations` would need Postgres.

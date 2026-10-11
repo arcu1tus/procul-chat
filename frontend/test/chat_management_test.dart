@@ -29,7 +29,7 @@ void main() {
       );
     });
     final controller = ChatController(
-      api: ChatApi(baseUrl: 'http://test', client: client),
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
       store: FakeConversationStore(),
     );
 
@@ -79,7 +79,11 @@ void main() {
       }
       return http.Response('not found', 404);
     });
-    final api = ChatApi(baseUrl: 'http://test', client: client);
+    final api = ChatApi(
+      baseUrl: 'http://test',
+      token: 'test-token',
+      client: client,
+    );
 
     final listed = await api.listConversations();
     expect(listed, hasLength(1));
@@ -127,7 +131,7 @@ void main() {
       return http.Response('', 404);
     });
     final controller = ChatController(
-      api: ChatApi(baseUrl: 'http://test', client: client),
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
       store: FakeConversationStore(),
     );
 

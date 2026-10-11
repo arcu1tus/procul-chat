@@ -1,5 +1,6 @@
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
+import 'auth_controller.dart';
 import 'chat_controller.dart';
 import 'chat_screen.dart';
 import 'conversation_sidebar.dart';
@@ -8,10 +9,16 @@ import 'settings_controller.dart';
 /// The app's root layout: a persistent sidebar next to the chat on wide
 /// screens, and the chat alone (with a slide-in sidebar) on narrow ones.
 class HomeShell extends StatefulWidget {
-  const HomeShell({super.key, required this.chat, required this.settings});
+  const HomeShell({
+    super.key,
+    required this.chat,
+    required this.settings,
+    required this.auth,
+  });
 
   final ChatController chat;
   final SettingsController settings;
+  final AuthController auth;
 
   static const _sidebarBreakpoint = 840.0;
   static const _sidebarWidth = 300.0;
@@ -69,6 +76,7 @@ class _HomeShellState extends State<HomeShell>
                   child: ConversationSidebar(
                     chat: widget.chat,
                     settings: widget.settings,
+                    auth: widget.auth,
                   ),
                 ),
                 Container(width: 1, color: colors.border),
@@ -118,6 +126,7 @@ class _HomeShellState extends State<HomeShell>
                   child: ConversationSidebar(
                     chat: widget.chat,
                     settings: widget.settings,
+                    auth: widget.auth,
                     onClose: _closeSidebar,
                   ),
                 ),

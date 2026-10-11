@@ -6,6 +6,8 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:procul_chat_flutter/src/app_theme.dart';
+import 'package:procul_chat_flutter/src/auth_api.dart';
+import 'package:procul_chat_flutter/src/auth_controller.dart';
 import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
@@ -15,6 +17,8 @@ import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/fake_conversation_store.dart';
+import 'support/fake_credential_store.dart';
+import 'support/fake_server_store.dart';
 
 const _sse =
     'data: {"value":{"conversation":{"id":"c1","title":"Greeting",'
@@ -22,6 +26,23 @@ const _sse =
     '"type":"created"}}\n\n'
     'data: {"value":{"content":"Hello **world**","type":"token"}}\n\n'
     'data: {"value":{"type":"done"}}\n\n';
+
+AuthController _auth() => AuthController(
+  api: AuthApi(client: MockClient((_) async => http.Response('{}', 200))),
+  credentials: FakeCredentialStore(),
+  store: FakeServerStore(),
+);
+
+Widget _app({
+  required ChatController chat,
+  required SettingsController settings,
+  required AuthController auth,
+}) => MaterialShadcnApp(
+  theme: proculLightTheme,
+  darkTheme: proculDarkTheme,
+  themeMode: settings.themeMode,
+  home: HomeShell(chat: chat, settings: settings, auth: auth),
+);
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -36,18 +57,13 @@ void main() {
       (request) async => http.Response('{"conversations":[]}', 200),
     );
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', client: client),
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
     await tester.pumpWidget(
-      MaterialShadcnApp(
-        theme: proculLightTheme,
-        darkTheme: proculDarkTheme,
-        themeMode: settings.themeMode,
-        home: HomeShell(chat: chat, settings: settings),
-      ),
+      _app(chat: chat, settings: settings, auth: _auth()),
     );
     await tester.pumpAndSettle();
 
@@ -71,18 +87,13 @@ void main() {
       );
     });
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', client: client),
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
     await tester.pumpWidget(
-      MaterialShadcnApp(
-        theme: proculLightTheme,
-        darkTheme: proculDarkTheme,
-        themeMode: settings.themeMode,
-        home: HomeShell(chat: chat, settings: settings),
-      ),
+      _app(chat: chat, settings: settings, auth: _auth()),
     );
     await tester.pumpAndSettle();
 
@@ -103,18 +114,13 @@ void main() {
       (request) async => http.Response('{"conversations":[]}', 200),
     );
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', client: client),
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
     await tester.pumpWidget(
-      MaterialShadcnApp(
-        theme: proculLightTheme,
-        darkTheme: proculDarkTheme,
-        themeMode: settings.themeMode,
-        home: HomeShell(chat: chat, settings: settings),
-      ),
+      _app(chat: chat, settings: settings, auth: _auth()),
     );
     await tester.pumpAndSettle();
 
@@ -137,18 +143,13 @@ void main() {
       (request) async => http.Response('{"conversations":[]}', 200),
     );
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', client: client),
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
     await tester.pumpWidget(
-      MaterialShadcnApp(
-        theme: proculLightTheme,
-        darkTheme: proculDarkTheme,
-        themeMode: settings.themeMode,
-        home: HomeShell(chat: chat, settings: settings),
-      ),
+      _app(chat: chat, settings: settings, auth: _auth()),
     );
     await tester.pumpAndSettle();
 
@@ -179,18 +180,13 @@ void main() {
       );
     });
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', client: client),
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
     await tester.pumpWidget(
-      MaterialShadcnApp(
-        theme: proculLightTheme,
-        darkTheme: proculDarkTheme,
-        themeMode: settings.themeMode,
-        home: HomeShell(chat: chat, settings: settings),
-      ),
+      _app(chat: chat, settings: settings, auth: _auth()),
     );
     await tester.pumpAndSettle();
 
