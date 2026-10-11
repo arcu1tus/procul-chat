@@ -8,13 +8,18 @@
 
 The Flutter chat client ("Procul") for the Procul backend. It supports **multiple
 conversations** (list, switch, rename, delete), streams assistant replies over SSE, shows
-tool activity, renders assistant Markdown, and has a persisted **settings** dialog (dark
-mode, default on). It talks to the backend's versioned `/v1/conversations` API.
+tool activity, renders assistant Markdown, and has a persisted **settings** dialog (theme:
+light / dark / system, dark default). It talks to the backend's versioned
+`/v1/conversations` API.
 
 - **Flutter** (Dart `^3.13.5`).
 - **UI:** [`shadcn_flutter`](https://pub.dev/packages/shadcn_flutter) (`^0.0.55`) — the app
   is built on shadcn components and the **New York** theme, not Material.
   `shadcn_flutter_material` provides a Material interop layer (see gotchas).
+- **Fonts:** [`google_fonts`](https://pub.dev/packages/google_fonts) (`^9.0.0`) — **Inter**
+  is the UI face everywhere, **Coiny** is used for a couple of display accents (the sidebar
+  "Procul" wordmark and the empty-state heading). Inline code / code blocks stay on the
+  bundled **GeistMono**.
 - **Markdown:** `gpt_markdown` (`^1.3.4`) renders assistant replies (code, lists, bold).
 - **HTTP:** `package:http` (manual SSE parsing; no SSE package).
 - **Persistence:** `package:shared_preferences` — the active conversation id and settings.
@@ -28,7 +33,7 @@ The backend lives in `../backend` and its contract is documented in `../backend/
 ```
 frontend/
   lib/
-    main.dart                     # entrypoint, MaterialShadcnApp, base-URL const
+    main.dart                     # entrypoint: preloads settings + fonts, then MaterialShadcnApp
     src/
       models.dart                 # domain types: Conversation, ChatMessage, ToolCall, MessageRole
       chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/ToolCall/...)
@@ -37,15 +42,19 @@ frontend/
       settings_store.dart         # SettingsStore: persisted preferences (shared_preferences)
       settings_controller.dart    # SettingsController: theme mode (dark default)
       chat_controller.dart        # ChatController: conversation list + active buffer + turn logic
-      app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData)
+      app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData, teal + Inter)
                                   #   + ShadcnMaterialBridge (flutter/material theme for markdown)
-      home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow)
+      home_shell.dart             # responsive shell: sidebar (wide) / animated slide-in panel (narrow)
       conversation_sidebar.dart   # conversation list, new chat, settings footer
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
-      settings_dialog.dart        # settings dialog (dark mode switch)
+      settings_dialog.dart        # settings dialog (Light/Dark/System segmented control)
       chat_screen.dart            # chat pane: header, message list, composer
+      widgets/
+        skeleton.dart             # Shimmer + Skeleton loading placeholders
+        icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label
   test/                           # controller, API, settings, and widget tests
   test/support/                   # shared test doubles (e.g. FakeConversationStore)
+  test/flutter_test_config.dart   # disables google_fonts runtime fetching for all tests
   linux/ android/ ios/ ...        # platform shells (generated)
   pubspec.yaml
 ```
@@ -135,11 +144,29 @@ reaches the buffer.
 - **Errors are user-facing strings** on `ChatController.error`; `ChatScreen` shows them as a
   shadcn toast. Streaming failures still leave the partial reply in the bubble.
 - **Settings are a `ChangeNotifier` + `shared_preferences`.** `SettingsController.themeMode`
-  defaults to `ThemeMode.dark`. `main.dart` rebuilds `MaterialShadcnApp` from it.
+  defaults to `ThemeMode.dark`; `setThemeMode(ThemeMode)` persists light/dark/system and
+  `isDark` is a derived getter. `main.dart` rebuilds `MaterialShadcnApp` from it, and
+  **awaits `settings.init()` (plus `GoogleFonts.pendingFonts`) before `runApp`** so the
+  stored theme and fonts are in place on the first frame (no startup flash).
+- **Composer keyboard.** On desktop **Enter sends** and **Shift+Enter inserts a newline**
+  (`CallbackShortcuts` bound to `SingleActivator(enter)`; the shifted variant falls through
+  to the field). The on-screen send button and `onSubmitted` are kept, so
+  `TextInputAction.send` still submits.
+- **Loading states are hand-rolled shimmer, not spinners.** `widgets/skeleton.dart` provides
+  `Shimmer` (one `AnimationController` sweeping a gradient over its children) and `Skeleton`
+  blocks. The conversation list and message history show shaped placeholders; an assistant
+  bubble awaiting its first token shows pulsing dots (`_ThinkingDots`).
+- **Motion is subtle and one-shot** (120–220 ms, `easeOut`): new messages fade + rise once
+  (tracked per `ChatMessage` in `ChatScreen`, and suppressed for a whole history load), the
+  narrow-screen scrim + panel are driven by one `AnimationController`, and conversation
+  tiles/tool rows use `AnimatedContainer` / `AnimatedSwitcher`.
+- **Icon-only buttons go through `IconAction`** (`widgets/icon_action.dart`) so every one has
+  a tooltip and an accessible label.
 - **All UI is shadcn_flutter.** Use shadcn components (`Scaffold` + `headers: [AppBar(...)]`,
-  `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `TextField`, `Switch`,
-  `AlertDialog` via `showOverlay`, `DropdownMenu` via `showDropdown`, `showToast`,
-  `Clickable`) and `LucideIcons`. There is no Material `ScaffoldMessenger`/`SnackBar` usage.
+  `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `SelectedButton` (used
+  for the segmented theme selector), `TextField`, `AlertDialog` via `showOverlay`,
+  `DropdownMenu` via `showDropdown`, `showToast`, `Clickable`) and `LucideIcons`. There is no
+  Material `ScaffoldMessenger`/`SnackBar` usage.
 - **Text styles are extension getters**, e.g. `Text('x').muted.small`, `.semiBold.large`.
 
 ## Gotchas (learned the hard way)
@@ -153,6 +180,17 @@ reaches the buffer.
   derives a `package:flutter/material.dart` `ThemeData` from the ambient shadcn theme. Keep
   that bridge when changing the theme wiring; don't assume `MaterialShadcnApp` alone covers
   `gpt_markdown`.
+- **`google_fonts` 9.x is built on `material_ui`, like shadcn.** `GoogleFonts.inter()` returns
+  a `material_ui` `TextStyle` — the *same* type shadcn's `Typography.sans` wants (both are
+  `package:flutter/widgets.dart` `TextStyle`), so the shadcn typography override is direct.
+  But `GoogleFonts.interTextTheme()` returns a `material_ui.TextTheme`, which is a **different
+  class** from the `package:flutter/material.dart` `TextTheme` the bridge builds, so it can't
+  be assigned there. `ShadcnMaterialBridge` therefore applies the face with
+  `base.textTheme.apply(fontFamily: interTextStyle.fontFamily, fontFamilyFallback: ...)`.
+- **Tests must not fetch fonts.** `test/flutter_test_config.dart` sets
+  `GoogleFonts.config.allowRuntimeFetching = false` before every test file; the themes then
+  fall back to the platform face and no assertion depends on it. Keep that file if you add
+  tests that build a theme.
 - **shadcn `DrawerConfiguration` needs a `DrawerOverlay` ancestor** (`openRawDrawer` asserts
   `parentLayer != null`), which the default app does not provide. The narrow-screen sidebar is
   therefore a hand-rolled slide-in panel in `home_shell.dart`, not a shadcn drawer.

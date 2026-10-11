@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart' as material;
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Procul's shadcn themes.
 ///
-/// Both are built on the neutral "zinc" palette with a violet accent, so the
-/// app reads as one cohesive design in either mode. Dark mode is the default
-/// (see [SettingsController]).
-const _lightAccent = Color(0xFF7C3AED);
-const _darkAccent = Color(0xFFA78BFA);
+/// Both are built on the neutral "zinc" palette with a teal/emerald accent, so
+/// the app reads as one cohesive design in either mode. Dark mode is the default
+/// (see [SettingsController]). The UI face is Inter; GeistMono (bundled by
+/// shadcn) stays on for inline code and code blocks, and Coiny is used for a
+/// couple of display accents (see `GoogleFonts.coiny`).
+const _lightAccent = Color(0xFF0D9488);
+const _darkAccent = Color(0xFF2DD4BF);
+
+/// The UI face. Shared by the shadcn themes and the Material bridge so the
+/// markdown matches.
+final interTextStyle = GoogleFonts.inter();
 
 final proculLightTheme = ThemeData(
   colorScheme: ColorSchemes.lightZinc.copyWith(
@@ -15,15 +22,17 @@ final proculLightTheme = ThemeData(
     primaryForeground: () => const Color(0xFFFFFFFF),
     ring: () => _lightAccent,
   ),
+  typography: Typography.geist(sans: interTextStyle),
   radius: 0.625,
 );
 
 final proculDarkTheme = ThemeData(
   colorScheme: ColorSchemes.darkZinc.copyWith(
     primary: () => _darkAccent,
-    primaryForeground: () => const Color(0xFF1E1B4B),
+    primaryForeground: () => const Color(0xFF042F2E),
     ring: () => _darkAccent,
   ),
+  typography: Typography.geist(sans: interTextStyle),
   radius: 0.625,
 );
 
@@ -38,7 +47,7 @@ final proculDarkTheme = ThemeData(
 ///
 /// Wrap the app's content in this once and every `package:flutter/material.dart`
 /// widget — the markdown, its code copy button, selection toolbars — follows the
-/// shadcn palette and light/dark mode.
+/// shadcn palette, light/dark mode, and the Inter UI face.
 class ShadcnMaterialBridge extends StatelessWidget {
   const ShadcnMaterialBridge({super.key, required this.child});
 
@@ -48,7 +57,7 @@ class ShadcnMaterialBridge extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    final materialTheme = material.ThemeData.from(
+    final base = material.ThemeData.from(
       colorScheme: material.ColorScheme.fromSeed(
         seedColor: colors.primary,
         brightness: theme.brightness,
@@ -56,6 +65,12 @@ class ShadcnMaterialBridge extends StatelessWidget {
         primary: colors.primary,
         secondary: colors.secondary,
         error: colors.destructive,
+      ),
+    );
+    final materialTheme = base.copyWith(
+      textTheme: base.textTheme.apply(
+        fontFamily: interTextStyle.fontFamily,
+        fontFamilyFallback: interTextStyle.fontFamilyFallback,
       ),
     );
     return material.Theme(data: materialTheme, child: child);

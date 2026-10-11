@@ -1,3 +1,4 @@
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'chat_controller.dart';
@@ -5,6 +6,8 @@ import 'conversation_actions.dart';
 import 'models.dart';
 import 'settings_controller.dart';
 import 'settings_dialog.dart';
+import 'widgets/icon_action.dart';
+import 'widgets/skeleton.dart';
 
 /// The conversation list: brand header, "new chat", the chats themselves, and
 /// a settings footer. Shown persistently on wide screens and inside a drawer on
@@ -112,10 +115,21 @@ class _Header extends StatelessWidget {
             ),
           ),
           const Gap(10),
-          Expanded(child: const Text('Procul').semiBold.large),
+          Expanded(
+            child: Text(
+              'Procul',
+              style: GoogleFonts.coiny(
+                fontSize: 24,
+                height: 1,
+                color: colors.foreground,
+              ),
+            ),
+          ),
           if (onClose != null)
-            IconButton.ghost(
-              icon: const Icon(LucideIcons.x, size: 18),
+            IconAction(
+              icon: LucideIcons.x,
+              label: 'Close sidebar',
+              size: 18,
               onPressed: onClose,
             ),
         ],
@@ -133,7 +147,7 @@ class _ConversationList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (chat.isLoadingConversations) {
-      return const Center(child: CircularProgressIndicator());
+      return const _ConversationListSkeleton();
     }
 
     if (chat.conversations.isEmpty) {
@@ -202,64 +216,67 @@ class _ConversationTileState extends State<_ConversationTile> {
       child: Clickable(
         onPressed: widget.onSelect,
         onHover: (value) => setState(() => _hovered = value),
-        padding: const WidgetStatePropertyAll(
-          EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        ),
-        decoration: WidgetStateProperty.resolveWith((states) {
-          final hovered = states.contains(WidgetState.hovered);
-          final color = selected
-              ? colors.accent
-              : hovered
-              ? colors.accent.withValues(alpha: 0.5)
-              : const Color(0x00000000);
-          return BoxDecoration(
-            color: color,
+        disableHoverEffect: true,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? colors.accent
+                : _hovered
+                ? colors.accent.withValues(alpha: 0.5)
+                : const Color(0x00000000),
             borderRadius: BorderRadius.circular(9),
-          );
-        }),
-        child: Row(
-          children: [
-            Icon(
-              LucideIcons.messageSquare,
-              size: 16,
-              color: selected
-                  ? colors.accentForeground
-                  : colors.mutedForeground,
-            ),
-            const Gap(10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    conversation.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    ),
-                  ),
-                  if (conversation.updatedAt != null) ...[
-                    const Gap(1),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                LucideIcons.messageSquare,
+                size: 16,
+                color: selected
+                    ? colors.accentForeground
+                    : colors.mutedForeground,
+              ),
+              const Gap(10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                     Text(
-                      _relativeTime(conversation.updatedAt!),
+                      conversation.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 11,
-                        color: colors.mutedForeground,
+                        fontSize: 14,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
                       ),
                     ),
+                    if (conversation.updatedAt != null) ...[
+                      const Gap(1),
+                      Text(
+                        _relativeTime(conversation.updatedAt!),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.mutedForeground,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            if (_hovered || selected)
-              IconButton.ghost(
-                icon: const Icon(LucideIcons.ellipsis, size: 16),
-                onPressed: () => _showMenu(context),
-              ),
-          ],
+              if (_hovered || selected)
+                IconAction(
+                  icon: LucideIcons.ellipsis,
+                  label: 'Chat options',
+                  size: 16,
+                  onPressed: () => _showMenu(context),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -277,6 +294,60 @@ class _ConversationTileState extends State<_ConversationTile> {
           MenuButton(
             onPressed: (context) => widget.onDelete(),
             child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shimmer rows shaped like real conversation tiles, shown while the list
+/// loads.
+class _ConversationListSkeleton extends StatelessWidget {
+  const _ConversationListSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Shimmer(
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: 7,
+        itemBuilder: (context, index) => const _SkeletonTile(),
+      ),
+    );
+  }
+}
+
+class _SkeletonTile extends StatelessWidget {
+  const _SkeletonTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(10, 8, 10, 10),
+      child: Row(
+        children: [
+          Skeleton(width: 16, height: 16, radius: 4),
+          Gap(10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FractionallySizedBox(
+                  widthFactor: 0.85,
+                  alignment: Alignment.centerLeft,
+                  child: Skeleton(height: 13),
+                ),
+                Gap(6),
+                FractionallySizedBox(
+                  widthFactor: 0.3,
+                  alignment: Alignment.centerLeft,
+                  child: Skeleton(height: 10),
+                ),
+              ],
+            ),
           ),
         ],
       ),

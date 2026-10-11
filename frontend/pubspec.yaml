@@ -14,6 +14,7 @@ dependencies:
   shadcn_flutter: ^0.0.55
   gpt_markdown: ^1.3.4
   shadcn_flutter_material: ^0.0.54
+  google_fonts: ^9.0.0
 
 dev_dependencies:
   flutter_test:

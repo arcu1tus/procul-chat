@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:http/http.dart' as http;
@@ -52,7 +53,7 @@ void main() {
 
     expect(find.text('Procul'), findsOneWidget);
     expect(find.text('New chat'), findsWidgets);
-    expect(find.text('How can I help?'), findsOneWidget);
+    expect(find.text('Ask Procul anything'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -128,7 +129,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('settings dialog toggles dark mode', (tester) async {
+  testWidgets('settings dialog switches the theme mode', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -155,11 +156,57 @@ void main() {
 
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
-    expect(find.text('Dark mode'), findsOneWidget);
+    expect(find.text('Appearance'), findsOneWidget);
+    expect(find.text('Light'), findsOneWidget);
+    expect(find.text('Dark'), findsOneWidget);
+    expect(find.text('System'), findsOneWidget);
 
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.text('Light'));
     await tester.pumpAndSettle();
-    expect(settings.isDark, isFalse);
+    expect(settings.themeMode, ThemeMode.light);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Enter sends while Shift+Enter does not', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient.streaming((request, body) async {
+      return http.StreamedResponse(
+        Stream.value(utf8.encode(_sse)),
+        200,
+        headers: {'content-type': 'text/event-stream'},
+      );
+    });
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', client: client),
+      store: FakeConversationStore(),
+    );
+    final settings = SettingsController();
+
+    await tester.pumpWidget(
+      MaterialShadcnApp(
+        theme: proculLightTheme,
+        darkTheme: proculDarkTheme,
+        themeMode: settings.themeMode,
+        home: HomeShell(chat: chat, settings: settings),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'Hi');
+
+    // Shift+Enter is left to the field, so nothing is submitted.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pumpAndSettle();
+    expect(find.byType(GptMarkdown), findsNothing);
+
+    // A plain Enter submits the message.
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.byType(GptMarkdown), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
