@@ -39,6 +39,7 @@ backend/
         ChatStreamServiceV1.cs     # shared conversation-turn streaming logic
         DataTypesV1.cs             # request/response/event DTOs for v1
     Infrastructure/DbContext.cs    # ProculDbContext + model config
+    Cors/CorsExtensions.cs         # AddProculCors (browser/web origin policy)
     Versioning/                    # ApiVersions + AddProculApiVersioning
     Migrations/                    # EF Core migrations
     docker/docker-compose.yaml     # dev-only Postgres
@@ -73,6 +74,11 @@ Loaded by `DotNetEnv.Env.Load()` at startup from `src/Procul.Api/.env` (gitignor
 
 - `ConnectionStrings__ChatContext` — Postgres connection string.
 - `OPENROUTER_API_KEY`, `OPENROUTER_MODEL_SLUG` — read once at startup; app throws if missing.
+- `CORS_ALLOWED_ORIGINS` — optional, comma-separated browser origins allowed to call the API.
+  When unset, development allows **any** origin (the Flutter web dev server uses an ephemeral
+  `localhost` port, so pinning an origin is impractical); other environments deny cross-origin
+  requests unless this is set. The API is unauthenticated and cookie-less, so no credentials
+  travel and a wildcard origin is acceptable in dev.
 
 `.env.example` documents the shape. **Do not commit `.env`.** Treat any key in it as live.
 
@@ -178,3 +184,9 @@ final assistant text.
   and the `FunctionResultContent`. `StreamTokens` reads those to emit the `toolCall`/
   `toolResult` SSE events. A tool result is boxed as a `JsonElement`, so `FormatResult`
   unwraps string values (otherwise they arrive JSON-quoted with escaped `+`).
+- **Browser clients need CORS; native ones do not.** `Cors/CorsExtensions.cs` registers the
+  `ProculCors` policy and `Program.cs` calls `app.UseCors(...)` before the endpoints. Without
+  it, `flutter run -d chrome` fails its preflight before a request ever reaches a handler.
+  `application/json` bodies trigger a preflight, so `AllowAnyHeader()`/`AllowAnyMethod()` are
+  required for the POST/PATCH/DELETE verbs. The policy must stay registered through the
+  `CreateSlimBuilder` path (it does not add CORS implicitly).
