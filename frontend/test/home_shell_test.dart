@@ -7,21 +7,13 @@ import 'package:http/testing.dart';
 import 'package:procul_chat_flutter/src/app_theme.dart';
 import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
-import 'package:procul_chat_flutter/src/conversation_store.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
 import 'package:procul_chat_flutter/src/settings_controller.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _FakeStore implements ConversationStore {
-  @override
-  Future<void> clear() async {}
-  @override
-  Future<String?> read() async => null;
-  @override
-  Future<void> write(String conversationId) async {}
-}
+import 'support/fake_conversation_store.dart';
 
 const _sse =
     'data: {"value":{"conversation":{"id":"c1","title":"Greeting",'
@@ -44,7 +36,7 @@ void main() {
     );
     final chat = ChatController(
       api: ChatApi(baseUrl: 'http://test', client: client),
-      store: _FakeStore(),
+      store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
@@ -79,7 +71,7 @@ void main() {
     });
     final chat = ChatController(
       api: ChatApi(baseUrl: 'http://test', client: client),
-      store: _FakeStore(),
+      store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
@@ -111,7 +103,7 @@ void main() {
     );
     final chat = ChatController(
       api: ChatApi(baseUrl: 'http://test', client: client),
-      store: _FakeStore(),
+      store: FakeConversationStore(),
     );
     final settings = SettingsController();
 
@@ -145,7 +137,7 @@ void main() {
     );
     final chat = ChatController(
       api: ChatApi(baseUrl: 'http://test', client: client),
-      store: _FakeStore(),
+      store: FakeConversationStore(),
     );
     final settings = SettingsController();
 

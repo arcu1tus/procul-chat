@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'chat_api.dart';
+import 'chat_stream_event.dart';
 import 'conversation_store.dart';
 import 'models.dart';
 

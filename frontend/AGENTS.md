@@ -30,7 +30,8 @@ frontend/
   lib/
     main.dart                     # entrypoint, MaterialShadcnApp, base-URL const
     src/
-      models.dart                 # Conversation, ChatMessage (+ToolCall), ChatStreamEvent hierarchy
+      models.dart                 # domain types: Conversation, ChatMessage, ToolCall, MessageRole
+      chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/ToolCall/...)
       chat_api.dart               # ChatApi: REST (list/rename/delete) + SSE client
       conversation_store.dart     # ConversationStore: active conversation id (shared_preferences)
       settings_store.dart         # SettingsStore: persisted preferences (shared_preferences)
@@ -43,6 +44,7 @@ frontend/
       settings_dialog.dart        # settings dialog (dark mode switch)
       chat_screen.dart            # chat pane: header, message list, composer
   test/                           # controller, API, settings, and widget tests
+  test/support/                   # shared test doubles (e.g. FakeConversationStore)
   linux/ android/ ios/ ...        # platform shells (generated)
   pubspec.yaml
 ```
