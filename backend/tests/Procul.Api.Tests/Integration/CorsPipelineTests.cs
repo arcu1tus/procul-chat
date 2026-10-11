@@ -82,11 +82,47 @@ public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>, 
             response.Headers.GetValues("Access-Control-Expose-Headers").Single());
     }
 
-    private static Task<HttpResponseMessage> PreflightAsync(HttpClient client, string origin)
+    [Theory]
+    [InlineData("/v1/attachments", "POST")]
+    [InlineData("/v1/conversations/00000000-0000-0000-0000-000000000001/model", "PUT")]
+    public async Task Preflight_for_the_attachment_and_model_routes_is_approved_from_an_allowed_origin(
+        string path, string method)
     {
-        var request = new HttpRequestMessage(HttpMethod.Options, "/v1/conversations");
+        using var factory = CreateFactory("Production", "https://app.example.com");
+        using var client = factory.CreateClient();
+
+        using var response = await PreflightAsync(client, "https://app.example.com", path, method);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(
+            "https://app.example.com",
+            response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+    }
+
+    [Theory]
+    [InlineData("/v1/attachments", "POST")]
+    [InlineData("/v1/conversations/00000000-0000-0000-0000-000000000001/model", "PUT")]
+    public async Task Preflight_for_the_attachment_and_model_routes_is_denied_from_a_disallowed_origin(
+        string path, string method)
+    {
+        using var factory = CreateFactory("Production", "https://app.example.com");
+        using var client = factory.CreateClient();
+
+        using var response = await PreflightAsync(client, "https://evil.example.com", path, method);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.False(response.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
+    private static Task<HttpResponseMessage> PreflightAsync(
+        HttpClient client,
+        string origin,
+        string path = "/v1/conversations",
+        string method = "POST")
+    {
+        var request = new HttpRequestMessage(HttpMethod.Options, path);
         request.Headers.Add("Origin", origin);
-        request.Headers.Add("Access-Control-Request-Method", "POST");
+        request.Headers.Add("Access-Control-Request-Method", method);
         request.Headers.Add("Access-Control-Request-Headers", "content-type");
         return client.SendAsync(request);
     }

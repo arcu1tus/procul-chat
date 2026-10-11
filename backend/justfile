@@ -1,0 +1,59 @@
+# Procul backend — build, test, run, and container helpers.
+#
+# Run from `backend/` (the recipes resolve paths relative to this file). List everything with
+# `just --list`.
+
+# Build the whole solution.
+build:
+    dotnet build Procul.slnx
+
+# Run the unit + integration tests (no database or network required).
+test:
+    dotnet test Procul.slnx
+
+# Run the API in development (starts the dev Postgres first). Listens on :5010.
+run: dev-db-up
+    cd src/Procul.Api && dotnet run
+
+# Format the solution (dotnet format).
+fmt:
+    dotnet format Procul.slnx
+
+# Publish a Release build.
+publish:
+    dotnet publish src/Procul.Api --configuration Release
+
+# --- Dev database (Postgres via Docker Compose) ----------------------------
+# Container: procul_postgres_dev (db/user/pass = procul/postgres/postgres).
+
+# Start the dev Postgres on :5432.
+dev-db-up:
+    docker compose -f src/Procul.Api/docker/docker-compose.yaml up -d
+
+# Stop the dev Postgres (keeps the data volume).
+dev-db-down:
+    docker compose -f src/Procul.Api/docker/docker-compose.yaml down
+
+# Follow the dev Postgres logs.
+dev-db-logs:
+    docker compose -f src/Procul.Api/docker/docker-compose.yaml logs --follow
+
+# Stop the dev Postgres and delete its data volume.
+dev-db-prune:
+    docker compose -f src/Procul.Api/docker/docker-compose.yaml down -v
+
+# --- Container image (build context is `backend/`) -------------------------
+# See docs/docker-compose.md at the repo root.
+
+# Build the container image locally.
+docker-build:
+    docker build -f src/Procul.Api/Dockerfile -t procul-api .
+
+# Run the locally built image with this checkout's config.jsonc + .env.
+docker-run:
+    # The database host in .env must be reachable from inside the container:
+    # use host.docker.internal on Docker Desktop, or `--network host` on Linux.
+    docker run --rm -p 8080:8080 \
+        --env-file "$$(pwd)/src/Procul.Api/.env" \
+        -v "$$(pwd)/src/Procul.Api/config.jsonc:/app/config.jsonc:ro" \
+        procul-api

@@ -2,11 +2,14 @@
 
 The Flutter client for **Procul**, a chat app. It supports multiple conversations
 (list, switch, rename, delete), streams assistant replies over SSE, shows tool
-activity, renders assistant Markdown, and has a persisted settings dialog (dark
-mode by default). It talks to the backend's versioned `/v1/conversations` API.
+activity, renders assistant Markdown, attaches files (images render inline), lets
+you pick the model per conversation and browse a Models catalog, tracks token
+usage, and has a persisted settings dialog (dark mode by default). It talks to the
+backend's versioned `/v1/conversations` API.
 
 The backend lives in [`../backend`](../backend); its contract is documented in
-[`../backend/AGENTS.md`](../backend/AGENTS.md).
+[`../backend/AGENTS.md`](../backend/AGENTS.md). Per-platform build instructions are
+in [`../docs/flutter-builds.md`](../docs/flutter-builds.md).
 
 ## Getting started
 
@@ -16,6 +19,15 @@ The backend must already be running (dev: `http://localhost:5010`).
 flutter pub get
 flutter run -d linux        # native Linux desktop
 flutter run -d chrome       # web
+```
+
+The `justfile` wraps these (run from `frontend/`, or `just frontend <recipe>` from the
+repo root):
+
+```bash
+just run                    # -d linux
+just run-web                # -d chrome
+just build-web | just build-linux | just build-android-apk | ...
 ```
 
 The base URL defaults to `http://localhost:5010` and can be overridden without
