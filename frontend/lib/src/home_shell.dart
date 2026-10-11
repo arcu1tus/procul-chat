@@ -4,6 +4,8 @@ import 'auth_controller.dart';
 import 'chat_controller.dart';
 import 'chat_screen.dart';
 import 'conversation_sidebar.dart';
+import 'model_catalog_controller.dart';
+import 'models_screen.dart';
 import 'settings_controller.dart';
 import 'usage_screen.dart';
 
@@ -48,11 +50,32 @@ class _HomeShellState extends State<HomeShell>
   /// chat stays mounted underneath so its scroll position and buffer survive.
   bool _showUsage = false;
 
+  /// Whether the main pane shows the model catalog. Same overlay treatment.
+  bool _showModels = false;
+
+  /// The shared model catalog for the app-bar picker and the Models screen.
+  late final ModelCatalogController _catalog;
+
+  @override
+  void initState() {
+    super.initState();
+    _catalog = ModelCatalogController(api: widget.chat.api);
+    // Mirror the catalog's default into the controller so the app-bar picker
+    // and a brand-new chat can fall back to it.
+    _catalog.addListener(_syncDefaultModel);
+    _catalog.load();
+  }
+
   @override
   void dispose() {
+    _catalog.removeListener(_syncDefaultModel);
+    _catalog.dispose();
     _controller.dispose();
     super.dispose();
   }
+
+  void _syncDefaultModel() =>
+      widget.chat.setDefaultModel(_catalog.defaultModel);
 
   void _openSidebar() {
     setState(() => _sidebarOpen = true);
@@ -66,13 +89,27 @@ class _HomeShellState extends State<HomeShell>
   }
 
   void _openUsage() {
-    setState(() => _showUsage = true);
+    setState(() {
+      _showUsage = true;
+      _showModels = false;
+    });
+    _closeSidebar();
+  }
+
+  void _openModels() {
+    setState(() {
+      _showModels = true;
+      _showUsage = false;
+    });
     _closeSidebar();
   }
 
   void _openChat() {
-    if (!_showUsage) return;
-    setState(() => _showUsage = false);
+    if (!_showUsage && !_showModels) return;
+    setState(() {
+      _showUsage = false;
+      _showModels = false;
+    });
   }
 
   @override
@@ -93,6 +130,7 @@ class _HomeShellState extends State<HomeShell>
                     settings: widget.settings,
                     auth: widget.auth,
                     onOpenUsage: _openUsage,
+                    onOpenModels: _openModels,
                     onOpenChat: _openChat,
                   ),
                 ),
@@ -100,11 +138,15 @@ class _HomeShellState extends State<HomeShell>
                 Expanded(
                   child: Stack(
                     children: [
-                      Positioned.fill(child: ChatScreen(chat: widget.chat)),
+                      Positioned.fill(
+                        child: ChatScreen(chat: widget.chat, catalog: _catalog),
+                      ),
                       if (_showUsage)
                         Positioned.fill(
                           child: UsageScreen(api: widget.chat.api),
                         ),
+                      if (_showModels)
+                        Positioned.fill(child: ModelsScreen(catalog: _catalog)),
                     ],
                   ),
                 ),
@@ -121,7 +163,9 @@ class _HomeShellState extends State<HomeShell>
                   Positioned.fill(
                     child: ChatScreen(
                       chat: widget.chat,
+                      catalog: _catalog,
                       showMenuButton: true,
+                      compactModelPicker: true,
                       onMenu: _openSidebar,
                     ),
                   ),
@@ -129,6 +173,14 @@ class _HomeShellState extends State<HomeShell>
                     Positioned.fill(
                       child: UsageScreen(
                         api: widget.chat.api,
+                        showMenuButton: true,
+                        onMenu: _openSidebar,
+                      ),
+                    ),
+                  if (_showModels)
+                    Positioned.fill(
+                      child: ModelsScreen(
+                        catalog: _catalog,
                         showMenuButton: true,
                         onMenu: _openSidebar,
                       ),
@@ -169,6 +221,7 @@ class _HomeShellState extends State<HomeShell>
                     settings: widget.settings,
                     auth: widget.auth,
                     onOpenUsage: _openUsage,
+                    onOpenModels: _openModels,
                     onOpenChat: _openChat,
                     onClose: _closeSidebar,
                   ),

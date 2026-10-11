@@ -21,6 +21,7 @@ class ConversationSidebar extends StatelessWidget {
     required this.auth,
     this.onClose,
     this.onOpenUsage,
+    this.onOpenModels,
     this.onOpenChat,
   });
 
@@ -33,6 +34,9 @@ class ConversationSidebar extends StatelessWidget {
 
   /// Opens the usage dashboard in the main pane.
   final VoidCallback? onOpenUsage;
+
+  /// Opens the model catalog in the main pane.
+  final VoidCallback? onOpenModels;
 
   /// Returns the main pane to the active conversation.
   final VoidCallback? onOpenChat;
@@ -81,34 +85,30 @@ class ConversationSidebar extends StatelessWidget {
                   child: Row(
                     children: [
                       Expanded(
-                        child: GhostButton(
-                          alignment: Alignment.centerLeft,
+                        child: _FooterButton(
+                          icon: LucideIcons.chartColumn,
+                          label: 'Usage',
                           onPressed: onOpenUsage,
-                          child: const Row(
-                            children: [
-                              Icon(LucideIcons.chartColumn, size: 16),
-                              Gap(10),
-                              Text('Usage'),
-                            ],
-                          ),
                         ),
                       ),
                       const Gap(4),
                       Expanded(
-                        child: GhostButton(
-                          alignment: Alignment.centerLeft,
+                        child: _FooterButton(
+                          icon: LucideIcons.blocks,
+                          label: 'Models',
+                          onPressed: onOpenModels,
+                        ),
+                      ),
+                      const Gap(4),
+                      Expanded(
+                        child: _FooterButton(
+                          icon: LucideIcons.settings,
+                          label: 'Settings',
                           onPressed: () => showSettingsDialog(
                             context,
                             settings,
                             auth,
                             chat.api,
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(LucideIcons.settings, size: 16),
-                              Gap(10),
-                              Text('Settings'),
-                            ],
                           ),
                         ),
                       ),
@@ -127,6 +127,32 @@ class ConversationSidebar extends StatelessWidget {
     await chat.newChat();
     onOpenChat?.call();
     onClose?.call();
+  }
+}
+
+/// One of the sidebar's three footer entries. Kept compact so three fit across
+/// the 300 px sidebar; the label ellipsizes rather than overflowing.
+class _FooterButton extends StatelessWidget {
+  const _FooterButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return GhostButton(
+      alignment: Alignment.centerLeft,
+      density: ButtonDensity.compact,
+      size: ButtonSize.small,
+      onPressed: onPressed,
+      leading: Icon(icon, size: 15),
+      child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+    );
   }
 }
 

@@ -5,8 +5,10 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'chat_controller.dart';
 import 'conversation_actions.dart';
+import 'model_catalog_controller.dart';
 import 'models.dart';
 import 'widgets/icon_action.dart';
+import 'widgets/model_badges.dart';
 import 'widgets/skeleton.dart';
 
 /// The chat pane: header, message list, and composer.
@@ -14,15 +16,24 @@ class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
     required this.chat,
+    this.catalog,
     this.showMenuButton = false,
+    this.compactModelPicker = false,
     this.onMenu,
   });
 
   final ChatController chat;
 
+  /// The shared model catalog backing the app-bar model picker. When null (or
+  /// when only one model is configured) the picker is hidden.
+  final ModelCatalogController? catalog;
+
   /// Whether to show a leading button that opens the conversation drawer.
   final bool showMenuButton;
   final VoidCallback? onMenu;
+
+  /// Collapse the model picker to an icon, for narrow app bars.
+  final bool compactModelPicker;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -147,6 +158,13 @@ class _ChatScreenState extends State<ChatScreen> {
                     ]
                   : const [],
               trailing: [
+                if (widget.catalog != null)
+                  _ModelPicker(
+                    key: const Key('model-picker'),
+                    chat: chat,
+                    catalog: widget.catalog!,
+                    compact: widget.compactModelPicker,
+                  ),
                 if (active != null && chat.activeUsage.hasTokens)
                   _UsageChip(usage: chat.activeUsage),
                 IconAction(
@@ -441,6 +459,169 @@ class _AssistantText extends StatelessWidget {
     return _ShimmerText(
       active: isStreaming,
       child: GptMarkdown(text, isStreaming: isStreaming),
+    );
+  }
+}
+
+/// The app-bar model picker: a compact chip showing the active model, opening a
+/// menu of every configured model. Hidden when only one model is configured and
+/// disabled while a reply streams.
+class _ModelPicker extends StatelessWidget {
+  const _ModelPicker({
+    super.key,
+    required this.chat,
+    required this.catalog,
+    this.compact = false,
+  });
+
+  final ChatController chat;
+  final ModelCatalogController catalog;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: catalog,
+      builder: (context, _) {
+        if (!catalog.hasChoice) return const SizedBox.shrink();
+        final enabled = !chat.isStreaming;
+        final active = _activeModel();
+        final label = active?.name ?? active?.slug ?? 'Model';
+
+        if (compact) {
+          return IconAction(
+            icon: LucideIcons.cpu,
+            label: 'Choose model: $label',
+            onPressed: enabled ? () => _open(context) : null,
+          );
+        }
+
+        return _PickerButton(
+          label: label,
+          health: active?.health.status ?? ModelHealthStatus.unknown,
+          enabled: enabled,
+          onPressed: () => _open(context),
+        );
+      },
+    );
+  }
+
+  /// The catalog entry matching [ChatController.activeModel], if any.
+  ChatModel? _activeModel() {
+    final slug = chat.activeModel;
+    if (slug == null) return null;
+    for (final model in catalog.models) {
+      if (model.slug == slug) return model;
+    }
+    return null;
+  }
+
+  void _open(BuildContext context) {
+    final activeSlug = chat.activeModel;
+    showDropdown(
+      context: context,
+      builder: (context) => DropdownMenu(
+        children: [
+          for (final model in catalog.models)
+            MenuButton(
+              enabled: !chat.isStreaming,
+              leading: ModelHealthDot(status: model.health.status),
+              trailing: model.slug == activeSlug
+                  ? const Icon(LucideIcons.check, size: 16)
+                  : null,
+              onPressed: (context) {
+                // MenuButton auto-closes the dropdown; popping here would pop
+                // the app's home route (the menu is an overlay, not a route).
+                chat.setModel(model.slug);
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    model.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (model.capabilities.input.isNotEmpty) ...[
+                    const Gap(4),
+                    CapabilityBadges(
+                      modalities: model.capabilities.input,
+                      compact: true,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The expanded model picker: a bordered chip with a health dot, the model name
+/// and a chevron.
+class _PickerButton extends StatelessWidget {
+  const _PickerButton({
+    required this.label,
+    required this.health,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final String label;
+  final ModelHealthStatus health;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: 'Choose model: $label',
+      child: Tooltip(
+        tooltip: (context) =>
+            const TooltipContainer(child: Text('Choose model')),
+        child: Clickable(
+          enabled: enabled,
+          onPressed: enabled ? onPressed : null,
+          disableHoverEffect: true,
+          child: Opacity(
+            opacity: enabled ? 1 : 0.5,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: colors.muted,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: colors.border),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ModelHealthDot(status: health, size: 7),
+                  const Gap(6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ).small,
+                  ),
+                  const Gap(4),
+                  Icon(
+                    LucideIcons.chevronDown,
+                    size: 13,
+                    color: colors.mutedForeground,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

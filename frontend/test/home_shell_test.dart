@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'support/fake_conversation_store.dart';
 import 'support/fake_credential_store.dart';
 import 'support/fake_server_store.dart';
+import 'support/model_fixtures.dart';
 
 const _sse =
     'data: {"value":{"conversation":{"id":"c1","title":"Greeting",'
@@ -254,6 +255,43 @@ void main() {
 
     expect(find.text('Lifetime'), findsOneWidget);
     expect(find.text('Daily usage'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the sidebar Models entry opens the model catalog', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient((request) async {
+      if (request.url.path == '/v1/models') {
+        return http.Response(jsonEncode(testModelsJson), 200);
+      }
+      return http.Response('{"conversations":[]}', 200);
+    });
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      store: FakeConversationStore(),
+    );
+
+    await tester.pumpWidget(
+      _app(chat: chat, settings: SettingsController(), auth: _auth()),
+    );
+    await tester.pumpAndSettle();
+
+    // The footer has three entries; the middle one opens the catalog.
+    expect(find.text('Usage'), findsOneWidget);
+    expect(find.text('Models'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+
+    await tester.tap(find.text('Models'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Models configured on this server'), findsOneWidget);
+    // Also shown in the app-bar picker, so allow both.
+    expect(find.text('GPT-4o mini'), findsWidgets);
+    expect(find.text('Fast and cheap'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

@@ -27,12 +27,18 @@ class Conversation {
   const Conversation({
     required this.id,
     required this.title,
+    this.model,
     this.createdAt,
     this.updatedAt,
   });
 
   final String id;
   final String title;
+
+  /// The model slug this conversation uses, or null to fall back to the
+  /// configured default.
+  final String? model;
+
   final DateTime? createdAt;
 
   /// When a message was last added. Drives list ordering; also updated locally
@@ -42,16 +48,19 @@ class Conversation {
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
     id: json['id'] as String,
     title: (json['title'] as String?) ?? 'Untitled',
+    model: json['model'] as String?,
     createdAt: DateTime.tryParse('${json['createdAt']}'),
     updatedAt: DateTime.tryParse('${json['updatedAt']}'),
   );
 
-  Conversation copyWith({String? title, DateTime? updatedAt}) => Conversation(
-    id: id,
-    title: title ?? this.title,
-    createdAt: createdAt,
-    updatedAt: updatedAt ?? this.updatedAt,
-  );
+  Conversation copyWith({String? title, String? model, DateTime? updatedAt}) =>
+      Conversation(
+        id: id,
+        title: title ?? this.title,
+        model: model ?? this.model,
+        createdAt: createdAt,
+        updatedAt: updatedAt ?? this.updatedAt,
+      );
 }
 
 /// A single tool invocation made by the model during an assistant turn.
@@ -160,4 +169,136 @@ String formatTokenCount(int value) {
   if (magnitude < 1000) return '$value';
   if (magnitude < 1000000) return '${(value / 1000).toStringAsFixed(1)}k';
   return '${(value / 1000000).toStringAsFixed(1)}M';
+}
+
+/// An input modality a model accepts.
+///
+/// Mirrors the backend's `ModelInputModality`, which serializes `pdf` for both
+/// its `Pdf` and `file` aliases; both map to [file] here.
+enum ModelInputModality { text, image, file, audio, video }
+
+/// Maps the backend's lower-case modality string to a [ModelInputModality].
+///
+/// Unknown values fall back to [ModelInputModality.text] so a modality added to
+/// the backend later does not crash an older client.
+ModelInputModality modelInputModalityFromValue(Object? value) {
+  return switch ('$value'.toLowerCase()) {
+    'image' => ModelInputModality.image,
+    'file' || 'pdf' => ModelInputModality.file,
+    'audio' => ModelInputModality.audio,
+    'video' => ModelInputModality.video,
+    _ => ModelInputModality.text,
+  };
+}
+
+/// The resolved input/output modalities of a model.
+class ModelCapabilities {
+  const ModelCapabilities({this.input = const {}, this.output = const {}});
+
+  /// Input modalities the model accepts (never empty in practice: `text` is the
+  /// backend's baseline).
+  final Set<ModelInputModality> input;
+
+  /// Output modality names (currently always `text`; kept as strings so a new
+  /// output kind does not need a client release).
+  final Set<String> output;
+
+  factory ModelCapabilities.fromJson(Map<String, dynamic> json) =>
+      ModelCapabilities(
+        input: (json['input'] as List<dynamic>? ?? const [])
+            .map(modelInputModalityFromValue)
+            .toSet(),
+        output: (json['output'] as List<dynamic>? ?? const [])
+            .map((value) => '$value')
+            .toSet(),
+      );
+}
+
+/// The liveness of a model as last observed.
+enum ModelHealthStatus { unknown, healthy, unhealthy }
+
+/// Maps the backend's lower-case status string to a [ModelHealthStatus].
+///
+/// Unknown values fall back to [ModelHealthStatus.unknown].
+ModelHealthStatus modelHealthStatusFromValue(Object? value) {
+  return switch ('$value'.toLowerCase()) {
+    'healthy' => ModelHealthStatus.healthy,
+    'unhealthy' => ModelHealthStatus.unhealthy,
+    _ => ModelHealthStatus.unknown,
+  };
+}
+
+/// A point-in-time, secret-free health snapshot for one model.
+///
+/// [source] is advisory: `startup`, `idle`, `ondemand` or `live` (the backend
+/// lower-cases its enum name). A model with recent traffic is considered live.
+class ModelHealth {
+  const ModelHealth({
+    this.status = ModelHealthStatus.unknown,
+    this.lastCheckedAt,
+    this.latencyMs,
+    this.lastError,
+    this.lastUsedAt,
+    this.source,
+  });
+
+  final ModelHealthStatus status;
+  final DateTime? lastCheckedAt;
+  final int? latencyMs;
+  final String? lastError;
+  final DateTime? lastUsedAt;
+  final String? source;
+
+  factory ModelHealth.fromJson(Map<String, dynamic> json) => ModelHealth(
+    status: modelHealthStatusFromValue(json['status']),
+    lastCheckedAt: DateTime.tryParse('${json['lastCheckedAt']}'),
+    latencyMs: (json['latencyMs'] as num?)?.toInt(),
+    lastError: json['lastError'] as String?,
+    lastUsedAt: DateTime.tryParse('${json['lastUsedAt']}'),
+    source: json['source'] as String?,
+  );
+}
+
+/// One configured model, as returned by `GET /v1/models` (never secrets).
+class ChatModel {
+  const ChatModel({
+    required this.slug,
+    required this.name,
+    this.description,
+    this.provider = '',
+    this.isDefault = false,
+    this.capabilities = const ModelCapabilities(),
+    this.health = const ModelHealth(),
+  });
+
+  /// The identifier the backend uses in requests (may contain `/`).
+  final String slug;
+  final String name;
+  final String? description;
+
+  /// `openrouter` or `openai-compatible`.
+  final String provider;
+
+  /// Whether this is the server's default model.
+  final bool isDefault;
+
+  final ModelCapabilities capabilities;
+  final ModelHealth health;
+
+  factory ChatModel.fromJson(Map<String, dynamic> json) {
+    final slug = '${json['slug'] ?? ''}';
+    return ChatModel(
+      slug: slug,
+      name: '${json['name'] ?? slug}',
+      description: json['description'] as String?,
+      provider: '${json['provider'] ?? ''}',
+      isDefault: json['isDefault'] == true,
+      capabilities: ModelCapabilities.fromJson(
+        (json['capabilities'] as Map?)?.cast<String, dynamic>() ?? const {},
+      ),
+      health: ModelHealth.fromJson(
+        (json['health'] as Map?)?.cast<String, dynamic>() ?? const {},
+      ),
+    );
+  }
 }

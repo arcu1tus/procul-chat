@@ -49,7 +49,9 @@ against [OpenRouter](https://openrouter.ai/).
 - **Streaming replies** over SSE, with a `type`-tagged event protocol (`created`,
   `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`, `title`, `error`, `done`).
 - **Multiple models** declared in `config.jsonc`, each with its own client, capability metadata,
-  and live health (`GET /v1/models`); a conversation remembers and can switch its model.
+  and live health (`GET /v1/models`); a conversation remembers and can switch its model. The
+  client picks the model per conversation from the chat app bar and lists every model — with
+  capability badges and on-demand health checks — on a **Models** screen.
 - **Token-usage tracking**: every model call (reply and title) records its input / output /
   cached / total tokens in PostgreSQL. The backend serves lifetime, per-day, and per-model
   totals from the authenticated `GET /v1/usage` endpoint (and per-conversation totals from
@@ -163,7 +165,9 @@ flutter run -d linux --dart-define=PROCUL_API_BASE=http://localhost:5010
 On first launch the app shows a **Connect** screen: enter the server URL (pre-filled from
 `PROCUL_API_BASE`) and the backend's `PROCUL_API_PASSWORD`. The session token is stored in the
 device's secure storage, and Settings lets you add, switch between, and remove **multiple
-server profiles** or log out.
+server profiles** or log out. The chat app bar carries a **model picker** for the active
+conversation (hidden when only one model is configured), and the sidebar's **Models** entry
+opens a catalog of every configured model with its capabilities and live health.
 
 ## Configuration
 

@@ -10,6 +10,7 @@ import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
 import 'package:procul_chat_flutter/src/conversation_sidebar.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
+import 'package:procul_chat_flutter/src/models_screen.dart';
 import 'package:procul_chat_flutter/src/settings_controller.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
@@ -18,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'support/fake_conversation_store.dart';
 import 'support/fake_credential_store.dart';
 import 'support/fake_server_store.dart';
+import 'support/model_fixtures.dart';
 
 /// A [ChatController] that records how often its refresh entry points are called.
 class SpyChatController extends ChatController {
@@ -245,5 +247,51 @@ void main() {
     await _pullDown(tester, mcpTrigger);
 
     expect(mcpRequests, 2);
+  });
+
+  testWidgets('pulling the Models list refetches the catalog', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    var modelRequests = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/v1/models') {
+        modelRequests++;
+        return http.Response(jsonEncode(testSingleModelJson), 200);
+      }
+      return http.Response('{"conversations":[]}', 200);
+    });
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+      store: FakeConversationStore(),
+    );
+
+    await tester.pumpWidget(
+      MaterialShadcnApp(
+        theme: proculLightTheme,
+        darkTheme: proculDarkTheme,
+        themeMode: ThemeMode.light,
+        home: HomeShell(
+          chat: chat,
+          settings: SettingsController(),
+          auth: _auth(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(modelRequests, 1);
+
+    await tester.tap(find.text('Models'));
+    await tester.pumpAndSettle();
+
+    final modelsTrigger = find.descendant(
+      of: find.byType(ModelsScreen),
+      matching: find.byType(RefreshTrigger),
+    );
+    expect(modelsTrigger, findsOneWidget);
+
+    await _pullDown(tester, modelsTrigger);
+
+    expect(modelRequests, 2);
   });
 }
