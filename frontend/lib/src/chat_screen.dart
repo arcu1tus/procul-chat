@@ -146,28 +146,41 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ]
                   : const [],
-              trailing: active == null
-                  ? const []
-                  : [
-                      IconAction(
-                        icon: LucideIcons.squarePen,
-                        label: 'Rename chat',
-                        onPressed: () =>
-                            renameConversationDialog(context, chat, active),
-                      ),
-                      IconAction(
-                        icon: LucideIcons.trash2,
-                        label: 'Delete chat',
-                        onPressed: () =>
-                            confirmDeleteConversation(context, chat, active),
-                      ),
-                    ],
+              trailing: [
+                IconAction(
+                  icon: LucideIcons.refreshCw,
+                  label: 'Refresh',
+                  onPressed: chat.refreshAll,
+                ),
+                if (active != null) ...[
+                  IconAction(
+                    icon: LucideIcons.squarePen,
+                    label: 'Rename chat',
+                    onPressed: () =>
+                        renameConversationDialog(context, chat, active),
+                  ),
+                  IconAction(
+                    icon: LucideIcons.trash2,
+                    label: 'Delete chat',
+                    onPressed: () =>
+                        confirmDeleteConversation(context, chat, active),
+                  ),
+                ],
+              ],
             ),
             const Divider(),
           ],
           child: Column(
             children: [
-              Expanded(child: _body(chat)),
+              Expanded(
+                child: RefreshTrigger(
+                  // A pull must not clobber a live stream, so disable it mid-turn.
+                  onRefresh: chat.isStreaming
+                      ? null
+                      : chat.reloadActiveConversation,
+                  child: _body(chat),
+                ),
+              ),
               _Composer(
                 controller: _inputController,
                 enabled: !chat.isStreaming,
@@ -283,6 +296,7 @@ class _EmptyState extends StatelessWidget {
 
     return Center(
       child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(32),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 460),

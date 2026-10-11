@@ -16,6 +16,8 @@ message history. Persistence is PostgreSQL via EF Core; the LLM is called throug
 - **AI:** `Microsoft.Extensions.AI` + `Microsoft.Extensions.AI.OpenAI`, OpenRouter endpoint.
 - **Tools:** `AIFunction`s in `Chat/Tools/`, executed via `.UseFunctionInvocation()`; Python
   runs through `Lokad.Lython` in a deny-all sandbox.
+- **MCP:** remote Model Context Protocol servers (Streamable HTTP + legacy SSE) configured in
+  `config.jsonc`, connected by `Mcp/McpClientManager`; their tools join the built-ins each turn.
 - **API versioning:** `Asp.Versioning.Http` with URL-segment versioning (`/v{version}/...`).
 - **Serialization:** default minimal-API JSON (`JsonSerializerDefaults.Web`) → **camelCase**.
 
@@ -42,6 +44,19 @@ backend/
         ChatStreamServiceV1.cs     # conversation-turn streaming (create + reply + title)
         DataTypesV1.cs             # request/response DTOs for v1
         ChatStreamEventsV1.cs      # SSE event payloads + ChatStreamEventV1 hierarchy
+    Configuration/
+      DurationParser.cs            # shared <number><unit> duration parsing (d/h/m/s)
+    Mcp/
+      McpOptions.cs                # PROCUL_CONFIG_PATH, timeouts, health interval, enabled flag
+      ProculConfig.cs              # POCO: { McpServers: { name -> McpServerConfig } }
+      McpServerConfig.cs           # { Type, Url, Headers, Enabled }
+      McpConfigLoader.cs           # read + JSONC parse + ${ENV} expand + validate (fail fast)
+      McpToolNaming.cs             # namespacing + sanitization + collision resolution
+      McpClientManager.cs          # singleton IHostedService: connect, discover, reconnect, status
+      McpServiceCollectionExtensions.cs  # AddProculMcp(configuration)
+      V1/
+        McpEndpointsV1.cs          # GET /v1/mcp/servers (authenticated) + reconnect
+        DataTypesV1.cs             # response DTOs
     Infrastructure/
       DbContext.cs                 # ProculDbContext + model config
       DbContextExtensions.cs       # AddProculDbContext
@@ -106,6 +121,14 @@ Loaded by `DotNetEnv.Env.Load()` at startup from `src/Procul.Api/.env` (gitignor
   this is set — there is no wildcard in production. A `*` or a malformed value makes startup
   fail fast. The API is cookie-less: clients send a bearer token (see Authentication), so CORS
   never enables `AllowCredentials`.
+- `PROCUL_CONFIG_PATH` — path to the MCP config file (absolute or relative). Optional; defaults
+  to `config.jsonc` next to the app. A missing *default* file disables MCP (info log); a missing
+  *explicitly-set* path is fatal.
+- `MCP_ENABLED` — master switch. Optional; defaults to `true`. When `false`, the config file is
+  never read.
+- `MCP_CONNECT_TIMEOUT` — per-server connect + tool-discovery budget. Optional; defaults to
+  `15s`. Same duration syntax as `PROCUL_SESSION_LIFETIME` (see `Configuration/DurationParser.cs`).
+- `MCP_HEALTH_INTERVAL` — background ping/reconnect cadence. Optional; defaults to `60s`.
 
 The app manages its own schema: on startup it applies pending EF Core migrations (see
 Build / run / test). There is no flag for this — it happens whenever a database is configured.
@@ -178,6 +201,8 @@ the auth and health routes do not (see Authentication).
 | DELETE | `/{conversationId:guid}` | Deletes the conversation and its messages (cascade). 204 or 404. |
 | GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). |
 | POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. 404 if missing. |
+| GET | `/v{version}/mcp/servers` | JSON `McpServersResponseV1`: live per-server status. Authenticated. No secrets. |
+| POST | `/v{version}/mcp/servers/{name}/reconnect` | Force a reconnect. `McpReconnectResponseV1`; 404 if unknown. |
 
 **Conversation titles.** A conversation starts with a placeholder title (the first line of the
 initial message, truncated). On `POST /` the backend fires a *second*, tiny model call
@@ -213,9 +238,11 @@ stream completes. If it fails/times out, `FallbackTitle` is used. Rename/delete 
 
 ## Tools (agent function calling)
 
-The model is given two tools, registered in `Chat/Tools/` and passed on every turn through
+The model is given two built-in tools, registered in `Chat/Tools/`, plus every tool discovered
+from the configured MCP servers (see below). All are passed on every turn through
 `ChatOptions.Tools`. `ChatStreamServiceV1.StreamAssistantReplyAsync` prepends
-`AgentTools.SystemPrompt` as a `System` message and supplies the tools:
+`AgentTools.SystemPrompt + mcp.SystemPromptSuffix` as a `System` message and supplies
+`MergeTools(mcp)`:
 
 - `AgentTools.cs` — the `AITool` registry (`AgentTools.All`) and the system prompt.
 - `TimeTool.cs` — `get_current_time`: current ISO-8601 time at a numeric UTC offset (named
@@ -239,6 +266,33 @@ activity **is surfaced** in the SSE stream: the streaming turn logic scans each
 (then `toolResult`, correlated by `callId`) events around the assistant's `token`s. The client
 can therefore show which tools ran during a turn; a reloaded conversation only replays the
 final assistant text.
+
+## MCP (remote tool servers)
+
+The backend can call tools hosted by remote **Model Context Protocol** servers. Only remote
+transports are supported — `http` (Streamable HTTP) and `sse` (legacy) — because the runtime
+image is ASP.NET-only (no node/npx for stdio).
+
+- **Config.** Servers are declared in `config.jsonc` (JSONC: comments + trailing commas), found
+  at `PROCUL_CONFIG_PATH` or `config.jsonc` next to the app. `config.jsonc.example` is committed;
+  the real file is git-ignored and bind-mounted read-only in the container. `McpConfigLoader`
+  validates it and is **fail-fast**: malformed JSON, an unknown `type`, a missing `url`, a blank
+  server name, a non-absolute URL, or an unresolved `${ENV_VAR}` all abort startup. An
+  unreachable server is **not** fatal.
+- **Secrets.** Header values (e.g. an `Authorization` bearer) live in `.env` and are referenced
+  from the JSON as `${VAR}`. The loader resolves them from the process environment. Headers are
+  never logged and never returned by the status endpoint.
+- **`McpClientManager`** is a singleton `IHostedService` started before Kestrel serves traffic.
+  It connects to every enabled server in parallel (each bounded by `MCP_CONNECT_TIMEOUT`),
+  discovers tools, and logs one line per server. A background loop pings connected servers and
+  reconnects the rest with backoff (`MCP_HEALTH_INTERVAL`). A dead server never blocks startup.
+- **Tool naming.** `McpClientTool` derives from `AIFunction`, so `UseFunctionInvocation()` already
+  dispatches it and the streaming/tool-event loop is unchanged. Names are `{server}__{tool}`
+  (both segments sanitized to `[a-zA-Z0-9_-]`), truncated to 64 chars and suffixed `_2`, `_3`, …
+  on collision. `McpToolNaming`/`McpToolNameAssigner` own this.
+- **Status.** `GET /v1/mcp/servers` (authenticated) reports name/type/url/connected/toolCount/
+  tools/lastError/lastConnectedAt. `POST /v1/mcp/servers/{name}/reconnect` forces a reconnect.
+  There is no config hot-reload: a config change needs a restart (the loop only reconnects).
 
 ## Gotchas (learned the hard way)
 
@@ -294,3 +348,20 @@ final assistant text.
   `UseSetting("PROCUL_API_PASSWORD", …)`, or startup throws. The authenticated probe
   (`GET /v1/auth/session`) is the DB-free way to assert a token was accepted; a request to
   `/v1/conversations` would need Postgres.
+- **MCP config is loaded at startup, not at DI time.** `McpServiceCollectionExtensions.AddProculMcp`
+  only reads `McpOptions`; the file itself is read in `McpClientManager.StartAsync` (a hosted
+  service). That keeps DI registration side-effect-free and means a bad config file still fails
+  startup (a hosted-service start failure stops the host).
+- **MCP failures must never leak a token.** `McpClientManager` logs only a concise status (e.g.
+  `mcp[github]: failed — 401 Unauthorized`) and the status endpoint exposes name/type/url/tools
+  only. If you add fields, keep headers out.
+- **`McpClientTool` is an `AIFunction`.** No special-casing is needed in the streaming loop; a
+  failed MCP call surfaces through the existing `FunctionResultContent.Exception` → `toolResult`
+  error path. Only the *presentation* name changes (`WithName`); the underlying call still targets
+  the server's real tool name.
+- **MCP tool names must be OpenAI-legal.** `^[a-zA-Z0-9_-]{1,64}$` and unique across the
+  built-ins and every server; `McpToolNameAssigner` enforces both. Don't hand-build names.
+- **The MCP end-to-end tests host a real loopback server.** `McpTestServerHost` starts a tiny
+  `ModelContextProtocol.AspNetCore` app on `127.0.0.1:0` (via `WebHostDefaults.ServerUrlsKey`,
+  because `ConfigureWebHostBuilder` has no `UseUrls`), and the manager connects through it. The
+  server builder must call `WithHttpTransport()` before `MapMcp`, or `MapMcp` throws.

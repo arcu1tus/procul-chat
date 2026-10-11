@@ -2,6 +2,8 @@ using Procul.Api.Chat;
 using Procul.Api.Chat.V1;
 using Procul.Api.Cors;
 using Procul.Api.Infrastructure;
+using Procul.Api.Mcp;
+using Procul.Api.Mcp.V1;
 using Procul.Api.Security;
 using Procul.Api.Security.V1;
 using Procul.Api.Versioning;
@@ -16,6 +18,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddProculAuth(builder.Configuration);
 builder.Services.AddProculDbContext(builder.Configuration);
 builder.Services.AddProculChat(builder.Configuration);
+builder.Services.AddProculMcp(builder.Configuration);
 
 var app = builder.Build();
 
@@ -44,6 +47,14 @@ var v1 = chat
     .RequireAuthorization();
 
 v1.MapChatV1();
+
+var mcp = app.NewVersionedApi("Mcp");
+var v1Mcp = mcp
+    .MapGroup("/v{version:apiVersion}/mcp")
+    .HasApiVersion(1.0)
+    .RequireAuthorization();
+
+v1Mcp.MapMcpV1();
 
 await app.RunAsync();
 

@@ -1,0 +1,37 @@
+{
+  // Procul backend configuration.
+  //
+  // Copy this file to `config.jsonc` (git-ignored) and edit it. It is read once at startup from:
+  //   1. the path in PROCUL_CONFIG_PATH (absolute or relative), else
+  //   2. `config.jsonc` next to the app.
+  // A missing *default* file simply disables MCP; a missing *explicitly-set* path is fatal.
+  //
+  // JSONC is accepted: comments and trailing commas are allowed.
+  //
+  // Secrets do NOT belong here. Reference environment variables with ${VAR}; the process
+  // environment (populated from `.env` by DotNetEnv) resolves them at startup. An unresolved
+  // reference is fatal and names the missing variable.
+  //
+  // Only remote transports are supported: "http" (Streamable HTTP) and "sse" (legacy). There is
+  // no stdio — the runtime image has no node/npx.
+
+  "mcpServers": {
+    // Example: GitHub's hosted MCP server, authenticated with a token from `.env`
+    // (GITHUB_MCP_TOKEN). Delete or set "enabled": false to turn it off.
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_MCP_TOKEN}" },
+      "enabled": true
+    },
+
+    // Example: an unauthenticated public server.
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
+    }
+
+    // Example: a legacy SSE server.
+    // "legacy": { "type": "sse", "url": "https://example.com/sse" }
+  }
+}

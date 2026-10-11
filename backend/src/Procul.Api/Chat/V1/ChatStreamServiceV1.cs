@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Procul.Api.Chat.Tools;
 using Procul.Api.Infrastructure;
+using Procul.Api.Mcp;
 
 namespace Procul.Api.Chat.V1;
 
@@ -14,7 +15,11 @@ namespace Procul.Api.Chat.V1;
 /// assistant's reply from the chat model, persists that reply, and emits the events both
 /// the "create conversation" and "send message" endpoints stream to the client.
 /// </summary>
-internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatClient, ILogger<ChatStreamServiceV1> logger)
+internal sealed class ChatStreamServiceV1(
+    ProculDbContext db,
+    IChatClient chatClient,
+    McpClientManager mcp,
+    ILogger<ChatStreamServiceV1> logger)
 {
     /// <summary>Upper bound on the generated title length (characters).</summary>
     public const int MaxTitleLength = 60;
@@ -156,14 +161,14 @@ internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatCl
 
         var messages = new List<ChatMessage>(history.Count + 1)
         {
-            new(ChatRole.System, AgentTools.SystemPrompt),
+            new(ChatRole.System, ComposeSystemPrompt(mcp)),
         };
         messages.AddRange(history.Select(m => new ChatMessage(
             role: m.MessageRole.ToChatRole(),
             content: m.Text
         )));
 
-        var options = new ChatOptions { Tools = [.. AgentTools.All] };
+        var options = new ChatOptions { Tools = MergeTools(mcp) };
 
         var reply = new StringBuilder();
         var failed = false;
@@ -201,6 +206,22 @@ internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatCl
 
         yield return new ChatStreamEventV1.Done(new());
     }
+
+    /// <summary>
+    /// The tools offered on a turn: the built-ins plus every tool discovered from the connected
+    /// MCP servers. MCP tools are <see cref="AIFunction"/>s too, so
+    /// <c>UseFunctionInvocation()</c> dispatches them unchanged.
+    /// </summary>
+    internal static List<AITool> MergeTools(McpClientManager mcp)
+    {
+        var tools = new List<AITool>(AgentTools.All);
+        tools.AddRange(mcp.Tools);
+        return tools;
+    }
+
+    /// <summary>The system prompt for a turn: the base prompt plus any MCP server instructions.</summary>
+    internal static string ComposeSystemPrompt(McpClientManager mcp) =>
+        AgentTools.SystemPrompt + mcp.SystemPromptSuffix;
 
     /// <summary>
     /// Asks the model for a short title for a brand-new conversation. Purely a model call:

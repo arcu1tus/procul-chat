@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'chat_stream_event.dart';
+import 'mcp_status.dart';
 import 'models.dart';
 
 /// Thrown when the backend returns a non-success HTTP status.
@@ -135,6 +136,26 @@ class ChatApi {
         .toList();
 
     return messages.reversed.toList(growable: false);
+  }
+
+  /// `GET /v1/mcp/servers` — live, secret-free status of the configured MCP servers.
+  ///
+  /// Goes through this client so it inherits the bearer header and the `401 → logout` path.
+  Future<List<McpServerStatus>> fetchMcpServers() async {
+    final response = await _client.get(
+      _uri('/v1/mcp/servers'),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    return (body['servers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(McpServerStatus.fromJson)
+        .toList(growable: false);
   }
 
   /// `POST /v1/conversations` — creates a conversation and streams the reply.

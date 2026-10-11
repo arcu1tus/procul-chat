@@ -3,3 +3,5 @@ obj/
 bin/
 .env*
 !.env*.example
+config.jsonc
+!config.jsonc.example
