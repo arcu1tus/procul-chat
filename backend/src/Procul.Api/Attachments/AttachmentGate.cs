@@ -29,7 +29,8 @@ internal static class AttachmentGate
         ModelCatalogService catalog,
         IReadOnlyList<Guid>? attachmentIds,
         string? modelSlug,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? allowMessageId = null)
     {
         if (attachmentIds is not { Count: > 0 })
         {
@@ -47,7 +48,9 @@ internal static class AttachmentGate
             return AttachmentResolution.Fail($"Unknown attachment id '{missing[0]}'.");
         }
 
-        var alreadyAttached = found.FirstOrDefault(a => a.MessageId is not null);
+        // An attachment already attached to the message being kept (edit) is fine; one attached
+        // to any *other* message is still rejected.
+        var alreadyAttached = found.FirstOrDefault(a => a.MessageId is not null && a.MessageId != allowMessageId);
         if (alreadyAttached is not null)
         {
             return AttachmentResolution.Fail(

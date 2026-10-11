@@ -7,6 +7,7 @@ import 'chat_api.dart';
 import 'models.dart';
 import 'usage.dart';
 import 'usage_controller.dart';
+import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/skeleton.dart';
 
@@ -87,26 +88,31 @@ class _UsageScreenState extends State<UsageScreen> {
   }
 
   Widget _body() {
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
-      children: [
-        if (_controller.error != null) ...[
-          _ErrorNote(message: _controller.error!),
-          const Gap(16),
-        ],
-        if (_controller.summary == null)
-          // Only shimmer while the first load is genuinely in flight; after a
-          // failed first load there is nothing to skeleton and the error note
-          // above is the whole state.
-          _controller.isLoading
-              ? const _UsageSkeleton()
-              : const SizedBox.shrink()
-        else if (_controller.isEmpty)
-          const _EmptyUsage()
-        else
-          ..._content(),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final side = centeredSidePadding(constraints.maxWidth);
+        return ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.fromLTRB(20 + side, 20, 20 + side, 28),
+          children: [
+            if (_controller.error != null) ...[
+              _ErrorNote(message: _controller.error!),
+              const Gap(16),
+            ],
+            if (_controller.summary == null)
+              // Only shimmer while the first load is genuinely in flight; after a
+              // failed first load there is nothing to skeleton and the error note
+              // above is the whole state.
+              _controller.isLoading
+                  ? const _UsageSkeleton()
+                  : const SizedBox.shrink()
+            else if (_controller.isEmpty)
+              const _EmptyUsage()
+            else
+              ..._content(),
+          ],
+        );
+      },
     );
   }
 

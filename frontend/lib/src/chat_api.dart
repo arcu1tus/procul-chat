@@ -363,6 +363,24 @@ class ChatApi {
     }),
   );
 
+  /// `POST /v1/conversations/{id}/messages/{messageId}/edit` — rewrites a user message and
+  /// streams the model's new reply. Editing is destructive: the backend discards every later
+  /// message (and their attachments) first.
+  ///
+  /// [attachmentIds] follows the backend rule: null keeps the message's current attachments,
+  /// an empty list removes them all, and a list replaces them with exactly those.
+  Stream<ChatStreamEvent> editMessage(
+    String conversationId,
+    String messageId,
+    String text, {
+    List<String>? attachmentIds,
+  }) => _stream(
+    _postSse('/v1/conversations/$conversationId/messages/$messageId/edit', {
+      'text': text,
+      'attachmentIds': ?attachmentIds,
+    }),
+  );
+
   Future<http.StreamedResponse> _postSse(
     String path,
     Map<String, Object?> body,

@@ -18,11 +18,32 @@ Future<void> main() async {
   // Connect screen when already signed in, or a fallback face.
   final settings = SettingsController();
   final auth = AuthController();
-  await settings.init();
-  await auth.init();
-  await GoogleFonts.pendingFonts([interTextStyle, GoogleFonts.coiny()]);
+  await _preload(settings, auth);
 
   runApp(ProculChatApp(settings: settings, auth: auth));
+}
+
+/// Best-effort startup preloading. Each step is guarded so a failure — most
+/// likely an offline runtime font fetch — still lets the app start (falling
+/// back to the platform face) instead of throwing before `runApp`.
+Future<void> _preload(SettingsController settings, AuthController auth) async {
+  try {
+    await settings.init();
+  } catch (_) {
+    // Keep the default theme.
+  }
+
+  try {
+    await auth.init();
+  } catch (_) {
+    // Start signed out.
+  }
+
+  try {
+    await GoogleFonts.pendingFonts([interTextStyle, GoogleFonts.coiny()]);
+  } catch (_) {
+    // Fonts are cosmetic; the platform face is fine.
+  }
 }
 
 class ProculChatApp extends StatefulWidget {

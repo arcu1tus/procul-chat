@@ -126,7 +126,7 @@ namespace Procul.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ConversationId");
+                    b.HasIndex("ConversationId", "CreatedAt", "Id");
 
                     b.ToTable("ConversationMessages");
                 });

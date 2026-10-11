@@ -51,6 +51,13 @@ public sealed record SendMessageRequestV1(
     string Text,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null);
 
+// POST /conversations/{conversationId}/messages/{messageId}/edit
+// Absent `attachmentIds` keeps the message's current attachments; an empty list removes them all;
+// a list replaces them with exactly those.
+public sealed record EditMessageRequestV1(
+    string Text,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null);
+
 // GET /models
 public sealed record GetModelsResponseV1(string DefaultModel, List<ModelV1> Models);
 

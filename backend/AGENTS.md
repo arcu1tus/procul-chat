@@ -264,9 +264,10 @@ the auth and health routes do not (see Authentication).
 | GET | `/{conversationId:guid}` | JSON `ConversationV1` or 404. |
 | PATCH | `/{conversationId:guid}` | Rename. Body `{"title":"..."}` (1–60 chars). `ConversationV1`, 400, or 404. |
 | PUT | `/{conversationId:guid}/model` | Set the conversation's model. Body `{"model":"slug"}`. `ConversationV1`, 400 (unknown slug), or 404. |
-| DELETE | `/{conversationId:guid}` | Deletes the conversation and its messages (cascade). 204 or 404. |
+| DELETE | `/{conversationId:guid}` | Deletes the conversation, its messages, and their attachment bytes. 204 or 404. |
 | GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). |
 | POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. Body may carry `attachmentIds`. 404 if missing. |
+| POST | `/{conversationId:guid}/messages/{messageId:guid}/edit` | **SSE** stream. Rewrites an existing **user** message and re-prompts the model. **Destructive** (see *Message editing*). 404 conversation/message; 400 non-user message, empty/oversized `text`, or a bad `attachmentIds`. |
 | POST | `/v{version}/attachments[?model=<slug>]` | Multipart upload (`file` field) → `201 AttachmentV1`. `400` disallowed type or a type the model (`model` query, else default) cannot read, `413` too large. |
 | GET | `/v{version}/attachments/{id:guid}` | The raw bytes, with the stored `Content-Type` and an inline `Content-Disposition`; `404` if unknown. |
 | DELETE | `/v{version}/attachments/{id:guid}` | `204`, idempotent (unknown id is also `204`). |
@@ -280,12 +281,41 @@ the auth and health routes do not (see Authentication).
 
 **Conversation titles.** A conversation starts with a placeholder title (the first line of the
 initial message, truncated). On `POST /` the backend fires a *second*, tiny model call
-(`ChatStreamServiceV1.GenerateTitleAsync`, capped at `TitleOptions` = 24 output tokens, no
-tools, 8s timeout) **concurrently** with the reply, then emits a `title` event and persists
-the result. The title call only produces a string — it never touches the `DbContext`, so it
-can run alongside the reply stream without sharing a context; the write happens after the
-stream completes. If it fails/times out, `FallbackTitle` is used. Rename/delete do not change
-`UpdatedAt`; only new messages do.
+(`ChatStreamServiceV1.GenerateTitleAsync`, capped at `TitleOptions.MaxOutputTokens` = 300 output
+tokens, no tools, 8s timeout) **concurrently** with the reply, then emits a `title` event and
+persists the result. The cap is generous because the configured model is a reasoning model that
+spends tokens thinking before it emits a title; the sanitiser (`MaxTitleWords` = 8) rejects an
+obviously long or meta answer and the caller falls back. The title call only produces a string —
+it never touches the `DbContext`, so it can run alongside the reply stream without sharing a
+context; the write happens after the stream completes. If it fails/times out, `FallbackTitle`
+is used. Rename/delete do not change `UpdatedAt`; only new messages (and an edit) do.
+
+## Message editing
+
+`POST /{conversationId}/messages/{messageId}/edit` rewrites one **user** message and streams a
+fresh reply with the same SSE shape as send (`acknowledge → (toolCall/toolResult)* → token* →
+usage? → (error|done)`; no `created`, no `title`). Request body: `{"text":"…","attachmentIds":[…]?}`.
+
+**Editing is destructive in v1.** `ChatStreamServiceV1.EditMessageAsync` truncates every message
+after the edited one (`(CreatedAt, Id)` keyset order), deletes those messages' attachment
+**bytes** from the store (metadata + Postgres blobs cascade; S3 objects do not — the same fix now
+also applies to conversation delete), drops their `TurnUsage` rows so the in-chat counter matches
+the visible branch, rewrites the text, optionally replaces the attachments, bumps
+`Conversation.UpdatedAt`, and re-prompts the model through the shared reply core. The title is
+**not** regenerated, even when the first message is edited. The edited turn's own reply usage row
+is replaced by the new reply's row.
+
+**`attachmentIds` semantics:** absent keeps the message's current attachments; an empty list
+removes them all; a list replaces them with exactly those. `AttachmentGate.ResolveAsync` takes an
+optional `allowMessageId` so an attachment already on *the message being edited* is allowed while
+one attached to a *different* message is still rejected. Empty/oversized (`> 64 KiB`) `text` is a
+`400` on create, send, and edit alike.
+
+> **Future evolution: branch instead of truncate.** A later version could keep both versions — a
+> message tree / parent-leaf model, or soft-deleting the discarded tail and offering a "switch
+> branch" control — rather than destroying it. Keep the edit endpoint's request/response shape
+> compatible with that: today it returns the same reply stream as send; a branching design would
+> most likely add a branch id to the response rather than change the request.
 
 ## Conventions & patterns
 
@@ -299,10 +329,13 @@ stream completes. If it fails/times out, `FallbackTitle` is used. Rename/delete 
   name is emitted, and the event kind is carried by a `type` discriminator **inside the JSON
   payload** (e.g. `created`, `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`,
   `error`, `done`).
-- **Streaming turn logic** lives once in `ChatStreamServiceV1`. `StreamAssistantReplyAsync`
-  is the shared reply turn; create wraps it with `StreamNewConversationAsync` (which emits
-  `created` and the trailing `title`), and send calls it directly. Keep new streaming
-  features there, not duplicated in endpoints.
+- **Streaming turn logic** lives once in `ChatStreamServiceV1`. The reply core is
+  `StreamReplyAsync(conversationId, userMessage, …)`, which takes an already-persisted user
+  message; `StreamAssistantReplyAsync` wraps it and persists the new user message, and
+  `EditMessageAsync` wraps it after truncating + rewriting an existing one. `create` wraps
+  `StreamAssistantReplyAsync` with `StreamNewConversationAsync` (which emits `created` and the
+  trailing `title`), and send calls it directly. Keep new streaming features there, not
+  duplicated in endpoints.
 - **Persistence:** user message is saved immediately, then the assistant reply after the
   stream completes. Do **not** hold a DB transaction open across the model call.
 - **AI client:** `IChatClient` is registered as a singleton via `AddChatClient(...)`; inject
@@ -385,6 +418,9 @@ PostgreSQL; the **bytes** go to the store selected by `attachments.storage`:
 `AddProculAttachments(config)` registers the implementation matching `attachments.storage`.
 `PutAsync` takes the `Attachment` (not just a stream) because the Postgres store's blob row has
 a foreign key to it — the endpoint adds the metadata row first so the FK is satisfied.
+Rows cascade on delete, but the **bytes do not**: every path that removes attachment rows
+(conversation delete, message edit/truncate) calls `IAttachmentStore.DeleteBytesAsync` first so
+S3 objects are not leaked. 
 
 **Endpoints** (`Attachments/V1/AttachmentEndpointsV1.cs`, group `/v{version}/attachments`,
 mapped next to `Mcp`/`Usage` in `Program.cs`): `POST /` (multipart `file`) validates size
@@ -494,6 +530,18 @@ image is ASP.NET-only (no node/npx for stdio).
 - **Status.** `GET /v1/mcp/servers` (authenticated) reports name/type/url/connected/toolCount/
   tools/lastError/lastConnectedAt. `POST /v1/mcp/servers/{name}/reconnect` forces a reconnect.
   There is no config hot-reload: a config change needs a restart (the loop only reconnects).
+
+## Known limitations (documented, not yet addressed)
+
+- **Orphaned uploads.** An attachment uploaded but never attached (the chip was removed, or the
+  send failed) stays in the store; there is no garbage-collection job. Metadata is unreferenced
+  (`MessageId`/`ConversationId` null).
+- **History paging is shallow.** `GET /{id}/messages` caps a page at 100, and the client fetches
+  exactly one page of 100 — a longer conversation loses its oldest messages until cursor paging
+  is implemented in the UI. The composite `(ConversationId, CreatedAt, Id)` index already backs
+  the keyset cursor.
+- **Usage aggregation is in memory.** `GET /v1/usage` loads the `TurnUsage` rows and aggregates
+  in C# (`UsageAggregator`); fine for a demo, but it could be pushed to SQL.
 
 ## Gotchas (learned the hard way)
 

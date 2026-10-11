@@ -58,6 +58,7 @@ frontend/
       models.dart                 # domain types: Conversation (incl. model), ChatMessage, ToolCall,
                                   #   MessageRole, TokenUsage + formatTokenCount;
                                   #   ChatModel/ModelCapabilities/ModelHealth + modality/status enums
+      time_format.dart            # shared relativeTime() (sidebar + Models health rows)
       attachments.dart            # Attachment DTO + size/MIME/`attachmentProblem` helpers +
                                   #   AttachmentPicker abstraction (FilePickerAttachmentPicker)
       mcp_status.dart             # McpServerStatus: read-only MCP server status DTO
@@ -98,6 +99,7 @@ frontend/
         skeleton.dart             # Shimmer + Skeleton loading placeholders
         icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label
         model_badges.dart         # CapabilityBadge(s) + ModelHealthDot (shared by picker & Models)
+        content_width.dart        # kContentMaxWidth + centeredSidePadding (wide-screen measure)
   test/                           # controller, API, auth, settings, and widget tests
   test/support/                   # shared test doubles (FakeConversationStore, FakeCredentialStore,
                                   #   FakeServerStore, FakeAttachmentPicker) + model_fixtures.dart
@@ -165,6 +167,7 @@ Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's save
 | List chats | `GET /` | JSON `{"conversations":[...]}`, newest activity first |
 | Start chat | `POST /` body `{"initialMessage":"...","model":"<slug>"?,"attachmentIds":["<guid>"]?}` | SSE |
 | Send message | `POST /{id}/messages` body `{"text":"...","attachmentIds":["<guid>"]?}` | SSE |
+| Edit message | `POST /{id}/messages/{messageId}/edit` body `{"text":"...","attachmentIds":["<guid>"]?}` | SSE (destructive — see below) |
 | Upload | `POST /v1/attachments?model=<slug>` multipart (`file` field) | JSON `AttachmentV1` (`201`); `400` (type/model can't read it)/`413` |
 | Download | `GET /v1/attachments/{id}` (authenticated) | raw bytes + `Content-Disposition` |
 | Delete | `DELETE /v1/attachments/{id}` | `204` (404 treated as success) |
@@ -214,6 +217,17 @@ fall back to `user`.
 `afterMessageId`. `ChatApi.fetchMessages` reverses the page to oldest-first before it
 reaches the buffer.
 
+**Message editing is destructive in v1.** `POST /{id}/messages/{messageId}/edit` rewrites a
+**user** message and re-prompts the model. The backend first deletes every message after the
+edited one (and their attachments), then returns the same reply stream as send — no `created`,
+no `title`. The client mirrors this locally: `ChatController.editMessage` drops the tail, updates
+the edited message in place, and inserts a fresh assistant bubble. `attachmentIds` absent keeps
+the message's current attachments, `[]` removes all, and a list replaces them; only user messages
+are editable. A hard failure triggers a resync (see below).
+
+> **Future branch note** (mirrors the backend): a later version could branch instead of truncate;
+> keep the request/response shape compatible.
+
 ## Conventions & patterns
 
 - **One `ChatController` owns both the list and the active conversation.** It holds
@@ -225,7 +239,20 @@ reaches the buffer.
   (not in `finally`), so the composer re-enables while the trailing `title` event is still in
   flight. The `title` event then updates the conversation's title in the list.
 - **`ChatMessage.text` is mutable** on purpose: an empty assistant bubble is inserted up
-  front and filled in token-by-token as `TokenEvent`s arrive.
+  front and filled in token-by-token as `TokenEvent`s arrive. `attachments` is a mutable final
+  list too, so an edit can replace the files while preserving the object's identity (which keeps
+  the entrance-animation tracking in `ChatScreen` stable).
+- **Editing is destructive and mirrors the backend.** `ChatController.beginEdit(message)` records
+  `editingMessageId` and seeds `pendingAttachments` from the message; `cancelEdit()` clears both;
+  `editMessage(text)` drops the local tail (`removeRange(index + 1, …)`), rewrites the message in
+  place, inserts a fresh assistant bubble, and streams the reply. Only user messages are
+  editable, and the hover-revealed Edit `IconAction` on a user bubble (mirroring the conversation
+  tile's hover pattern) enters the mode; the composer shows an "Editing message" banner with a
+  Cancel action and relabels its send button "Save changes". Edit state resets on `newChat()`,
+  `openConversation`, and delete.
+- **A hard turn failure resyncs.** When `send`/`editMessage` throws (e.g. the connection drops),
+  the controller sets `error` and calls `reloadActiveConversation()` so the buffer matches the
+  server rather than leaving a local-only user message.
 - **Tool activity lives on the assistant message.** `ToolCallEvent`/`ToolResultEvent` are
   folded into the streaming assistant `ChatMessage.toolCalls` (matched by `callId`), not added
   as separate buffer entries. Tool calls are not persisted, so they vanish on reload.
@@ -296,7 +323,8 @@ reaches the buffer.
 - **Composer keyboard.** On desktop **Enter sends** and **Shift+Enter inserts a newline**
   (`CallbackShortcuts` bound to `SingleActivator(enter)`; the shifted variant falls through
   to the field). The on-screen send button and `onSubmitted` are kept, so
-  `TextInputAction.send` still submits.
+  `TextInputAction.send` still submits. The Enter/Shift+Enter hint is hidden on touch platforms
+  (`defaultTargetPlatform` is Android/iOS), where it would be meaningless.
 - **Attachments are picked, uploaded, and queued in `ChatController`.** `ChatScreen` owns an
   `AttachmentPicker` (`FilePickerAttachmentPicker` by default, injected in tests) and a paperclip
   `IconAction`. The picker is **restricted to the active model's readable types**:
@@ -310,10 +338,12 @@ reaches the buffer.
   user bubble; the queue clears on send, `newChat()`, and switching chats. `pendingAttachments` is
   *not* persisted: a failed turn leaves the uploads orphaned server-side.
 - **Attachment bytes are fetched through `ChatApi`, then cached.** `ChatController.loadAttachmentBytes`
-  does an authenticated `GET /v1/attachments/{id}` and memoizes in `_attachmentBytes`; images
-  render as `Image.memory` and other files as chips that fetch the bytes and hand them to
-  `picker.save` (`FilePicker.saveFile`) on tap. Never build an `<img>` URL: it cannot carry the
-  bearer token. The same path works on web, desktop, and mobile.
+  does an authenticated `GET /v1/attachments/{id}` and memoizes the **`Future`** (not just the
+  bytes) in `_attachmentBytes`, so a rebuild never resets an `Image`'s `FutureBuilder` back to its
+  loading placeholder (the same `Future` instance is returned each time; a failed fetch is dropped
+  so a retry is possible). Images render as `Image.memory` and other files as chips that fetch the
+  bytes and hand them to `picker.save` (`FilePicker.saveFile`) on tap. Never build an `<img>` URL:
+  it cannot carry the bearer token. The same path works on web, desktop, and mobile.
 - **`AttachmentPicker` is a seam for tests.** `FakeAttachmentPicker` (`test/support/`) records
   `pick`/`save` calls so widget tests never touch the `file_picker` platform channel. Prefer
   `file_picker`'s static API (`FilePicker.pickFiles` / `FilePicker.saveFile`); v13 returns
@@ -328,6 +358,13 @@ reaches the buffer.
   tiles/tool rows use `AnimatedContainer` / `AnimatedSwitcher`.
 - **Icon-only buttons go through `IconAction`** (`widgets/icon_action.dart`) so every one has
   a tooltip and an accessible label.
+- **Wide screens cap the content column.** `widgets/content_width.dart` exposes
+  `kContentMaxWidth` (900) and `centeredSidePadding(width)`; the chat list and the
+  Usage/Models screens add that as horizontal padding, so on an ultra-wide monitor content
+  does not pin to the edges. On narrow app bars buttons collapse: the model picker to an icon
+  (`compactModelPicker`) and rename/delete into an overflow menu (`compactActions`).
+- **Relative timestamps are shared.** `time_format.dart`'s `relativeTime` backs both the
+  conversation sidebar and the Models health rows (previously two private copies).
 - **Pull-to-refresh uses `RefreshTrigger` plus an explicit button.** The conversation list
   (`conversation_sidebar.dart`), the chat pane (`chat_screen.dart`) and the MCP section
   (`settings_dialog.dart`) each wrap their scrollable in `RefreshTrigger`; every one also has a

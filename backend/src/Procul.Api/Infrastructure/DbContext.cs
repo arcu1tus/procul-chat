@@ -34,6 +34,10 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
             e.HasKey(m => m.Id);
             e.Property(m => m.Id).ValueGeneratedNever();
             e.Property(m => m.MessageRole).HasConversion<string>().HasMaxLength(16);
+
+            // History and keyset queries order by (ConversationId, CreatedAt, Id); this composite
+            // index also covers the conversation FK, so no separate single-column index is needed.
+            e.HasIndex(m => new { m.ConversationId, m.CreatedAt, m.Id });
         });
 
         modelBuilder.Entity<TurnUsage>(e =>
