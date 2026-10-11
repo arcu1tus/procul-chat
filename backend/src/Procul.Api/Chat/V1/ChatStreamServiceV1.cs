@@ -4,7 +4,9 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Procul.Api.Chat.Models;
 using Procul.Api.Chat.Tools;
+using Procul.Api.Configuration;
 using Procul.Api.Infrastructure;
 using Procul.Api.Mcp;
 
@@ -12,14 +14,15 @@ namespace Procul.Api.Chat.V1;
 
 /// <summary>
 /// Shared logic for a single conversation turn: persists the user message, streams the
-/// assistant's reply from the chat model, persists that reply, and emits the events both
-/// the "create conversation" and "send message" endpoints stream to the client.
+/// assistant's reply from the conversation's selected model, persists that reply, and emits the
+/// events both the "create conversation" and "send message" endpoints stream to the client.
 /// </summary>
 internal sealed class ChatStreamServiceV1(
     ProculDbContext db,
-    IChatClient chatClient,
+    ChatModelRegistry registry,
+    ModelUsageTracker usageTracker,
+    ProculConfig config,
     McpClientManager mcp,
-    ChatModelOptions model,
     ILogger<ChatStreamServiceV1> logger)
 {
     /// <summary>Upper bound on the generated title length (characters).</summary>
@@ -98,10 +101,11 @@ internal sealed class ChatStreamServiceV1(
     )
     {
         yield return new ChatStreamEventV1.Created(new ChatStreamCreatedV1(
-            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt)
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model)
         ));
 
-        var titleTask = GenerateTitleAsync(initialMessage, ct);
+        var titleDefinition = ResolveTitleModel(conversation.Model);
+        var titleTask = GenerateTitleAsync(titleDefinition, initialMessage, ct);
 
         await foreach (var streamEvent in StreamAssistantReplyAsync(conversation.Id, initialMessage, ct))
         {
@@ -114,7 +118,7 @@ internal sealed class ChatStreamServiceV1(
         conversation.Title = titleResult.Title ?? FallbackTitle(initialMessage);
         if (titleResult.Usage.HasUsage)
         {
-            db.TurnUsages.Add(titleResult.Usage.ToTurnUsage(conversation.Id, model.Model, TurnKind.Title));
+            db.TurnUsages.Add(titleResult.Usage.ToTurnUsage(conversation.Id, titleDefinition.Slug, TurnKind.Title));
         }
 
         await db.SaveChangesAsync(ct);
@@ -128,6 +132,13 @@ internal sealed class ChatStreamServiceV1(
         [EnumeratorCancellation] CancellationToken ct
     )
     {
+        // The conversation remembers its model; an unknown/stale slug falls back to the default.
+        // Loading the entity (not just the column) lets us bump UpdatedAt with the same save,
+        // which also keeps the in-memory provider used by tests happy.
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        var definition = registry.ResolveOrDefault(conversation?.Model);
+        var chatClient = registry.GetClient(definition.Slug);
+
         yield return new ChatStreamEventV1.Processing(new(Message: "received"));
 
         var history = await db.ConversationMessages
@@ -151,13 +162,14 @@ internal sealed class ChatStreamServiceV1(
         };
 
         db.ConversationMessages.Add(userMessage);
-        await db.SaveChangesAsync(ct);
 
         // Bump the conversation's activity timestamp so it floats to the top of the list.
-        var now = DateTimeOffset.UtcNow;
-        await db.Conversations
-            .Where(c => c.Id == conversationId)
-            .ExecuteUpdateAsync(s => s.SetProperty(c => c.UpdatedAt, now), ct);
+        if (conversation is not null)
+        {
+            conversation.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync(ct);
 
         history.Add(new ConversationMessageV1(
             Id: userMessage.Id,
@@ -215,10 +227,11 @@ internal sealed class ChatStreamServiceV1(
 
         if (usage.HasUsage)
         {
-            db.TurnUsages.Add(usage.ToTurnUsage(conversationId, model.Model, TurnKind.Chat));
+            db.TurnUsages.Add(usage.ToTurnUsage(conversationId, definition.Slug, TurnKind.Chat));
         }
 
         await db.SaveChangesAsync(ct);
+        usageTracker.RecordUse(definition.Slug);
 
         yield return new ChatStreamEventV1.Done(new());
     }
@@ -246,9 +259,13 @@ internal sealed class ChatStreamServiceV1(
     /// Returns an unusable title (null) when the call fails or times out (the caller falls
     /// back), along with whatever usage the call reported.
     /// </summary>
-    public async Task<TitleGenerationResult> GenerateTitleAsync(string initialMessage, CancellationToken ct)
+    public async Task<TitleGenerationResult> GenerateTitleAsync(
+        ChatModelDefinition definition,
+        string initialMessage,
+        CancellationToken ct)
     {
         var usage = new TurnUsageTotals();
+        var chatClient = registry.GetClient(definition.Slug);
 
         try
         {
@@ -263,6 +280,7 @@ internal sealed class ChatStreamServiceV1(
 
             var response = await chatClient.GetResponseAsync(messages, TitleOptions, timeoutCts.Token);
             usage.Add(response.Usage);
+            usageTracker.RecordUse(definition.Slug);
             logger.LogDebug("Title model output: {RawTitle}", Truncate(response.Text, 600));
             var title = SanitizeTitle(response.Text);
             if (title is null)
@@ -279,6 +297,15 @@ internal sealed class ChatStreamServiceV1(
             return new TitleGenerationResult(null, usage);
         }
     }
+
+    /// <summary>
+    /// The model used for the title call: <c>titleModel</c> from the config when set, otherwise the
+    /// conversation's own model.
+    /// </summary>
+    private ChatModelDefinition ResolveTitleModel(string? conversationModel) =>
+        string.IsNullOrWhiteSpace(config.TitleModel)
+            ? registry.ResolveOrDefault(conversationModel)
+            : registry.ResolveOrDefault(config.TitleModel);
 
     /// <summary>
     /// A reasonable title when the model call is unavailable: the first line of the

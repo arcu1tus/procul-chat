@@ -9,11 +9,14 @@
 Backend for a chat app ("Procul"). It exposes a versioned minimal-API HTTP surface that
 creates conversations, streams assistant replies over Server-Sent Events (SSE), and reads
 message history. Persistence is PostgreSQL via EF Core; the LLM is called through
-`Microsoft.Extensions.AI` against OpenRouter.
+`Microsoft.Extensions.AI` against one or more configured OpenAI-compatible providers.
 
 - **Framework:** .NET 10 (`net10.0`), ASP.NET Core minimal APIs, `CreateSlimBuilder`.
+- **Config:** `config.jsonc` is the single source of truth (JSONC + JSON Schema + `${ENV}`
+  secrets); `.env` holds secrets only. See **Configuration**.
 - **DB:** PostgreSQL + `Npgsql.EntityFrameworkCore.PostgreSQL`, `AddDbContextPool`.
-- **AI:** `Microsoft.Extensions.AI` + `Microsoft.Extensions.AI.OpenAI`, OpenRouter endpoint.
+- **AI:** `Microsoft.Extensions.AI` + `Microsoft.Extensions.AI.OpenAI`; one `IChatClient` per
+  configured model (`Chat/ChatModelRegistry.cs`), selected per conversation.
 - **Tools:** `AIFunction`s in `Chat/Tools/`, executed via `.UseFunctionInvocation()`; Python
   runs through `Lokad.Lython` in a deny-all sandbox.
 - **MCP:** remote Model Context Protocol servers (Streamable HTTP + legacy SSE) configured in
@@ -31,13 +34,19 @@ backend/
     Program.cs                     # host + route wiring (DI lives in the extension files below)
     Dockerfile                     # multi-stage container build (build context: backend/)
     Chat/
-      ChatServiceCollectionExtensions.cs  # AddProculChat: IChatClient + ChatStreamServiceV1
-      ChatModelOptions.cs          # startup-captured OPENROUTER_MODEL_SLUG (stamped on usage rows)
-      Conversation.cs              # entity
+      ChatServiceCollectionExtensions.cs  # AddProculChat: registry + turn service + catalog/health
+      ChatModelDefinition.cs       # validated model entry (slug, provider, capabilities, flags)
+      ChatModelRegistry.cs         # one IChatClient per configured model + slug resolution
+      Conversation.cs              # entity (incl. the per-conversation Model slug)
       ConversationMessage.cs       # ConversationMessage entity
       MessageRole.cs               # enum + MessageRoleExtensions.ToChatRole() (namespace Procul.Api.Chat)
       TurnUsage.cs                 # entity: one model call's token usage (TurnKind Chat | Title)
       TurnUsageTotals.cs           # mutable accumulator for a turn's UsageContent payloads
+      Models/
+        ModelUsageTracker.cs       # last-used timestamp per slug (drives the idle re-probe)
+        ModelCapabilityDiscovery.cs# OpenRouter /models capability discovery (cached, non-fatal)
+        ModelCatalogService.cs     # IHostedService: startup + idle health probes, on-demand checks
+        ModelHealthOptions.cs      # modelHealth.* (enabled, interval, timeout, prompt, maxTokens)
       Tools/
         AgentTools.cs              # AITool registry + system prompt (source of ChatOptions.Tools)
         TimeTool.cs                # get_current_time
@@ -46,18 +55,21 @@ backend/
         ChatEndpointsV1.cs         # minimal-API endpoints + route mapping
         ChatStreamServiceV1.cs     # conversation-turn streaming (create + reply + title)
         DataTypesV1.cs             # request/response DTOs for v1
+        ModelEndpointsV1.cs        # GET /v1/models + POST .../check (single + all)
         ChatStreamEventsV1.cs      # SSE event payloads + ChatStreamEventV1 hierarchy
         TitleGenerationResult.cs   # title + its token usage (returned by GenerateTitleAsync)
     Configuration/
+      ProculConfig.cs              # root POCO for config.jsonc (server/db/models/mcp/...)
+      ProculConfigLoader.cs        # locate + JSONC parse + schema validate + ${ENV} + domain validate
       DurationParser.cs            # shared <number><unit> duration parsing (d/h/m/s)
+      AttachmentOptions.cs         # attachments.* derived options (consumed in a later plan)
     Mcp/
-      McpOptions.cs                # PROCUL_CONFIG_PATH, timeouts, health interval, enabled flag
-      ProculConfig.cs              # POCO: { McpServers: { name -> McpServerConfig } }
+      McpOptions.cs                # mcp.* (enabled, connect timeout, health interval)
       McpServerConfig.cs           # { Type, Url, Headers, Enabled }
-      McpConfigLoader.cs           # read + JSONC parse + ${ENV} expand + validate (fail fast)
+      McpConfigLoader.cs           # validate the parsed ProculConfig.McpServers (fail fast)
       McpToolNaming.cs             # namespacing + sanitization + collision resolution
       McpClientManager.cs          # singleton IHostedService: connect, discover, reconnect, status
-      McpServiceCollectionExtensions.cs  # AddProculMcp(configuration)
+      McpServiceCollectionExtensions.cs  # AddProculMcp(config)
       V1/
         McpEndpointsV1.cs          # GET /v1/mcp/servers (authenticated) + reconnect
         DataTypesV1.cs             # response DTOs
@@ -68,10 +80,12 @@ backend/
         DataTypesV1.cs             # usage response DTOs (camelCase; tokens only)
     Infrastructure/
       DbContext.cs                 # ProculDbContext + model config
-      DbContextExtensions.cs       # AddProculDbContext
-    Cors/CorsExtensions.cs         # AddProculCors/UseProculCors (browser/web origin policy)
+      DbContextExtensions.cs       # AddProculDbContext(config)
+    Cors/
+      CorsOptions.cs               # server.corsAllowedOrigins (validated, normalized)
+      CorsExtensions.cs            # AddProculCors/UseProculCors (browser/web origin policy)
     Security/
-      AuthOptions.cs               # PROCUL_API_PASSWORD + PROCUL_SESSION_LIFETIME (fail fast)
+      AuthOptions.cs               # PROCUL_API_PASSWORD (secret) + server.sessionLifetime (fail fast)
       PasswordVerifier.cs          # constant-time password check (SHA-256 + FixedTimeEquals)
       SessionTokenService.cs       # issues HS256 session JWTs (key derived from the password)
       AuthExtensions.cs            # AddProculAuth/UseProculAuth (JWT bearer + authorization)
@@ -80,6 +94,8 @@ backend/
         DataTypesV1.cs             # request/response DTOs for the auth endpoints
     Versioning/                    # ApiVersions + AddProculApiVersioning
     Migrations/                    # EF Core migrations
+    config.jsonc.example           # committed example config (the source of truth; real file gitignored)
+    config.schema.json             # JSON Schema for config.jsonc (validated at startup + copied out)
     docker/docker-compose.yaml     # dev-only Postgres
     justfile                       # dev-compose-* / run-dev helpers
     Procul.Api.http                # manual request examples
@@ -106,43 +122,56 @@ dotnet run                          # listens on http://localhost:5010 (launchSe
 - Migrations are applied automatically at startup: `Program.cs` calls
   `DbContextExtensions.ApplyProculMigrationsAsync`, which runs `Database.MigrateAsync()` —
   creating the database if needed and applying any pending migrations (idempotent). It is
-  skipped only when `ConnectionStrings:ChatContext` is unset, so the integration tests still
+  skipped only when `database.connectionString` is unset, so the integration tests still
   boot with no database. Check with
   `docker exec procul_postgres_dev psql -U postgres -d procul -c '\dt'`.
 - OpenAPI (dev only): `GET /openapi/v1.json`.
 
 ## Configuration
 
-Loaded by `DotNetEnv.Env.Load()` at startup from `src/Procul.Api/.env` (gitignored):
+**`config.jsonc` is the single source of truth for the backend.** It is loaded exactly once at
+startup (`Program.cs` → `Configuration/ProculConfigLoader.Load`), before any DI wiring, and a
+missing or invalid file is fatal. `.env` is demoted to a **secrets scratchpad**: `config.jsonc`
+references environment variables as `${VAR}` and the loader resolves them from the process
+environment (populated from `.env` by `DotNetEnv`). An unresolved reference names the variable.
 
-- `ConnectionStrings__ChatContext` — Postgres connection string.
-- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL_SLUG` — read once at startup; app throws if missing.
+The loader pipeline is: locate the file → parse JSONC (comments + trailing commas) → validate
+against `config.schema.json` (JsonSchema.Net) → deserialize → expand every `${VAR}` → fail-fast
+domain validation (≥1 model, exactly one default, unique slugs, absolute http(s) `baseUrl`, known
+provider/capabilities, `attachments.storage` in `{postgres,s3}`, durations, `titleModel`
+references a configured slug). Sections:
+
+- `server.corsAllowedOrigins[]` — browser origins allowed to call the API (was `CORS_ALLOWED_ORIGINS`).
+  In **development** only, an empty list allows any origin (the Flutter web dev server uses an
+  ephemeral `localhost` port). Elsewhere there is no wildcard; a `*` or malformed value fails
+  startup. The API is cookie-less (bearer token), so CORS never enables `AllowCredentials`.
+- `server.sessionLifetime` — session-token lifetime (was `PROCUL_SESSION_LIFETIME`). Default `30d`.
+- `database.connectionString` — Postgres connection string (was `ConnectionStrings__ChatContext`).
+  Unset means "no database" (integration tests boot this way).
+- `attachments.*` — upload storage/size/content-types (consumed by a later plan).
+- `models[]` — one or more chat models (replaces `OPENROUTER_MODEL_SLUG`/`OPENROUTER_API_KEY`);
+  see **Multi-model registry** below.
+- `titleModel` — optional slug used for the title call; defaults to the conversation's model.
+- `modelHealth.*` — probe enable/interval/timeout/prompt (see **Model catalog & health**).
+- `mcp.*` + `mcpServers` — MCP settings and servers (was `MCP_ENABLED`/`MCP_CONNECT_TIMEOUT`/
+  `MCP_HEALTH_INTERVAL` and the old config file).
+
+Two environment variables remain environment-only:
+
+- `PROCUL_CONFIG_PATH` — path to `config.jsonc` (absolute or relative). Optional; defaults to
+  `config.jsonc` next to the app. A missing file is **always** fatal now (models are required).
 - `PROCUL_API_PASSWORD` — the shared password protecting the whole API. **Required**: startup
-  fails fast when it is unset/empty. The client exchanges it for a session token (see
-  Authentication). Use a strong random value.
-- `PROCUL_SESSION_LIFETIME` — how long an issued session token stays valid. Optional; defaults
-  to `30d`. Accepts one or more `<number><unit>` segments with unit `d`/`h`/`m`/`s`
-  (e.g. `12h`, `1h30m`); a malformed value fails startup.
-- `CORS_ALLOWED_ORIGINS` — comma-separated browser origins allowed to call the API
-  (e.g. `https://app.example.com`). In **development** only, when unset, any origin is allowed
-  (the Flutter web dev server uses an ephemeral `localhost` port, so pinning an origin is
-  impractical). In every other environment the policy allows **no** cross-origin request until
-  this is set — there is no wildcard in production. A `*` or a malformed value makes startup
-  fail fast. The API is cookie-less: clients send a bearer token (see Authentication), so CORS
-  never enables `AllowCredentials`.
-- `PROCUL_CONFIG_PATH` — path to the MCP config file (absolute or relative). Optional; defaults
-  to `config.jsonc` next to the app. A missing *default* file disables MCP (info log); a missing
-  *explicitly-set* path is fatal.
-- `MCP_ENABLED` — master switch. Optional; defaults to `true`. When `false`, the config file is
-  never read.
-- `MCP_CONNECT_TIMEOUT` — per-server connect + tool-discovery budget. Optional; defaults to
-  `15s`. Same duration syntax as `PROCUL_SESSION_LIFETIME` (see `Configuration/DurationParser.cs`).
-- `MCP_HEALTH_INTERVAL` — background ping/reconnect cadence. Optional; defaults to `60s`.
+  fails fast when it is unset/empty. It is never stored in `config.jsonc`.
 
 The app manages its own schema: on startup it applies pending EF Core migrations (see
 Build / run / test). There is no flag for this — it happens whenever a database is configured.
 
-`.env.example` documents the shape. **Do not commit `.env`.** Treat any key in it as live.
+`.env.example` documents the secrets only. **Do not commit `.env`.** Treat any key in it as live.
+
+> **Design-time migrations:** because `Program.cs` loads the config before building the host,
+> `dotnet ef migrations add …` also needs a valid config. Set `PROCUL_CONFIG_PATH` (and
+> `PROCUL_API_PASSWORD`) when running EF tooling, e.g.
+> `PROCUL_CONFIG_PATH=/tmp/config.jsonc PROCUL_API_PASSWORD=x dotnet ef migrations add Foo`.
 
 ## Container image & CI
 
@@ -152,9 +181,10 @@ The backend ships as a container image (`src/Procul.Api/Dockerfile`, **build con
 ```bash
 docker build -f backend/src/Procul.Api/Dockerfile -t procul-api backend
 docker run --rm -p 8080:8080 \
-  -e OPENROUTER_API_KEY=... -e OPENROUTER_MODEL_SLUG=... \
-  -e ConnectionStrings__ChatContext="..." -e CORS_ALLOWED_ORIGINS=https://app.example.com \
   -e PROCUL_API_PASSWORD=... \
+  -e OPENROUTER_KEY=sk-or-v1-... \
+  -e DB_CONNECTION_STRING="Host=...;Port=5432;Database=procul;Username=...;Password=..." \
+  -v ./config.jsonc:/app/config.jsonc:ro \
   procul-api
 ```
 
@@ -207,9 +237,13 @@ the auth and health routes do not (see Authentication).
 | POST | `/` | **SSE** stream. Creates a conversation, streams the assistant reply, then a `title` event. |
 | GET | `/{conversationId:guid}` | JSON `ConversationV1` or 404. |
 | PATCH | `/{conversationId:guid}` | Rename. Body `{"title":"..."}` (1–60 chars). `ConversationV1`, 400, or 404. |
+| PUT | `/{conversationId:guid}/model` | Set the conversation's model. Body `{"model":"slug"}`. `ConversationV1`, 400 (unknown slug), or 404. |
 | DELETE | `/{conversationId:guid}` | Deletes the conversation and its messages (cascade). 204 or 404. |
 | GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). |
 | POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. 404 if missing. |
+| GET | `/v{version}/models` | JSON `GetModelsResponseV1`: `defaultModel` + every model with capabilities + live health. No secrets. |
+| POST | `/v{version}/models/check` | Re-probe every health-checked model. `GetModelsResponseV1`. |
+| POST | `/v{version}/models/{slug}/check` | Re-probe one model. `ModelV1`; 404 if unknown. (`{slug}` may contain `/`.) |
 | GET | `/v{version}/mcp/servers` | JSON `McpServersResponseV1`: live per-server status. Authenticated. No secrets. |
 | POST | `/v{version}/mcp/servers/{name}/reconnect` | Force a reconnect. `McpReconnectResponseV1`; 404 if unknown. |
 | GET | `/v{version}/usage` | JSON `GetUsageResponseV1`: lifetime totals + per-UTC-day series + per-model breakdown (`days` 1–366, default 30). |
@@ -295,8 +329,9 @@ estimate** — tokens only, bucketed by **UTC** calendar day.
   `TurnKind.Chat` row in the same save as the assistant message. The title call's
   `ChatResponse.Usage` is persisted as a `TurnKind.Title` row (`GenerateTitleAsync` returns a
   `TitleGenerationResult` carrying it).
-- **Model slug.** `ChatModelOptions` (registered in `AddProculChat`) captures
-  `OPENROUTER_MODEL_SLUG` at startup, so each row records which model produced it.
+- **Model slug.** Each row records the slug of the model that produced it: `ChatStreamServiceV1`
+  resolves the conversation's `Model` (falling back to `ChatModelRegistry.Default`) and passes
+  `definition.Slug` to `TurnUsageTotals.ToTurnUsage`.
 - **Aggregation.** `Usage/UsageAggregator.cs` is a pure function over `TurnUsage` rows: it
   buckets by UTC day, zero-fills every day in the window, and totals per model — kept in C# so
   it is testable without Postgres.
@@ -305,25 +340,72 @@ estimate** — tokens only, bucketed by **UTC** calendar day.
   `GET /v{version}/usage/conversations/{id}` (all-time totals for one conversation). Both are
   authenticated like the rest of `/v1`.
 
+## Multi-model registry
+
+`config.jsonc` declares one or more `models[]`; `ChatModelRegistry` (singleton) builds **one
+`IChatClient` per model** (`new OpenAI.Chat.ChatClient(model: slug, credential: ApiKeyCredential,
+options: Endpoint = baseUrl).AsIChatClient().AsBuilder().UseFunctionInvocation().Build()`) and owns
+them for the app lifetime. It replaces the old single-model `ChatModelOptions`. Key members:
+`All`, `Default`, `Get(slug)`, `GetClient(slug)`, `TryResolve(slug, out def)` (unknown/null →
+default), `ResolveOrDefault(slug)` (logs a warning when a stored slug is gone).
+
+- **Per-conversation selection.** `Conversation.Model` (nullable, `varchar(256)`, migration
+  `AddConversationModel`) remembers the model. `POST /conversations` accepts an optional `model`
+  (validated → 400 on unknown), `PUT /conversations/{id}/model` changes it, and every turn uses
+  the conversation's model (stale/unknown → default with a warning). `ConversationV1.Model`
+  echoes it everywhere a conversation is returned.
+- **Title model.** The title call uses `config.titleModel` when set, else the conversation's model.
+- **`ChatModelDefinition`** carries `Slug`, `Name`, `Description`, `BaseUrl`, `ApiKey`,
+  `Provider` (`OpenRouter | OpenAiCompatible`), `DeclaredCapabilities` (a set of
+  `ModelInputModality`), `IsDefault`, `HealthCheck`, `DiscoverCapabilities`, `MaxOutputTokens?`.
+  The provider is inferred from the base URL when omitted (`openrouter.ai` → OpenRouter).
+
+## Model catalog & health
+
+`Chat/Models/` adds three singletons wired by `AddProculChat`:
+
+- **`ModelUsageTracker`** — last-used timestamp per slug. `ChatStreamServiceV1` calls
+  `RecordUse(slug)` after every real reply and title call.
+- **`ModelCapabilityDiscovery`** — for an OpenRouter model (or any model with
+  `discoverCapabilities: true`) it `GET`s `{baseUrl}/models`, parses both the `{data:[...]}` and
+  bare-array shapes, matches by `id`/`canonical_slug`, and reads `architecture.input_modalities` /
+  `output_modalities` + `supported_parameters`. Best-effort (cached; a non-200 or failure falls
+  back to declared capabilities).
+- **`ModelCatalogService`** (`IHostedService`, started before Kestrel) — at startup it discovers
+  capabilities and probes each model once unless `healthCheck: false`; then a background loop
+  every `modelHealth.interval` (default `30m`) re-probes **only** models with no real traffic in
+  the window (`ModelUsageTracker.UsedWithin`). The probe is a tiny `GetResponseAsync` capped at
+  `modelHealth.maxOutputTokens` with a `modelHealth.timeout` budget; failures are never fatal.
+  `CheckAsync(slug, source)` / `CheckAllAsync(source)` back the on-demand endpoints;
+  `GetCapabilities` resolves discovered ∪ declared (text is the fallback), `GetHealth` returns the
+  per-slug snapshot. `modelHealth.enabled: false` disables the whole service.
+
+`GET /v1/models` returns `defaultModel` + each `ModelV1(slug, name, description, provider,
+isDefault, capabilities { input[], output[] }, health { status, lastCheckedAt, latencyMs,
+lastError, lastUsedAt, source })` — **never** the API key. `POST /v1/models/check` and
+`POST /v1/models/{slug}/check` re-probe (the latter 404s on an unknown slug). Slugs can contain
+`/`, so the route is a catch-all (`/{**rest}`) parsed in `ModelEndpointsV1`.
+
 ## MCP (remote tool servers)
 
 The backend can call tools hosted by remote **Model Context Protocol** servers. Only remote
 transports are supported — `http` (Streamable HTTP) and `sse` (legacy) — because the runtime
 image is ASP.NET-only (no node/npx for stdio).
 
-- **Config.** Servers are declared in `config.jsonc` (JSONC: comments + trailing commas), found
-  at `PROCUL_CONFIG_PATH` or `config.jsonc` next to the app. `config.jsonc.example` is committed;
-  the real file is git-ignored and bind-mounted read-only in the container. `McpConfigLoader`
-  validates it and is **fail-fast**: malformed JSON, an unknown `type`, a missing `url`, a blank
+- **Config.** Servers are declared under `mcpServers` in `config.jsonc` (the same file as the
+  rest of the backend config; JSONC: comments + trailing commas). The shared `ProculConfigLoader`
+  parses and `${ENV}`-expands it; `McpConfigLoader` then validates the parsed
+  `ProculConfig.McpServers` and is **fail-fast**: an unknown `type`, a missing `url`, a blank
   server name, a non-absolute URL, or an unresolved `${ENV_VAR}` all abort startup. An
-  unreachable server is **not** fatal.
+  unreachable server is **not** fatal. `McpClientManager` receives the servers from the injected
+  `ProculConfig`.
 - **Secrets.** Header values (e.g. an `Authorization` bearer) live in `.env` and are referenced
   from the JSON as `${VAR}`. The loader resolves them from the process environment. Headers are
   never logged and never returned by the status endpoint.
 - **`McpClientManager`** is a singleton `IHostedService` started before Kestrel serves traffic.
-  It connects to every enabled server in parallel (each bounded by `MCP_CONNECT_TIMEOUT`),
+  It connects to every enabled server in parallel (each bounded by `mcp.connectTimeout`),
   discovers tools, and logs one line per server. A background loop pings connected servers and
-  reconnects the rest with backoff (`MCP_HEALTH_INTERVAL`). A dead server never blocks startup.
+  reconnects the rest with backoff (`mcp.healthInterval`). A dead server never blocks startup.
 - **Tool naming.** `McpClientTool` derives from `AIFunction`, so `UseFunctionInvocation()` already
   dispatches it and the streaming/tool-event loop is unchanged. Names are `{server}__{tool}`
   (both segments sanitized to `[a-zA-Z0-9_-]`), truncated to 64 chars and suffixed `_2`, `_3`, …
@@ -368,30 +450,43 @@ image is ASP.NET-only (no node/npx for stdio).
   required for the POST/PATCH/DELETE verbs. The policy must stay registered through the
   `CreateSlimBuilder` path (it does not add CORS implicitly). `UseProculCors` also logs the
   resolved origins and warns when production has none configured.
-- **CORS origins are validated and fail fast.** `CorsExtensions.ParseOrigins` rejects `*`,
-  non-absolute values, and origins with a path, then normalizes the trailing slash. It runs both
-  at registration and at `UseProculCors()`, so a bad `CORS_ALLOWED_ORIGINS` crashes startup
-  rather than silently blocking (or, worse, over-allowing) clients.
+- **CORS origins are validated and fail fast.** `CorsOptions.ParseOrigins` rejects `*`,
+  non-absolute values, and origins with a path, then normalizes the trailing slash. It runs at
+  registration, so a bad `server.corsAllowedOrigins` crashes startup rather than silently
+  blocking (or, worse, over-allowing) clients.
+- **`config.jsonc` is required at runtime.** `Program.cs` loads it before DI wiring; there is no
+  "test host" bypass. Integration tests write a temp file (`Support/TestConfig`) and set
+  `PROCUL_CONFIG_PATH`. A missing file, a schema violation, an unresolved `${VAR}`, or a domain
+  error all abort startup.
+- **`dotnet ef` needs a valid config too.** Because the config is loaded in `Program.cs`,
+  design-time commands run it. Set `PROCUL_CONFIG_PATH` and `PROCUL_API_PASSWORD` when running
+  `dotnet ef migrations …` (see Configuration).
+- **Model slugs can contain `/`.** A plain `{slug}` route segment cannot capture `vendor/model`,
+  and a catch-all must be the final segment, so `ModelEndpointsV1` maps `POST /models/{**rest}`
+  and parses `check` (all) vs `{slug}/check` (one). Keep that in mind if you add model routes.
 - **The test project pins EF Core.** `Microsoft.EntityFrameworkCore.Design` is
   `PrivateAssets=all` on the API, so it does not flow to `Procul.Api.Tests`, while Npgsql pulls
   an older EF Core. The test project references `Microsoft.EntityFrameworkCore.Relational`
   10.0.12 directly to keep its compile-time view in sync with the API assembly (otherwise
-  `CS1705`). It also references `Microsoft.EntityFrameworkCore.InMemory` (10.0.12): the usage
-  pipeline integration tests register it in place of Npgsql (leaving the connection string
-  unset, so migrations are skipped) and seed rows directly.
+  `CS1705`). It also references `Microsoft.EntityFrameworkCore.InMemory` (10.0.12): the pipeline
+  integration tests register it in place of Npgsql (leaving the connection string unset, so
+  migrations are skipped) and seed rows directly.
+- **The in-memory provider does not support `ExecuteUpdateAsync`.** `ChatStreamServiceV1` bumps
+  `Conversation.UpdatedAt` by mutating the tracked entity (not `ExecuteUpdateAsync`) so the turn
+  is exercisable in tests. Keep it that way, or `ModelSelectionTests` breaks.
 - **Tests reach internals via `InternalsVisibleTo`.** `Procul.Api.csproj` exposes internals to
   `Procul.Api.Tests`, and `Program.cs` ends with a `public partial class Program` so the
   integration tests can boot the real app with `WebApplicationFactory<Program>`. CORS preflight
   tests need no database; keep it that way (the app connects to Postgres lazily).
 - **The app fails fast without `PROCUL_API_PASSWORD`.** Any test that boots the real app
   (`WebApplicationFactory<Program>`) must set it via
-  `UseSetting("PROCUL_API_PASSWORD", …)`, or startup throws. The authenticated probe
-  (`GET /v1/auth/session`) is the DB-free way to assert a token was accepted; a request to
-  `/v1/conversations` would need Postgres.
-- **MCP config is loaded at startup, not at DI time.** `McpServiceCollectionExtensions.AddProculMcp`
-  only reads `McpOptions`; the file itself is read in `McpClientManager.StartAsync` (a hosted
-  service). That keeps DI registration side-effect-free and means a bad config file still fails
-  startup (a hosted-service start failure stops the host).
+  `UseSetting("PROCUL_API_PASSWORD", …)` and a config via `PROCUL_CONFIG_PATH`, or startup throws.
+  The authenticated probe (`GET /v1/auth/session`) is the DB-free way to assert a token was
+  accepted; a request to `/v1/conversations` would need Postgres.
+- **MCP config is validated at startup, not at DI time.** `AddProculMcp` only derives
+  `McpOptions`; `McpConfigLoader.Load(ProculConfig.McpServers, …)` runs in
+  `McpClientManager.StartAsync` (a hosted service). DI registration stays side-effect-free and a
+  bad config still fails startup (a hosted-service start failure stops the host).
 - **MCP failures must never leak a token.** `McpClientManager` logs only a concise status (e.g.
   `mcp[github]: failed — 401 Unauthorized`) and the status endpoint exposes name/type/url/tools
   only. If you add fields, keep headers out.

@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging.Abstractions;
 using Procul.Api.Chat.Tools;
 using Procul.Api.Chat.V1;
 using Procul.Api.Mcp;
@@ -16,14 +15,11 @@ public class ChatToolsMergeTests
     public async Task The_turn_offers_builtins_plus_namespaced_mcp_tools()
     {
         await using var server = await McpTestServerHost.StartAsync();
-        using var config = TempConfig.Write($$"""
-            { "mcpServers": { "testserver": { "type": "http", "url": "{{server.Endpoint}}" } } }
-            """);
 
-        var manager = new McpClientManager(
-            McpTestHelpers.Options((McpOptions.ConfigPathSetting, config.Path)),
-            NullLoggerFactory.Instance,
-            NullLogger<McpClientManager>.Instance);
+        var manager = McpTestHelpers.Manager(McpTestHelpers.Config(new Dictionary<string, McpServerConfig>
+        {
+            ["testserver"] = new() { Type = "http", Url = server.Endpoint.ToString() },
+        }));
 
         await manager.StartAsync(CancellationToken.None);
         try

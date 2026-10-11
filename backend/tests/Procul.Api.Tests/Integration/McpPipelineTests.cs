@@ -25,23 +25,18 @@ public class McpPipelineTests : IClassFixture<WebApplicationFactory<Program>>
     private WebApplicationFactory<Program> CreateFactory(string configPath) =>
         _factory.WithWebHostBuilder(builder => builder
             .UseEnvironment("Production")
-            .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
             .UseSetting("PROCUL_API_PASSWORD", Password)
-            .UseSetting("PROCUL_CONFIG_PATH", configPath)
-            .UseSetting("MCP_CONNECT_TIMEOUT", "2s"));
+            .UseSetting("PROCUL_CONFIG_PATH", configPath));
 
-    private static string Config() => $$"""
+    private static TempConfig Config() => TestConfig.Write(mcpServers: $$"""
         {
-          "mcpServers": {
-            "github": {
-              "type": "http",
-              "url": "http://127.0.0.1:1/mcp",
-              "headers": { "Authorization": "Bearer {{SecretToken}}" }
-            }
+          "github": {
+            "type": "http",
+            "url": "http://127.0.0.1:1/mcp",
+            "headers": { "Authorization": "Bearer {{SecretToken}}" }
           }
         }
-        """;
+        """);
 
     private static async Task<HttpClient> SignedInClientAsync(WebApplicationFactory<Program> factory)
     {
@@ -58,7 +53,7 @@ public class McpPipelineTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task The_mcp_status_endpoint_requires_a_token()
     {
-        using var config = TempConfig.Write(Config());
+        using var config = Config();
         using var client = CreateFactory(config.Path).CreateClient();
 
         using var response = await client.GetAsync("/v1/mcp/servers");
@@ -69,7 +64,7 @@ public class McpPipelineTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task The_mcp_status_endpoint_reports_servers_without_secrets()
     {
-        using var config = TempConfig.Write(Config());
+        using var config = Config();
         using var client = await SignedInClientAsync(CreateFactory(config.Path));
 
         using var response = await client.GetAsync("/v1/mcp/servers");
@@ -88,7 +83,7 @@ public class McpPipelineTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Reconnecting_an_unknown_server_is_not_found()
     {
-        using var config = TempConfig.Write(Config());
+        using var config = Config();
         using var client = await SignedInClientAsync(CreateFactory(config.Path));
 
         using var response = await client.PostAsync("/v1/mcp/servers/nope/reconnect", null);

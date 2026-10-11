@@ -8,4 +8,7 @@ public class Conversation
 
     /// <summary>Last time a message was added to this conversation. Drives list ordering.</summary>
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>The model slug this conversation uses, or null for the configured default.</summary>
+    public string? Model { get; set; }
 }

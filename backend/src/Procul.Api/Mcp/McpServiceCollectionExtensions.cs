@@ -1,3 +1,5 @@
+using Procul.Api.Configuration;
+
 namespace Procul.Api.Mcp;
 
 /// <summary>
@@ -8,7 +10,7 @@ namespace Procul.Api.Mcp;
 public static class McpServiceCollectionExtensions
 {
     /// <summary>
-    /// Reads <see cref="McpOptions"/> from configuration and wires the singleton
+    /// Derives <see cref="McpOptions"/> from the config and wires the singleton
     /// <see cref="McpClientManager"/> plus its hosted-service lifetime.
     /// </summary>
     /// <exception cref="InvalidOperationException">
@@ -16,9 +18,9 @@ public static class McpServiceCollectionExtensions
     /// </exception>
     public static IServiceCollection AddProculMcp(
         this IServiceCollection services,
-        IConfiguration configuration)
+        ProculConfig config)
     {
-        var options = McpOptions.FromConfiguration(configuration);
+        var options = McpOptions.FromConfig(config);
         services.AddSingleton(options);
         services.AddSingleton<McpClientManager>();
         services.AddHostedService(sp => sp.GetRequiredService<McpClientManager>());

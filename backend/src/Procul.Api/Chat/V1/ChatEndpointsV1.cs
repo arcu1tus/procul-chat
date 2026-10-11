@@ -14,6 +14,7 @@ internal static class ChatEndpointsV1
         group.MapGet("/{conversationId:guid}", GetConversationAsync);
         group.MapPatch("/{conversationId:guid}", RenameConversationAsync);
         group.MapDelete("/{conversationId:guid}", DeleteConversationAsync);
+        group.MapPut("/{conversationId:guid}/model", SetConversationModelAsync);
         group.MapGet("/{conversationId:guid}/messages", GetConversationMessagesAsync);
         group.MapPost("/{conversationId:guid}/messages", SendMessageAsync);
         return group;
@@ -27,20 +28,33 @@ internal static class ChatEndpointsV1
         var conversations = await db.Conversations
             .OrderByDescending(c => c.UpdatedAt)
             .ThenByDescending(c => c.Id)
-            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt))
+            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt, c.Model))
             .ToListAsync(ct);
 
         return TypedResults.Ok(new GetConversationsResponseV1(conversations));
     }
 
-    private static async Task<ServerSentEventsResult<ChatStreamEventV1>> CreateConversationAsync(
+    private static async Task<Results<ServerSentEventsResult<ChatStreamEventV1>, ProblemHttpResult>> CreateConversationAsync(
         ProculDbContext db,
         ChatStreamServiceV1 chat,
+        ChatModelRegistry registry,
         CreateConversationRequestV1 body,
         CancellationToken ct
     )
     {
-        var conversation = new Conversation { Title = ChatStreamServiceV1.FallbackTitle(body.InitialMessage) };
+        var model = (body.Model ?? string.Empty).Trim();
+        if (model.Length > 0 && registry.Get(model) is null)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                detail: $"Unknown model '{model}'. Use GET /v1/models to list configured models.");
+        }
+
+        var conversation = new Conversation
+        {
+            Title = ChatStreamServiceV1.FallbackTitle(body.InitialMessage),
+            Model = model.Length > 0 ? model : null,
+        };
         db.Conversations.Add(conversation);
         await db.SaveChangesAsync(ct);
 
@@ -57,7 +71,7 @@ internal static class ChatEndpointsV1
     {
         var conversation = await db.Conversations
             .Where(c => c.Id == conversationId)
-            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt))
+            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt, c.Model))
             .FirstOrDefaultAsync(ct);
 
         if (conversation is null)
@@ -94,7 +108,37 @@ internal static class ChatEndpointsV1
         await db.SaveChangesAsync(ct);
 
         return TypedResults.Ok(new GetConversationResponseV1(
-            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt)
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model)
+        ));
+    }
+
+    private static async Task<Results<Ok<GetConversationResponseV1>, NotFound, ProblemHttpResult>> SetConversationModelAsync(
+        Guid conversationId,
+        ProculDbContext db,
+        ChatModelRegistry registry,
+        SetConversationModelRequestV1 body,
+        CancellationToken ct
+    )
+    {
+        var model = (body.Model ?? string.Empty).Trim();
+        if (model.Length == 0 || registry.Get(model) is null)
+        {
+            return TypedResults.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                detail: $"Unknown model '{body.Model}'. Use GET /v1/models to list configured models.");
+        }
+
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        if (conversation is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        conversation.Model = model;
+        await db.SaveChangesAsync(ct);
+
+        return TypedResults.Ok(new GetConversationResponseV1(
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model)
         ));
     }
 

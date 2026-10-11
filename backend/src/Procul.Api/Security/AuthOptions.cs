@@ -3,21 +3,19 @@ using Procul.Api.Configuration;
 namespace Procul.Api.Security;
 
 /// <summary>
-/// The API's shared-password authentication settings, read once at startup from configuration
-/// (environment variables, loaded from <c>.env</c> in development).
+/// The API's shared-password authentication settings. The password is a secret and stays an
+/// environment variable; the session lifetime comes from <c>server.sessionLifetime</c> in
+/// <c>config.jsonc</c>.
 /// </summary>
 public sealed class AuthOptions
 {
     /// <summary>Configuration key holding the shared password. Required.</summary>
     public const string PasswordSetting = "PROCUL_API_PASSWORD";
 
-    /// <summary>
-    /// Configuration key holding the session-token lifetime. Optional; defaults to
-    /// <see cref="DefaultSessionLifetime"/>.
-    /// </summary>
-    public const string SessionLifetimeSetting = "PROCUL_SESSION_LIFETIME";
+    /// <summary>The config path holding the session-token lifetime.</summary>
+    public const string SessionLifetimeConfigPath = "server.sessionLifetime";
 
-    /// <summary>The lifetime used when <see cref="SessionLifetimeSetting"/> is unset.</summary>
+    /// <summary>The lifetime used when <c>server.sessionLifetime</c> is unset.</summary>
     public static readonly TimeSpan DefaultSessionLifetime = TimeSpan.FromDays(30);
 
     /// <summary>The shared password every session token is derived from.</summary>
@@ -27,16 +25,16 @@ public sealed class AuthOptions
     public required TimeSpan SessionLifetime { get; init; }
 
     /// <summary>
-    /// Reads and validates the settings. A missing password or a malformed lifetime is fatal so
-    /// a misconfigured deployment fails fast instead of silently exposing the API.
+    /// Builds the settings from the validated config plus the password environment variable. A
+    /// missing password or a malformed lifetime is fatal so a misconfigured deployment fails fast
+    /// instead of silently exposing the API.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// Thrown when <see cref="PasswordSetting"/> is unset/empty or <see cref="SessionLifetimeSetting"/>
+    /// Thrown when <see cref="PasswordSetting"/> is unset/empty or <c>server.sessionLifetime</c>
     /// is not a valid duration.
     /// </exception>
-    public static AuthOptions FromConfiguration(IConfiguration configuration)
+    public static AuthOptions FromConfig(ProculConfig config, string? password)
     {
-        var password = configuration[PasswordSetting];
         if (string.IsNullOrEmpty(password))
         {
             throw new InvalidOperationException(
@@ -47,15 +45,8 @@ public sealed class AuthOptions
         return new AuthOptions
         {
             Password = password,
-            SessionLifetime = ParseLifetime(configuration[SessionLifetimeSetting]),
+            SessionLifetime = DurationParser.Parse(
+                config.Server.SessionLifetime, DefaultSessionLifetime, SessionLifetimeConfigPath),
         };
     }
-
-    /// <summary>
-    /// Parses a duration made of one or more <c>&lt;number&gt;&lt;unit&gt;</c> segments, where the
-    /// unit is <c>d</c>, <c>h</c>, <c>m</c> or <c>s</c> (e.g. <c>30d</c>, <c>12h</c>, <c>1h30m</c>).
-    /// An unset value yields <see cref="DefaultSessionLifetime"/>; anything else throws.
-    /// </summary>
-    internal static TimeSpan ParseLifetime(string? raw) =>
-        DurationParser.Parse(raw, DefaultSessionLifetime, SessionLifetimeSetting);
 }

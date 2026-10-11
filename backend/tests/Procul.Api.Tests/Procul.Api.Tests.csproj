@@ -30,6 +30,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The config loader reads the schema from the app directory; make it available in tests too. -->
+    <Content Include="../../src/Procul.Api/config.schema.json" Link="config.schema.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../src/Procul.Api/config.jsonc.example" Link="config.jsonc.example" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 

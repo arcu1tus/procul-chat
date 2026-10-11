@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Procul.Api.Chat;
 using Procul.Api.Infrastructure;
 using Procul.Api.Security.V1;
+using Procul.Api.Tests.Support;
 using Procul.Api.Usage.V1;
 
 namespace Procul.Api.Tests.Integration;
@@ -18,7 +19,7 @@ namespace Procul.Api.Tests.Integration;
 /// Verifies authentication, the lifetime / per-day / per-model shape, and the per-conversation
 /// totals used by the in-chat counter.
 /// </summary>
-public class UsagePipelineTests : IClassFixture<WebApplicationFactory<Program>>
+public class UsagePipelineTests : IClassFixture<WebApplicationFactory<Program>>, IDisposable
 {
     private const string Password = "correct horse battery staple";
 
@@ -26,16 +27,21 @@ public class UsagePipelineTests : IClassFixture<WebApplicationFactory<Program>>
     private static readonly Guid ConversationB = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
     private readonly WebApplicationFactory<Program> _factory;
+    private TempConfig? _config;
 
     public UsagePipelineTests(WebApplicationFactory<Program> factory) => _factory = factory;
 
-    private WebApplicationFactory<Program> CreateFactory() =>
-        _factory.WithWebHostBuilder(builder => builder
+    private WebApplicationFactory<Program> CreateFactory()
+    {
+        _config = TestConfig.Write();
+        return _factory.WithWebHostBuilder(builder => builder
             .UseEnvironment("Production")
-            .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
             .UseSetting("PROCUL_API_PASSWORD", Password)
+            .UseSetting("PROCUL_CONFIG_PATH", _config.Path)
             .ConfigureServices(ReplaceDbWithInMemory));
+    }
+
+    public void Dispose() => _config?.Dispose();
 
     /// <summary>
     /// Swaps the Npgsql-backed context for an isolated in-memory one. The Npgsql

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging.Abstractions;
 using Procul.Api.Mcp;
 using Procul.Api.Tests.Support;
 
@@ -18,22 +17,10 @@ public class McpClientManagerTests
     {
         await using var server = await McpTestServerHost.StartAsync();
 
-        using var config = TempConfig.Write($$"""
-            {
-              // A comment and a trailing comma, both legal JSONC.
-              "mcpServers": {
-                "testserver": {
-                  "type": "http",
-                  "url": "{{server.Endpoint}}",
-                },
-              }
-            }
-            """);
-
-        var manager = new McpClientManager(
-            McpTestHelpers.Options((McpOptions.ConfigPathSetting, config.Path)),
-            NullLoggerFactory.Instance,
-            NullLogger<McpClientManager>.Instance);
+        var manager = McpTestHelpers.Manager(McpTestHelpers.Config(new Dictionary<string, McpServerConfig>
+        {
+            ["testserver"] = new() { Type = "http", Url = server.Endpoint.ToString() },
+        }));
 
         await manager.StartAsync(CancellationToken.None);
         try
@@ -63,20 +50,13 @@ public class McpClientManagerTests
     public async Task A_down_server_is_marked_unavailable_and_does_not_throw()
     {
         // Nothing is listening on this port; connecting must fail without killing startup.
-        using var config = TempConfig.Write("""
-            {
-              "mcpServers": {
-                "dead": { "type": "http", "url": "http://127.0.0.1:1/mcp" }
-              }
-            }
-            """);
-
-        var manager = new McpClientManager(
-            McpTestHelpers.Options(
-                (McpOptions.ConfigPathSetting, config.Path),
-                (McpOptions.ConnectTimeoutSetting, "2s")),
-            NullLoggerFactory.Instance,
-            NullLogger<McpClientManager>.Instance);
+        var manager = McpTestHelpers.Manager(
+            McpTestHelpers.Config(
+                new Dictionary<string, McpServerConfig>
+                {
+                    ["dead"] = new() { Type = "http", Url = "http://127.0.0.1:1/mcp" },
+                },
+                connectTimeout: "2s"));
 
         await manager.StartAsync(CancellationToken.None);
         try
