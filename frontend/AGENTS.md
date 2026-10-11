@@ -58,7 +58,7 @@ flutter analyze                    # must stay clean
 flutter test                       # unit + widget tests (no backend needed)
 dart format lib test               # before committing
 flutter run -d linux              # native Linux desktop
-flutter run -d chrome             # web (needs CORS on the backend — see gotchas)
+flutter run -d chrome             # web (backend allows any origin in dev — see gotchas)
 flutter build linux --debug
 ```
 
@@ -163,7 +163,11 @@ reaches the buffer.
   browser `fetch`/XHR layer also buffers by default, so streaming may not be incremental
   there.
 - **CORS.** Native Linux/desktop (the intended target) has no CORS. Running `-d chrome`
-  requires the backend to allow the web origin; otherwise requests fail before streaming.
+  sends requests from the Flutter web dev-server origin to the backend's origin, so the
+  browser enforces CORS; the backend must approve the origin. It now does: in development the
+  `ProculCors` policy allows any origin (the web dev-server port is ephemeral), and it can be
+  pinned via the backend's `CORS_ALLOWED_ORIGINS` setting. If Chrome still fails before
+  streaming, the running backend predates that policy — rebuild/restart it.
 - **Android: reach the backend with `adb reverse`, don't hardcode an IP.** The dev backend
   binds to `localhost:5010` only, so a phone can't reach it directly. Forward the port over
   ADB (works for USB *and* wireless ADB):

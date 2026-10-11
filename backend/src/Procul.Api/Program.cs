@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using Procul.Api.Chat.V1;
+using Procul.Api.Cors;
 using Procul.Api.Infrastructure;
 using Procul.Api.Versioning;
 
@@ -11,6 +12,7 @@ DotNetEnv.Env.Load();
 var builder = WebApplication.CreateSlimBuilder(args);
 
 builder.Services.AddProculApiVersioning();
+builder.Services.AddProculCors(builder.Configuration, builder.Environment);
 builder.Services.AddOpenApi();
 builder.Services.AddDbContextPool<ProculDbContext>(opt => opt.UseNpgsql(builder.Configuration.GetConnectionString("ChatContext")));
 
@@ -33,6 +35,8 @@ builder.Services
 builder.Services.AddScoped<ChatStreamServiceV1>();
 
 var app = builder.Build();
+
+app.UseCors(CorsExtensions.PolicyName);
 
 if (app.Environment.IsDevelopment())
 {
