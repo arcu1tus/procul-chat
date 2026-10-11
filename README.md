@@ -125,8 +125,8 @@ cd backend/src/Procul.Api
 just run-dev                        # docker compose up + dotnet run
 ```
 
-The API listens on **http://localhost:5010**. Apply migrations once against a fresh
-database (`dotnet ef database update`) — they are not applied automatically.
+The API listens on **http://localhost:5010**. Migrations are applied automatically at
+startup — the app creates the database if needed and applies any pending migrations.
 
 ### Frontend
 
@@ -197,6 +197,10 @@ The backend ships as a multi-stage image (`backend/src/Procul.Api/Dockerfile`): 
 SDK stage restores and publishes, and a slim ASP.NET Core runtime stage runs the app as a
 non-root user on port `8080`. The NuGet restore layer is cached independently of the source
 (and via a BuildKit cache mount), so repeat builds are fast.
+
+The container manages its own schema: on startup it applies pending EF Core migrations
+(creating the database if needed), so no separate `dotnet ef` step is required. It only
+needs the connection string above to point at a reachable PostgreSQL.
 
 Build and run it locally:
 
