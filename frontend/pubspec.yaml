@@ -17,6 +17,8 @@ dependencies:
   shadcn_flutter_material: ^0.0.54
   google_fonts: ^9.0.0
   fl_chart: ^1.2.0
+  file_picker: ^13.1.0
+  http_parser: ^4.1.0
 
 dev_dependencies:
   flutter_test:

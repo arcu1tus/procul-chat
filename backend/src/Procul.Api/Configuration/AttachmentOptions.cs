@@ -2,7 +2,8 @@ namespace Procul.Api.Configuration;
 
 /// <summary>
 /// Attachment upload settings, derived from <see cref="ProculConfig"/> at startup. Consumed by the
-/// attachment endpoints (a later plan); registered now so the config is the single source of truth.
+/// attachment endpoints, the store registration, and the streaming turn service (capability gate,
+/// history re-send, and the text-inline cap).
 /// </summary>
 public sealed class AttachmentOptions
 {
@@ -15,6 +16,12 @@ public sealed class AttachmentOptions
     /// <summary>Allowed content-type patterns (e.g. <c>image/*</c>).</summary>
     public required IReadOnlyList<string> AllowedContentTypes { get; init; }
 
+    /// <summary>Whether earlier turns re-send attachment bytes, or only a text note.</summary>
+    public required bool ResendHistory { get; init; }
+
+    /// <summary>Cap, in bytes, on how much of a <c>text/*</c> file is inlined into the prompt.</summary>
+    public required long TextInlineMaxBytes { get; init; }
+
     /// <summary>S3-compatible storage settings; present only when <see cref="Storage"/> is <c>s3</c>.</summary>
     public S3AttachmentOptions? S3 { get; init; }
 
@@ -24,6 +31,8 @@ public sealed class AttachmentOptions
         Storage = config.Attachments.Storage,
         MaxFileSizeBytes = config.Attachments.MaxFileSizeBytes,
         AllowedContentTypes = config.Attachments.AllowedContentTypes,
+        ResendHistory = config.Attachments.ResendHistory,
+        TextInlineMaxBytes = config.Attachments.TextInlineMaxBytes,
         S3 = config.Attachments.S3 is { } s3
             ? new S3AttachmentOptions
             {

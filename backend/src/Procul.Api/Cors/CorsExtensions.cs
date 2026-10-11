@@ -55,6 +55,10 @@ public static class CorsExtensions
             // application/json bodies trigger a preflight, and the SSE/PATCH/DELETE verbs
             // (with their headers) must survive it.
             policy.AllowAnyHeader().AllowAnyMethod();
+
+            // Attachment downloads set Content-Disposition; a web client must be able to read it
+            // to learn the file name (the browser hides non-exposed headers from JavaScript).
+            policy.WithExposedHeaders("Content-Disposition");
         }));
 
         return services;

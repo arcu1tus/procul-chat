@@ -53,6 +53,8 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "resendHistory": { "type": "boolean" },
+        "textInlineMaxBytes": { "type": "integer", "minimum": 1 },
         "s3": { "$ref": "#/$defs/s3" }
       }
     },

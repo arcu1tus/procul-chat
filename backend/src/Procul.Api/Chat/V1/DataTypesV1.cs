@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Procul.Api.Attachments.V1;
 
 namespace Procul.Api.Chat.V1;
 
@@ -20,13 +21,15 @@ public sealed record ConversationMessageV1(
     Guid ConversationId,
     string Text,
     MessageRole MessageRole,
-    DateTimeOffset CreatedAt
+    DateTimeOffset CreatedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<AttachmentV1>? Attachments = null
 );
 
 // POST /conversations
 public sealed record CreateConversationRequestV1(
     string InitialMessage,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Model = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Model = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null);
 
 // GET /conversations
 public sealed record GetConversationsResponseV1(List<ConversationV1> Conversations);
@@ -44,7 +47,9 @@ public sealed record SetConversationModelRequestV1(string Model);
 public sealed record GetConversationMessagesResponseV1(List<ConversationMessageV1> Messages);
 
 // POST /conversations/{conversationId}/messages
-public sealed record SendMessageRequestV1(string Text);
+public sealed record SendMessageRequestV1(
+    string Text,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null);
 
 // GET /models
 public sealed record GetModelsResponseV1(string DefaultModel, List<ModelV1> Models);

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Procul.Api.Attachments;
 using Procul.Api.Chat.Models;
 using Procul.Api.Chat.Tools;
 using Procul.Api.Configuration;
@@ -23,6 +24,8 @@ internal sealed class ChatStreamServiceV1(
     ModelUsageTracker usageTracker,
     ProculConfig config,
     McpClientManager mcp,
+    IAttachmentStore attachmentStore,
+    AttachmentOptions attachmentOptions,
     ILogger<ChatStreamServiceV1> logger)
 {
     /// <summary>Upper bound on the generated title length (characters).</summary>
@@ -97,6 +100,8 @@ internal sealed class ChatStreamServiceV1(
     public async IAsyncEnumerable<ChatStreamEventV1> StreamNewConversationAsync(
         Conversation conversation,
         string initialMessage,
+        IReadOnlyList<Attachment> attachments,
+        IReadOnlySet<ModelInputModality> capabilities,
         [EnumeratorCancellation] CancellationToken ct
     )
     {
@@ -107,7 +112,7 @@ internal sealed class ChatStreamServiceV1(
         var titleDefinition = ResolveTitleModel(conversation.Model);
         var titleTask = GenerateTitleAsync(titleDefinition, initialMessage, ct);
 
-        await foreach (var streamEvent in StreamAssistantReplyAsync(conversation.Id, initialMessage, ct))
+        await foreach (var streamEvent in StreamAssistantReplyAsync(conversation.Id, initialMessage, attachments, capabilities, ct))
         {
             yield return streamEvent;
         }
@@ -129,6 +134,8 @@ internal sealed class ChatStreamServiceV1(
     public async IAsyncEnumerable<ChatStreamEventV1> StreamAssistantReplyAsync(
         Guid conversationId,
         string userText,
+        IReadOnlyList<Attachment> attachments,
+        IReadOnlySet<ModelInputModality> capabilities,
         [EnumeratorCancellation] CancellationToken ct
     )
     {
@@ -143,15 +150,9 @@ internal sealed class ChatStreamServiceV1(
 
         var history = await db.ConversationMessages
             .Where(m => m.ConversationId == conversationId)
+            .Include(m => m.Attachments)
             .OrderBy(m => m.CreatedAt)
             .ThenBy(m => m.Id)
-            .Select(m => new ConversationMessageV1(
-                Id: m.Id,
-                ConversationId: m.ConversationId,
-                Text: m.Text,
-                MessageRole: m.MessageRole,
-                CreatedAt: m.CreatedAt
-            ))
             .ToListAsync(ct);
 
         var userMessage = new ConversationMessage
@@ -160,6 +161,15 @@ internal sealed class ChatStreamServiceV1(
             Text = userText,
             MessageRole = MessageRole.User
         };
+
+        // Attach the uploaded files to the persisted user message; the Postgres blob rows and the
+        // metadata both live in this context, so one save persists everything.
+        foreach (var attachment in attachments)
+        {
+            attachment.ConversationId = conversationId;
+            attachment.MessageId = userMessage.Id;
+            userMessage.Attachments.Add(attachment);
+        }
 
         db.ConversationMessages.Add(userMessage);
 
@@ -171,22 +181,23 @@ internal sealed class ChatStreamServiceV1(
 
         await db.SaveChangesAsync(ct);
 
-        history.Add(new ConversationMessageV1(
-            Id: userMessage.Id,
-            ConversationId: userMessage.ConversationId,
-            Text: userMessage.Text,
-            MessageRole: userMessage.MessageRole,
-            CreatedAt: userMessage.CreatedAt
-        ));
+        history.Add(userMessage);
 
         var messages = new List<ChatMessage>(history.Count + 1)
         {
             new(ChatRole.System, ComposeSystemPrompt(mcp)),
         };
-        messages.AddRange(history.Select(m => new ChatMessage(
-            role: m.MessageRole.ToChatRole(),
-            content: m.Text
-        )));
+
+        foreach (var message in history)
+        {
+            messages.Add(new ChatMessage(
+                role: message.MessageRole.ToChatRole(),
+                contents: await BuildMessageContentAsync(
+                    message,
+                    isCurrentTurn: ReferenceEquals(message, userMessage),
+                    capabilities,
+                    ct)));
+        }
 
         var options = new ChatOptions { Tools = MergeTools(mcp) };
 
@@ -234,6 +245,57 @@ internal sealed class ChatStreamServiceV1(
         usageTracker.RecordUse(definition.Slug);
 
         yield return new ChatStreamEventV1.Done(new());
+    }
+
+    /// <summary>
+    /// Builds the content parts for one history message. The user's text is always first. Current
+    /// attachments carry their bytes; earlier ones do (only when <c>attachments.resendHistory</c>)
+    /// or contribute a short note so the model still knows the file existed without re-sending a
+    /// large blob every turn.
+    /// </summary>
+    private async Task<List<AIContent>> BuildMessageContentAsync(
+        ConversationMessage message,
+        bool isCurrentTurn,
+        IReadOnlySet<ModelInputModality> capabilities,
+        CancellationToken ct)
+    {
+        var parts = new List<AIContent> { new TextContent(message.Text) };
+
+        foreach (var attachment in message.Attachments)
+        {
+            if (!isCurrentTurn && !attachmentOptions.ResendHistory)
+            {
+                parts.Add(AttachmentContentBuilder.HistoryNote(attachment));
+                continue;
+            }
+
+            byte[] bytes;
+            try
+            {
+                bytes = await ReadAttachmentAsync(attachment, ct);
+            }
+            catch (IOException)
+            {
+                // The bytes are gone (e.g. an S3 object was deleted). Degrade to a note rather
+                // than failing the whole turn.
+                parts.Add(AttachmentContentBuilder.HistoryNote(attachment));
+                continue;
+            }
+
+            parts.AddRange(AttachmentContentBuilder.Build(
+                attachment, bytes, capabilities, attachmentOptions.TextInlineMaxBytes));
+        }
+
+        return parts;
+    }
+
+    /// <summary>Reads an attachment's bytes fully into memory (bounded by the upload size cap).</summary>
+    private async Task<byte[]> ReadAttachmentAsync(Attachment attachment, CancellationToken ct)
+    {
+        await using var stream = await attachmentStore.OpenReadAsync(attachment.StorageKey, ct);
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, ct);
+        return buffer.ToArray();
     }
 
     /// <summary>

@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart' show MediaType;
 
+import 'attachments.dart';
 import 'chat_stream_event.dart';
 import 'mcp_status.dart';
 import 'models.dart';
@@ -105,6 +108,67 @@ class ChatApi {
   Future<void> deleteConversation(String id) async {
     final response = await _client.delete(
       _uri('/v1/conversations/$id'),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 204 && response.statusCode != 404) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+  }
+
+  /// `POST /v1/attachments` — uploads a file as multipart/form-data and returns
+  /// its metadata. The bytes are sent once; renders later fetch them by id.
+  Future<Attachment> uploadAttachment({
+    required Uint8List bytes,
+    required String fileName,
+    required String contentType,
+  }) async {
+    final request = http.MultipartRequest('POST', _uri('/v1/attachments'))
+      ..headers.addAll(_authHeaders)
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          bytes,
+          filename: fileName,
+          contentType: MediaType.parse(contentType),
+        ),
+      );
+
+    final response = await http.Response.fromStream(
+      await _client.send(request),
+    );
+
+    if (response.statusCode != 201) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+
+    return Attachment.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// `GET /v1/attachments/{id}` — the raw bytes, authenticated.
+  ///
+  /// Always fetch through this client (never a plain `<img>` URL), because the
+  /// request needs the bearer header.
+  Future<Uint8List> fetchAttachmentBytes(String id) async {
+    final response = await _client.get(
+      _uri('/v1/attachments/$id'),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+
+    return response.bodyBytes;
+  }
+
+  /// `DELETE /v1/attachments/{id}` — removes an uploaded file. A 404 is treated
+  /// as success (the goal state is already achieved).
+  Future<void> deleteAttachment(String id) async {
+    final response = await _client.delete(
+      _uri('/v1/attachments/$id'),
       headers: _authHeaders,
     );
 
@@ -262,22 +326,33 @@ class ChatApi {
   /// `POST /v1/conversations` — creates a conversation and streams the reply.
   ///
   /// [model] selects the model for the new conversation; omit it to let the
-  /// backend use its default.
+  /// backend use its default. [attachmentIds] references previously uploaded
+  /// files to attach to the first user message.
   Stream<ChatStreamEvent> createConversation(
     String initialMessage, {
     String? model,
+    List<String>? attachmentIds,
   }) => _stream(
     _postSse('/v1/conversations/', {
       'initialMessage': initialMessage,
       'model': ?model,
+      if (attachmentIds != null && attachmentIds.isNotEmpty)
+        'attachmentIds': attachmentIds,
     }),
   );
 
   /// `POST /v1/conversations/{id}/messages` — streams the assistant's reply.
-  Stream<ChatStreamEvent> sendMessage(String conversationId, String text) =>
-      _stream(
-        _postSse('/v1/conversations/$conversationId/messages', {'text': text}),
-      );
+  Stream<ChatStreamEvent> sendMessage(
+    String conversationId,
+    String text, {
+    List<String>? attachmentIds,
+  }) => _stream(
+    _postSse('/v1/conversations/$conversationId/messages', {
+      'text': text,
+      if (attachmentIds != null && attachmentIds.isNotEmpty)
+        'attachmentIds': attachmentIds,
+    }),
+  );
 
   Future<http.StreamedResponse> _postSse(
     String path,

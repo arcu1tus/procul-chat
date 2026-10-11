@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Procul.Api.Attachments;
 using Procul.Api.Chat;
 
 namespace Procul.Api.Infrastructure;
@@ -8,6 +9,8 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
     public DbSet<Conversation> Conversations { get; set; }
     public DbSet<ConversationMessage> ConversationMessages { get; set; }
     public DbSet<TurnUsage> TurnUsages { get; set; }
+    public DbSet<Attachment> Attachments { get; set; }
+    public DbSet<AttachmentBlob> AttachmentBlobs { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -41,6 +44,35 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
             e.Property(u => u.Kind).HasConversion<string>().HasMaxLength(16);
             e.HasIndex(u => u.ConversationId);
             e.HasIndex(u => u.CreatedAt);
+        });
+
+        modelBuilder.Entity<Attachment>(e =>
+        {
+            e.HasKey(a => a.Id);
+            e.Property(a => a.Id).ValueGeneratedNever();
+            e.Property(a => a.FileName).HasMaxLength(512);
+            e.Property(a => a.ContentType).HasMaxLength(256);
+            e.Property(a => a.Sha256).HasMaxLength(64);
+            e.Property(a => a.StorageKey).HasMaxLength(512);
+
+            // An attachment is removed with the message it is part of (which is itself removed
+            // with its conversation). ConversationId is a plain column, not a second FK, so there
+            // is a single cascade path.
+            e.HasIndex(a => a.MessageId);
+            e.HasOne<ConversationMessage>()
+                .WithMany(m => m.Attachments)
+                .HasForeignKey(a => a.MessageId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AttachmentBlob>(e =>
+        {
+            e.HasKey(b => b.AttachmentId);
+            e.Property(b => b.AttachmentId).ValueGeneratedNever();
+            e.HasOne<Attachment>()
+                .WithOne()
+                .HasForeignKey<AttachmentBlob>(b => b.AttachmentId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

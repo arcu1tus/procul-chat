@@ -4,6 +4,8 @@
 /// `MessageRole` is emitted as an **integer** (the C# enum ordinal), not a string.
 library;
 
+import 'attachments.dart';
+
 /// Roles as persisted/serialized by the backend (`Procul.Api.Chat.MessageRole`).
 enum MessageRole { system, user, assistant, tool }
 
@@ -98,12 +100,16 @@ class ChatMessage {
     required this.role,
     this.id,
     this.createdAt,
-  });
+    List<Attachment> attachments = const [],
+  }) : attachments = List.unmodifiable(attachments);
 
   final String? id;
   String text;
   final MessageRole role;
   final DateTime? createdAt;
+
+  /// Files attached to this (user) message; empty for every other role.
+  final List<Attachment> attachments;
 
   /// Tool invocations the model made while producing this assistant message.
   /// Empty for every other role and for messages loaded from history.
@@ -116,6 +122,10 @@ class ChatMessage {
     text: (json['text'] as String?) ?? '',
     role: messageRoleFromValue(json['messageRole']),
     createdAt: DateTime.tryParse('${json['createdAt']}'),
+    attachments: (json['attachments'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(Attachment.fromJson)
+        .toList(),
   );
 }
 

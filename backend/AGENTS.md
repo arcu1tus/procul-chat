@@ -58,11 +58,23 @@ backend/
         ModelEndpointsV1.cs        # GET /v1/models + POST .../check (single + all)
         ChatStreamEventsV1.cs      # SSE event payloads + ChatStreamEventV1 hierarchy
         TitleGenerationResult.cs   # title + its token usage (returned by GenerateTitleAsync)
+    Attachments/
+      Attachment.cs                # Attachment + AttachmentBlob entities (metadata in Postgres)
+      IAttachmentStore.cs          # Put/OpenRead/Delete abstraction (+ Kind) for the bytes
+      PostgresAttachmentStore.cs   # default: the AttachmentBlobs bytea table
+      S3AttachmentStore.cs         # AWSSDK.S3 (MinIO/S3-compatible via serviceUrl + forcePathStyle)
+      AttachmentValidation.cs      # size/wildcard content-type checks + filename sanitize
+      AttachmentContentBuilder.cs  # attachment -> AIContent mapping + capability gating (pure)
+      AttachmentGate.cs            # load/validate/capability-gate the ids on a send
+      AttachmentServiceCollectionExtensions.cs  # AddProculAttachments(config): pick the store
+      V1/
+        AttachmentEndpointsV1.cs   # POST/GET/DELETE /v1/attachments
+        DataTypesV1.cs             # AttachmentV1 DTO
     Configuration/
       ProculConfig.cs              # root POCO for config.jsonc (server/db/models/mcp/...)
       ProculConfigLoader.cs        # locate + JSONC parse + schema validate + ${ENV} + domain validate
       DurationParser.cs            # shared <number><unit> duration parsing (d/h/m/s)
-      AttachmentOptions.cs         # attachments.* derived options (consumed in a later plan)
+      AttachmentOptions.cs         # attachments.* derived options
     Mcp/
       McpOptions.cs                # mcp.* (enabled, connect timeout, health interval)
       McpServerConfig.cs           # { Type, Url, Headers, Enabled }
@@ -148,7 +160,9 @@ references a configured slug). Sections:
 - `server.sessionLifetime` — session-token lifetime (was `PROCUL_SESSION_LIFETIME`). Default `30d`.
 - `database.connectionString` — Postgres connection string (was `ConnectionStrings__ChatContext`).
   Unset means "no database" (integration tests boot this way).
-- `attachments.*` — upload storage/size/content-types (consumed by a later plan).
+- `attachments.*` — upload storage (`storage` selects the Postgres or S3 byte store), size limit,
+  allowed content types, `resendHistory`, and `textInlineMaxBytes`; plus the `s3` connection
+  settings (`bucket`/`region`/`serviceUrl`/`forcePathStyle`/`accessKey`/`secretKey`).
 - `models[]` — one or more chat models (replaces `OPENROUTER_MODEL_SLUG`/`OPENROUTER_API_KEY`);
   see **Multi-model registry** below.
 - `titleModel` — optional slug used for the title call; defaults to the conversation's model.
@@ -234,13 +248,16 @@ the auth and health routes do not (see Authentication).
 | POST | `/v{version}/auth/session` | Exchange the password for a session token. 200 or 401. Unauthenticated. |
 | GET | `/v{version}/auth/session` | Authenticated probe: 204 if the token is valid, else 401. |
 | GET | `/` | JSON `GetConversationsResponseV1`. All conversations, newest activity first. |
-| POST | `/` | **SSE** stream. Creates a conversation, streams the assistant reply, then a `title` event. |
+| POST | `/` | **SSE** stream. Creates a conversation, streams the assistant reply, then a `title` event. Body may carry `attachmentIds`. |
 | GET | `/{conversationId:guid}` | JSON `ConversationV1` or 404. |
 | PATCH | `/{conversationId:guid}` | Rename. Body `{"title":"..."}` (1–60 chars). `ConversationV1`, 400, or 404. |
 | PUT | `/{conversationId:guid}/model` | Set the conversation's model. Body `{"model":"slug"}`. `ConversationV1`, 400 (unknown slug), or 404. |
 | DELETE | `/{conversationId:guid}` | Deletes the conversation and its messages (cascade). 204 or 404. |
 | GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). |
-| POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. 404 if missing. |
+| POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. Body may carry `attachmentIds`. 404 if missing. |
+| POST | `/v{version}/attachments` | Multipart upload (`file` field) → `201 AttachmentV1`. `400` disallowed type, `413` too large. |
+| GET | `/v{version}/attachments/{id:guid}` | The raw bytes, with the stored `Content-Type` and an inline `Content-Disposition`; `404` if unknown. |
+| DELETE | `/v{version}/attachments/{id:guid}` | `204`, idempotent (unknown id is also `204`). |
 | GET | `/v{version}/models` | JSON `GetModelsResponseV1`: `defaultModel` + every model with capabilities + live health. No secrets. |
 | POST | `/v{version}/models/check` | Re-probe every health-checked model. `GetModelsResponseV1`. |
 | POST | `/v{version}/models/{slug}/check` | Re-probe one model. `ModelV1`; 404 if unknown. (`{slug}` may contain `/`.) |
@@ -339,6 +356,54 @@ estimate** — tokens only, bucketed by **UTC** calendar day.
   breakdown; `days` 1–366, default 30) and
   `GET /v{version}/usage/conversations/{id}` (all-time totals for one conversation). Both are
   authenticated like the rest of `/v1`.
+
+## Attachments
+
+Users can attach files to a message. Metadata (`Attachments/Attachment.cs`) always lives in
+PostgreSQL; the **bytes** go to the store selected by `attachments.storage`:
+
+- `PostgresAttachmentStore` (default) — a separate `AttachmentBlobs` table (`AttachmentId` PK,
+  `Data bytea`) so metadata queries never drag blobs.
+- `S3AttachmentStore` — `AWSSDK.S3`, with `AmazonS3Config { ServiceURL, ForcePathStyle }` when
+  `serviceUrl` is set (MinIO/S3-compatible); credentials from `accessKey`/`secretKey` or the
+  default chain. It talks to a thin internal `IS3Operations` seam so tests never touch S3.
+
+**Store abstraction.** `IAttachmentStore.PutAsync(Attachment, Stream, ct)` returns the
+`StorageKey`; `OpenReadAsync`/`DeleteAsync` are by key (delete is best-effort and idempotent).
+`AddProculAttachments(config)` registers the implementation matching `attachments.storage`.
+`PutAsync` takes the `Attachment` (not just a stream) because the Postgres store's blob row has
+a foreign key to it — the endpoint adds the metadata row first so the FK is satisfied.
+
+**Endpoints** (`Attachments/V1/AttachmentEndpointsV1.cs`, group `/v{version}/attachments`,
+mapped next to `Mcp`/`Usage` in `Program.cs`): `POST /` (multipart `file`) validates size
+(`413`) and content type against `allowedContentTypes` (wildcards like `image/*`; `400`),
+hashes, stores, and returns `AttachmentV1`; `GET /{id}` streams the bytes with an inline
+`Content-Disposition`; `DELETE /{id}` is `204`/idempotent. `MapPost` calls `DisableAntiforgery()`
+— the API is bearer-token and cookie-less, so there is no CSRF surface. `Program.cs` raises
+Kestrel's `MaxRequestBodySize` to `maxFileSizeBytes + 1 MiB` so multipart uploads reach the
+handler (the `413` decision is the handler's, not Kestrel's).
+
+**Sending with a message.** `CreateConversationRequestV1`/`SendMessageRequestV1` carry optional
+`AttachmentIds`; `ConversationMessageV1` carries the attached files (empty for assistant/tool).
+`ChatEndpointsV1` runs `AttachmentGate` (load the rows, 400 on unknown/already-attached ids),
+then `ChatStreamServiceV1` attaches them to the persisted user message and builds the content
+parts. `resendHistory: false` (default) means only the current user turn carries the bytes;
+earlier turns with attachments contribute `AttachmentContentBuilder.HistoryNote(...)`.
+
+**Content mapping** (`AttachmentContentBuilder`, pure + unit-tested):
+
+| Type | Capability needed | Produced content |
+| ---- | ----------------- | ---------------- |
+| `image/*` | `image` | `DataContent(bytes, type)` → image part |
+| `application/pdf` | `file`/`pdf` | `DataContent(bytes, "application/pdf") { Name }` → file part |
+| `audio/mpeg`, `audio/mp3`, `audio/wav`, `audio/x-wav`, `audio/wave` | `audio` | `DataContent` → input-audio part |
+| `text/*` | — (always) | `TextContent("--- file: name ---\n" + utf8)`, capped at `textInlineMaxBytes` |
+| video / anything else | — | not sent: `TextContent("[Attached file: … — not sent to this model]")` |
+
+The **capability gate is the backend's job** (`AttachmentContentBuilder.IsSupported`): a type the
+model cannot read is a `400` naming the file and the missing capability. Video (and unknown
+types) are deliberately *not* gated — the OpenAI adapter drops them for every model, so they are
+stored + rendered but only ever contribute a placeholder.
 
 ## Multi-model registry
 
@@ -500,3 +565,15 @@ image is ASP.NET-only (no node/npx for stdio).
   `ModelContextProtocol.AspNetCore` app on `127.0.0.1:0` (via `WebHostDefaults.ServerUrlsKey`,
   because `ConfigureWebHostBuilder` has no `UseUrls`), and the manager connects through it. The
   server builder must call `WithHttpTransport()` before `MapMcp`, or `MapMcp` throws.
+- **Multipart uploads need Kestrel's limit raised and antiforgery disabled.** `Program.cs` sets
+  `MaxRequestBodySize = maxFileSizeBytes + 1 MiB` (otherwise Kestrel rejects the request before
+  the handler can return a friendly `413`), and `MapPost` opts out of antiforgery (the API is
+  bearer-token, cookie-less). `WithExposedHeaders("Content-Disposition")` on the CORS policy lets
+  a browser client read the download filename.
+- **The Postgres attachment store's blob row FKs the metadata row.** Add `db.Attachments.Add(...)`
+  *before* `store.PutAsync(...)` so `SaveChangesAsync` inserts metadata and blob in the right
+  order; that is why `PutAsync` takes the `Attachment` rather than a bare stream.
+- **The attachment capability gate is enforced server-side, not just in the client.** Never trust
+  the client to have filtered unsupported files: `AttachmentGate` re-checks every referenced id
+  against the resolved model's effective capabilities and `400`s a mismatch (video and unknown
+  types are exempt — they are never sent to any model).

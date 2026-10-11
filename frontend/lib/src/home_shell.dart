@@ -1,5 +1,6 @@
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
+import 'attachments.dart';
 import 'auth_controller.dart';
 import 'chat_controller.dart';
 import 'chat_screen.dart';
@@ -17,11 +18,15 @@ class HomeShell extends StatefulWidget {
     required this.chat,
     required this.settings,
     required this.auth,
+    this.attachmentPicker = const FilePickerAttachmentPicker(),
   });
 
   final ChatController chat;
   final SettingsController settings;
   final AuthController auth;
+
+  /// Picks and saves attachment files for the chat pane (injected in tests).
+  final AttachmentPicker attachmentPicker;
 
   static const _sidebarBreakpoint = 840.0;
   static const _sidebarWidth = 300.0;
@@ -139,7 +144,11 @@ class _HomeShellState extends State<HomeShell>
                   child: Stack(
                     children: [
                       Positioned.fill(
-                        child: ChatScreen(chat: widget.chat, catalog: _catalog),
+                        child: ChatScreen(
+                          chat: widget.chat,
+                          catalog: _catalog,
+                          picker: widget.attachmentPicker,
+                        ),
                       ),
                       if (_showUsage)
                         Positioned.fill(
@@ -164,6 +173,7 @@ class _HomeShellState extends State<HomeShell>
                     child: ChatScreen(
                       chat: widget.chat,
                       catalog: _catalog,
+                      picker: widget.attachmentPicker,
                       showMenuButton: true,
                       compactModelPicker: true,
                       onMenu: _openSidebar,

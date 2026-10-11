@@ -22,6 +22,64 @@ namespace Procul.Api.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Procul.Api.Attachments.Attachment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid?>("ConversationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<Guid?>("MessageId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MessageId");
+
+                    b.ToTable("Attachments");
+                });
+
+            modelBuilder.Entity("Procul.Api.Attachments.AttachmentBlob", b =>
+                {
+                    b.Property<Guid>("AttachmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<byte[]>("Data")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.HasKey("AttachmentId");
+
+                    b.ToTable("AttachmentBlobs");
+                });
+
             modelBuilder.Entity("Procul.Api.Chat.Conversation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -115,6 +173,23 @@ namespace Procul.Api.Migrations
                     b.ToTable("TurnUsages");
                 });
 
+            modelBuilder.Entity("Procul.Api.Attachments.Attachment", b =>
+                {
+                    b.HasOne("Procul.Api.Chat.ConversationMessage", null)
+                        .WithMany("Attachments")
+                        .HasForeignKey("MessageId")
+                        .OnDelete(DeleteBehavior.Cascade);
+                });
+
+            modelBuilder.Entity("Procul.Api.Attachments.AttachmentBlob", b =>
+                {
+                    b.HasOne("Procul.Api.Attachments.Attachment", null)
+                        .WithOne()
+                        .HasForeignKey("Procul.Api.Attachments.AttachmentBlob", "AttachmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Procul.Api.Chat.ConversationMessage", b =>
                 {
                     b.HasOne("Procul.Api.Chat.Conversation", null)
@@ -131,6 +206,11 @@ namespace Procul.Api.Migrations
                         .HasForeignKey("ConversationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Procul.Api.Chat.ConversationMessage", b =>
+                {
+                    b.Navigation("Attachments");
                 });
 #pragma warning restore 612, 618
         }

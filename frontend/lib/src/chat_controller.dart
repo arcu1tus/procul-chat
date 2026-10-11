@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'attachments.dart';
 import 'chat_api.dart';
 import 'chat_stream_event.dart';
 import 'conversation_store.dart';
@@ -37,6 +38,17 @@ class ChatController extends ChangeNotifier {
 
   /// The most recent user-facing error, if any.
   String? error;
+
+  /// Files uploaded but not yet sent, shown as removable preview chips in the
+  /// composer. Cleared when a message is sent (or the chat changes).
+  final List<Attachment> pendingAttachments = [];
+
+  /// True while an attachment upload is in flight.
+  bool isUploadingAttachment = false;
+
+  /// Byte cache for the attachment surface, so a message rebuild does not
+  /// refetch every image.
+  final Map<String, Uint8List> _attachmentBytes = {};
 
   /// Cumulative token usage for the active conversation. Seeded from
   /// `GET /v1/usage/conversations/{id}` when it is opened, then incremented by
@@ -154,11 +166,80 @@ class ChatController extends ChangeNotifier {
   Future<void> newChat() async {
     _conversationId = null;
     messages.clear();
+    pendingAttachments.clear();
     activeUsage = const TokenUsage();
     lastTurnUsage = null;
     error = null;
     await _store.clear();
     notifyListeners();
+  }
+
+  /// Surfaces [message] as a user-facing error (used by the attach/save flows).
+  void reportError(String message) {
+    error = message;
+    notifyListeners();
+  }
+
+  /// Uploads [picked] and queues it as a pending attachment.
+  ///
+  /// When [capabilities] is given, the file is first checked against the active
+  /// model's input modalities and a friendly [error] is surfaced instead of
+  /// uploading something the model cannot read. Returns whether the upload
+  /// succeeded.
+  Future<bool> uploadAttachment(
+    PickedAttachment picked, {
+    Set<ModelInputModality>? capabilities,
+  }) async {
+    if (isUploadingAttachment) return false;
+
+    if (capabilities != null) {
+      final problem = attachmentProblem(
+        fileName: picked.fileName,
+        contentType: picked.contentType,
+        sizeBytes: picked.bytes.length,
+        capabilities: capabilities,
+      );
+      if (problem != null) {
+        reportError(problem);
+        return false;
+      }
+    }
+
+    isUploadingAttachment = true;
+    error = null;
+    notifyListeners();
+
+    try {
+      final attachment = await api.uploadAttachment(
+        bytes: picked.bytes,
+        fileName: picked.fileName,
+        contentType: picked.contentType,
+      );
+      pendingAttachments.add(attachment);
+      return true;
+    } catch (e) {
+      error = 'Could not attach ${picked.fileName}: $e';
+      return false;
+    } finally {
+      isUploadingAttachment = false;
+      notifyListeners();
+    }
+  }
+
+  /// Removes a pending attachment (its bytes stay on the server, unreferenced).
+  void removePendingAttachment(String id) {
+    pendingAttachments.removeWhere((attachment) => attachment.id == id);
+    notifyListeners();
+  }
+
+  /// The bytes for an attachment, fetched through the authenticated [api] and
+  /// cached for the lifetime of the controller.
+  Future<Uint8List> loadAttachmentBytes(String id) async {
+    final cached = _attachmentBytes[id];
+    if (cached != null) return cached;
+    final bytes = await api.fetchAttachmentBytes(id);
+    _attachmentBytes[id] = bytes;
+    return bytes;
   }
 
   /// Sends [text]. Creates a conversation on the first message, otherwise
@@ -168,7 +249,16 @@ class ChatController extends ChangeNotifier {
     if (trimmed.isEmpty || isStreaming) return;
 
     error = null;
-    messages.add(ChatMessage(text: trimmed, role: MessageRole.user));
+    final attachments = List<Attachment>.of(pendingAttachments);
+    final attachmentIds = [for (final attachment in attachments) attachment.id];
+    pendingAttachments.clear();
+    messages.add(
+      ChatMessage(
+        text: trimmed,
+        role: MessageRole.user,
+        attachments: attachments,
+      ),
+    );
     final assistant = ChatMessage(text: '', role: MessageRole.assistant);
     messages.add(assistant);
     _promoteActive();
@@ -178,8 +268,16 @@ class ChatController extends ChangeNotifier {
     final reply = StringBuffer();
     try {
       final stream = _conversationId == null
-          ? api.createConversation(trimmed, model: activeModel)
-          : api.sendMessage(_conversationId!, trimmed);
+          ? api.createConversation(
+              trimmed,
+              model: activeModel,
+              attachmentIds: attachmentIds,
+            )
+          : api.sendMessage(
+              _conversationId!,
+              trimmed,
+              attachmentIds: attachmentIds,
+            );
 
       await for (final event in stream) {
         switch (event) {
@@ -315,6 +413,7 @@ class ChatController extends ChangeNotifier {
     _conversationId = id;
     isLoadingMessages = true;
     messages.clear();
+    pendingAttachments.clear();
     activeUsage = const TokenUsage();
     lastTurnUsage = null;
     error = null;

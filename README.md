@@ -62,6 +62,12 @@ against [OpenRouter](https://openrouter.ai/).
 - **MCP tool servers**: connect to remote Streamable HTTP / SSE MCP servers, discover their
   tools, and expose them to the model (namespaced `{server}__{tool}`), with live status in the
   client's Settings.
+- **File attachments**: attach images, text, PDFs, and (where the model supports it) audio to a
+  message. Bytes land in PostgreSQL or S3-compatible storage (config choice); the backend maps
+  each file to the content the selected model can read and **refuses** types it cannot (the gate
+  is enforced server-side *and* previewed in the client). The Flutter client has a paperclip
+  picker, removable preview chips, and renders images and files inline; reloaded conversations
+  show their attachments.
 - **AI-generated conversation titles** produced concurrently with the first reply.
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
@@ -79,6 +85,7 @@ against [OpenRouter](https://openrouter.ai/).
 ├── backend/                 # ASP.NET Core (.NET 10) API
 │   ├── src/Procul.Api/       # the API project
 │   │   ├── Chat/             # endpoints, streaming service, model registry/catalog, tools, DTOs, entities
+│   │   ├── Attachments/      # upload/download/delete + the Postgres/S3 store + capability gate
 │   │   ├── Configuration/    # config.jsonc loader (JSONC + schema + ${ENV}) + derived options
 │   │   ├── Usage/            # token-usage aggregation + `GET /v1/usage` endpoints
 │   │   ├── Cors/             # browser CORS policy
@@ -187,7 +194,7 @@ cp backend/src/Procul.Api/config.jsonc.example backend/src/Procul.Api/config.jso
 | `server.corsAllowedOrigins[]` | Browser origins allowed to call the API |
 | `server.sessionLifetime` | Session-token lifetime, e.g. `12h` (default `30d`) |
 | `database.connectionString` | PostgreSQL connection string |
-| `attachments.*` | Upload storage (`postgres`/`s3`), size limit, allowed content types |
+| `attachments.*` | Upload storage (`postgres`/`s3`), size limit, allowed content types, history re-send, text-inline cap |
 | `models[]` | One or more chat models (slug, name, base URL, key, provider, capabilities, default) |
 | `titleModel` | Optional slug used for the AI title call (defaults to the conversation's model) |
 | `modelHealth.*` | Liveness-probe enable/interval/timeout/prompt |
@@ -231,6 +238,40 @@ falls back to the default.
 On startup each model is probed once (unless `healthCheck: false`), and capabilities are
 discovered from OpenRouter's `/models` when possible. Every 30 minutes a model that had **no
 real traffic** in the window is probed again; models just used by live traffic are left alone.
+
+### Attachments
+
+Files attached to a message are validated, stored, and translated into the content the selected
+model can read. Metadata always lives in PostgreSQL; the **bytes** go to
+`attachments.storage`: `postgres` (a `bytea` table, the default) or `s3` (any S3-compatible
+service, including MinIO via `serviceUrl` + `forcePathStyle`).
+
+```jsonc
+"attachments": {
+  "storage": "postgres",            // "postgres" | "s3"
+  "maxFileSizeBytes": 20971520,     // 20 MiB (the client pre-checks the same limit)
+  "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
+  "resendHistory": false,           // false = only the newest user turn carries the bytes;
+                                    // earlier turns contribute a short text note
+  "textInlineMaxBytes": 262144,     // cap for inlining a text/* file into the prompt
+  "s3": { "bucket": "${S3_BUCKET}", "region": "${S3_REGION}", "serviceUrl": "${S3_ENDPOINT}",
+          "forcePathStyle": true, "accessKey": "${S3_ACCESS_KEY}", "secretKey": "${S3_SECRET_KEY}" }
+}
+```
+
+On send, each attachment is mapped to `Microsoft.Extensions.AI` content:
+
+| Type | Sent as | Requires |
+| ---- | ------- | -------- |
+| `image/*` | image part | `image` capability |
+| `application/pdf` | file part | `file`/`pdf` capability |
+| `audio/mpeg`, `audio/wav` | input-audio part | `audio` capability |
+| `text/*` | inlined `TextContent` (capped) | — (always) |
+| video / anything else | not sent; a text placeholder | — (stored + shown only) |
+
+The model's effective capabilities (declared ∪ discovered) are enforced by the backend: a
+message referencing a type the model cannot read is rejected with a `400` naming the file and
+the missing capability. The client applies the same rule up-front for a friendly message.
 
 ### MCP tool servers
 
@@ -285,8 +326,9 @@ cd frontend && flutter analyze     # must stay clean
 
 The backend suite covers title generation and sanitization, tool invocation (time and the
 Python sandbox), token-usage aggregation and its HTTP pipeline, the SSE/JSON wire contract,
-API versioning, and the CORS policy —
-including a full `WebApplicationFactory` preflight test against the real pipeline.
+API versioning, and the CORS policy — including a full `WebApplicationFactory` preflight test
+against the real pipeline — plus the attachment stores, validation, the content-mapping table,
+and an end-to-end upload → download → attach → model-request test.
 
 ## Container image
 

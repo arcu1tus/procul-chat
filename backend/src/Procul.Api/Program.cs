@@ -1,3 +1,5 @@
+using Procul.Api.Attachments;
+using Procul.Api.Attachments.V1;
 using Procul.Api.Chat;
 using Procul.Api.Chat.V1;
 using Procul.Api.Configuration;
@@ -20,6 +22,10 @@ var config = ProculConfigLoader.Load(
     builder.Configuration,
     bootstrapLoggerFactory.CreateLogger("Procul.Config"));
 
+// Allow a multipart upload as large as the configured cap (plus multipart/overhead slack).
+builder.WebHost.ConfigureKestrel(kestrel =>
+    kestrel.Limits.MaxRequestBodySize = config.Attachments.MaxFileSizeBytes + (1024 * 1024));
+
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton(AttachmentOptions.FromConfig(config));
 
@@ -29,6 +35,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddProculAuth(builder.Configuration, config);
 builder.Services.AddProculDbContext(config);
 builder.Services.AddProculChat(config);
+builder.Services.AddProculAttachments(config);
 builder.Services.AddProculMcp(config);
 
 var app = builder.Build();
@@ -82,6 +89,14 @@ var v1Usage = usage
     .RequireAuthorization();
 
 v1Usage.MapUsageV1();
+
+var attachments = app.NewVersionedApi("Attachments");
+var v1Attachments = attachments
+    .MapGroup("/v{version:apiVersion}/attachments")
+    .HasApiVersion(1.0)
+    .RequireAuthorization();
+
+v1Attachments.MapAttachmentsV1();
 
 await app.RunAsync();
 
