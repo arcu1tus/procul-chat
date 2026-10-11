@@ -20,6 +20,8 @@
     "storage": "postgres",            // "postgres" | "s3"
     "maxFileSizeBytes": 20971520,     // 20 MiB
     "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
+    "resendHistory": true,            // true = earlier turns re-send the bytes; false = note only
+    "textInlineMaxBytes": 262144,     // cap for inlining a text/* file into the prompt (256 KiB)
     "s3": {
       "bucket": "${S3_BUCKET}",
       "region": "${S3_REGION}",

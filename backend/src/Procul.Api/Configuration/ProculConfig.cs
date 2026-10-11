@@ -60,8 +60,22 @@ public sealed class AttachmentConfig
     /// <summary>Largest attachment accepted, in bytes.</summary>
     public long MaxFileSizeBytes { get; set; } = 20 * 1024 * 1024;
 
-    /// <summary>Allowed content-type patterns (e.g. <c>image/*</c>).</summary>
+    /// <summary>
+    /// Allowed content-type patterns (e.g. <c>image/*</c>). An empty list rejects every upload,
+    /// so set it explicitly (see <c>config.jsonc.example</c> for the recommended defaults).
+    /// </summary>
     public List<string> AllowedContentTypes { get; set; } = [];
+
+    /// <summary>
+    /// Whether earlier turns re-send an attachment's bytes every time, or only a short text note.
+    /// <c>true</c> (the default) re-sends, so a model chosen later can still read earlier files
+    /// (a capability the current model lacks still degrades to a note). Set <c>false</c> to keep
+    /// only the newest user turn carrying the bytes and bound the prompt size.
+    /// </summary>
+    public bool ResendHistory { get; set; } = true;
+
+    /// <summary>Cap, in bytes, on how much of a <c>text/*</c> file is inlined into the prompt.</summary>
+    public long TextInlineMaxBytes { get; set; } = 256 * 1024;
 
     /// <summary>S3-compatible storage settings; required when <see cref="Storage"/> is <c>s3</c>.</summary>
     public S3AttachmentConfig? S3 { get; set; }

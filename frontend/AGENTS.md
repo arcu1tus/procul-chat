@@ -8,7 +8,9 @@
 
 The Flutter chat client ("Procul") for the Procul backend. It supports **multiple
 conversations** (list, switch, rename, delete), streams assistant replies over SSE, shows
-tool activity, renders assistant Markdown, and has a persisted **settings** dialog (theme:
+tool activity, renders assistant Markdown, attaches **files** (a paperclip picker with removable
+preview chips; images render inline, other files as tap-to-save chips), and has a persisted
+**settings** dialog (theme:
 light / dark / system, dark default). It also tracks **token usage**: a per-conversation
 counter chip in the chat app bar and a **Usage** dashboard reachable from the sidebar. The
 backend can serve **multiple models**, so the chat app bar carries a per-conversation **model
@@ -30,7 +32,10 @@ password, keeps the returned session token in secure storage, and can save and s
 - **Markdown:** `gpt_markdown` (`^1.3.4`) renders assistant replies (code, lists, bold).
 - **Charts:** [`fl_chart`](https://pub.dev/packages/fl_chart) (`^1.2.0`) — the Usage
   dashboard's daily bar chart (the only charting dependency).
-- **HTTP:** `package:http` (manual SSE parsing; no SSE package).
+- **HTTP:** `package:http` (manual SSE parsing; no SSE package) + `http_parser` (the `MediaType`
+  for multipart uploads).
+- **Files:** [`file_picker`](https://pub.dev/packages/file_picker) (`^13.1.0`) — the composer's
+  attach picker and tap-to-save, behind the `AttachmentPicker` seam.
 - **Persistence:** `package:shared_preferences` — server profiles (without tokens), the active
   server id, the active conversation id and settings.
 - **Secure storage:** `package:flutter_secure_storage` — per-profile session tokens only.
@@ -51,13 +56,16 @@ frontend/
       models.dart                 # domain types: Conversation (incl. model), ChatMessage, ToolCall,
                                   #   MessageRole, TokenUsage + formatTokenCount;
                                   #   ChatModel/ModelCapabilities/ModelHealth + modality/status enums
+      attachments.dart            # Attachment DTO + size/MIME/`attachmentProblem` helpers +
+                                  #   AttachmentPicker abstraction (FilePickerAttachmentPicker)
       mcp_status.dart             # McpServerStatus: read-only MCP server status DTO
       mcp_status_controller.dart  # McpStatusController: MCP status for the Settings section
       model_catalog_controller.dart # ModelCatalogController: configured models + default + health
                                   #   checks; owned by the shell (picker + Models screen share it)
       chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/Usage/ToolCall/...)
       chat_api.dart               # ChatApi: authenticated REST + SSE client (Bearer token);
-                                  #   conversations, models (+ health checks), usage, MCP status
+                                  #   conversations, models (+ health checks), usage, MCP status,
+                                  #   attachments (multipart upload / authenticated byte fetch)
       auth_api.dart               # AuthApi: unauthenticated POST /v1/auth/session
       auth_controller.dart        # AuthController: server profiles + active session
       server_profile.dart         # ServerProfile + URL parsing/normalization helpers
@@ -90,7 +98,7 @@ frontend/
         model_badges.dart         # CapabilityBadge(s) + ModelHealthDot (shared by picker & Models)
   test/                           # controller, API, auth, settings, and widget tests
   test/support/                   # shared test doubles (FakeConversationStore, FakeCredentialStore,
-                                  #   FakeServerStore) + model_fixtures.dart (GET /v1/models payloads)
+                                  #   FakeServerStore, FakeAttachmentPicker) + model_fixtures.dart
   test/flutter_test_config.dart   # disables google_fonts runtime fetching for all tests
   linux/ android/ ios/ ...        # platform shells (generated)
   pubspec.yaml
@@ -139,9 +147,12 @@ Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's save
 | Action | Request | Response |
 | --- | --- | --- |
 | List chats | `GET /` | JSON `{"conversations":[...]}`, newest activity first |
-| Start chat | `POST /` body `{"initialMessage":"...","model":"<slug>"?}` | SSE |
-| Send message | `POST /{id}/messages` body `{"text":"..."}` | SSE |
-| History | `GET /{id}/messages?limit=1..100&afterMessageId=<guid>` | JSON |
+| Start chat | `POST /` body `{"initialMessage":"...","model":"<slug>"?,"attachmentIds":["<guid>"]?}` | SSE |
+| Send message | `POST /{id}/messages` body `{"text":"...","attachmentIds":["<guid>"]?}` | SSE |
+| Upload | `POST /v1/attachments?model=<slug>` multipart (`file` field) | JSON `AttachmentV1` (`201`); `400` (type/model can't read it)/`413` |
+| Download | `GET /v1/attachments/{id}` (authenticated) | raw bytes + `Content-Disposition` |
+| Delete | `DELETE /v1/attachments/{id}` | `204` (404 treated as success) |
+| History | `GET /{id}/messages?limit=1..100&afterMessageId=<guid>` | JSON (user messages carry an `attachments` array of `AttachmentV1`) |
 | Rename | `PATCH /{id}` body `{"title":"..."}` | JSON `{"conversation":{...}}` |
 | Set model | `PUT /{id}/model` body `{"model":"<slug>"}` | JSON `{"conversation":{...}}` |
 | Delete | `DELETE /{id}` | `204` (404 treated as success) |
@@ -270,6 +281,27 @@ reaches the buffer.
   (`CallbackShortcuts` bound to `SingleActivator(enter)`; the shifted variant falls through
   to the field). The on-screen send button and `onSubmitted` are kept, so
   `TextInputAction.send` still submits.
+- **Attachments are picked, uploaded, and queued in `ChatController`.** `ChatScreen` owns an
+  `AttachmentPicker` (`FilePickerAttachmentPicker` by default, injected in tests) and a paperclip
+  `IconAction`. The picker is **restricted to the active model's readable types**:
+  `_activeCapabilities()` looks the model up in the shared catalog via `chat.activeModel`, then
+  `allowedExtensionsForCapabilities` produces the allow-list (`text/*` always; video never, since
+  no model can receive it). A post-pick `attachmentProblem` check (in `attachments.dart`, mirroring
+  the backend rule) is the fallback if the platform ignores the filter. `ChatController.uploadAttachment`
+  then POSTs it — passing the active model so the **backend re-validates at upload** — and appends
+  the result to `pendingAttachments` (removable chips; disabled while streaming or mid-upload).
+  `ChatController.send` snapshots the pending ids into the request and attaches the metadata to the
+  user bubble; the queue clears on send, `newChat()`, and switching chats. `pendingAttachments` is
+  *not* persisted: a failed turn leaves the uploads orphaned server-side.
+- **Attachment bytes are fetched through `ChatApi`, then cached.** `ChatController.loadAttachmentBytes`
+  does an authenticated `GET /v1/attachments/{id}` and memoizes in `_attachmentBytes`; images
+  render as `Image.memory` and other files as chips that fetch the bytes and hand them to
+  `picker.save` (`FilePicker.saveFile`) on tap. Never build an `<img>` URL: it cannot carry the
+  bearer token. The same path works on web, desktop, and mobile.
+- **`AttachmentPicker` is a seam for tests.** `FakeAttachmentPicker` (`test/support/`) records
+  `pick`/`save` calls so widget tests never touch the `file_picker` platform channel. Prefer
+  `file_picker`'s static API (`FilePicker.pickFiles` / `FilePicker.saveFile`); v13 returns
+  `List<PlatformFile>` and saves bytes directly (no `dart:io`).
 - **Loading states are hand-rolled shimmer, not spinners.** `widgets/skeleton.dart` provides
   `Shimmer` (one `AnimationController` sweeping a gradient over its children) and `Skeleton`
   blocks. The conversation list and message history show shaped placeholders; an assistant
@@ -401,6 +433,13 @@ surfaces the error rather than downgrading the token to plaintext.
 - **shadcn `Text` has no `.destructive` style.** The text extensions only cover sizes, weights
   and a few colors (`muted`, `primaryForeground`, …). For error text use
   `Text(x, style: TextStyle(color: ColorScheme.of(context).destructive))`.
+- **shadcn exports its own `formatFileSize`.** `shadcn_flutter` re-exports a `formatFileSize`
+  from its locale utils, so the attachment helper is named **`formatAttachmentSize`** to avoid an
+  `ambiguous_import` error. Watch for other one-word names it may already own.
+- **A shown toast leaves a pending 5s timer.** `showToast` auto-dismisses after `showDuration`
+  (5s), so a widget test that triggers one must `pump(const Duration(seconds: 6))` before
+  teardown or `flutter_test` fails with "A Timer is still pending". Assert the toast content
+  first, then advance time.
 - **`Uri.replace` cannot clear a query/fragment.** Passing `query: ''`/`fragment: ''` yields a
   trailing `?#`. `normalizeBaseUrl` (in `server_profile.dart`) builds `uri.origin + path`
   instead, which also strips the trailing slash.

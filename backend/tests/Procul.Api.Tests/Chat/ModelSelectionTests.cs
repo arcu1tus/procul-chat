@@ -44,12 +44,18 @@ public class ModelSelectionTests
 
     private static ChatStreamServiceV1 NewService(ProculDbContext db, ChatModelRegistry registry) =>
         new(db, registry, new ModelUsageTracker(), new ProculConfig(),
-            McpTestHelpers.DisabledManager(), NullLogger<ChatStreamServiceV1>.Instance);
+            McpTestHelpers.DisabledManager(), new FakeAttachmentStore(), TestAttachmentOptions.Create(),
+            NullLogger<ChatStreamServiceV1>.Instance);
 
     private static async Task<string> RunTurnAsync(ChatStreamServiceV1 service, Guid conversationId)
     {
         var reply = string.Empty;
-        await foreach (var evt in service.StreamAssistantReplyAsync(conversationId, "hi", CancellationToken.None))
+        await foreach (var evt in service.StreamAssistantReplyAsync(
+            conversationId,
+            "hi",
+            [],
+            new HashSet<ModelInputModality> { ModelInputModality.Text },
+            CancellationToken.None))
         {
             if (evt is ChatStreamEventV1.Token token)
             {

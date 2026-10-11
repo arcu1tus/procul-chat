@@ -1,6 +1,9 @@
 using System.Net.ServerSentEvents;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
+using Procul.Api.Attachments;
+using Procul.Api.Attachments.V1;
+using Procul.Api.Chat.Models;
 using Procul.Api.Infrastructure;
 
 namespace Procul.Api.Chat.V1;
@@ -38,6 +41,7 @@ internal static class ChatEndpointsV1
         ProculDbContext db,
         ChatStreamServiceV1 chat,
         ChatModelRegistry registry,
+        ModelCatalogService catalog,
         CreateConversationRequestV1 body,
         CancellationToken ct
     )
@@ -50,16 +54,25 @@ internal static class ChatEndpointsV1
                 detail: $"Unknown model '{model}'. Use GET /v1/models to list configured models.");
         }
 
+        var slug = model.Length > 0 ? model : null;
+        var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, body.AttachmentIds, slug, ct);
+        if (!gate.IsValid)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: gate.Error);
+        }
+
+        var capabilities = catalog.GetCapabilities(registry.ResolveOrDefault(slug)).Input;
+
         var conversation = new Conversation
         {
             Title = ChatStreamServiceV1.FallbackTitle(body.InitialMessage),
-            Model = model.Length > 0 ? model : null,
+            Model = slug,
         };
         db.Conversations.Add(conversation);
         await db.SaveChangesAsync(ct);
 
         return TypedResults.ServerSentEvents(
-            chat.StreamNewConversationAsync(conversation, body.InitialMessage, ct)
+            chat.StreamNewConversationAsync(conversation, body.InitialMessage, gate.Attachments, capabilities, ct)
         );
     }
 
@@ -214,28 +227,46 @@ internal static class ChatEndpointsV1
             .OrderByDescending(m => m.CreatedAt)
             .ThenByDescending(m => m.Id)
             .Take(limit)
-            .Select(m => new ConversationMessageV1(Id: m.Id, ConversationId: conversationId, Text: m.Text, MessageRole: m.MessageRole, CreatedAt: m.CreatedAt))
+            .Select(m => new ConversationMessageV1(
+                Id: m.Id,
+                ConversationId: conversationId,
+                Text: m.Text,
+                MessageRole: m.MessageRole,
+                CreatedAt: m.CreatedAt,
+                Attachments: m.Attachments
+                    .Select(a => new AttachmentV1(a.Id, a.FileName, a.ContentType, a.SizeBytes, a.CreatedAt))
+                    .ToList()))
             .ToListAsync(ct);
 
         return TypedResults.Ok(new GetConversationMessagesResponseV1(messages));
     }
 
-    private static async Task<Results<ServerSentEventsResult<ChatStreamEventV1>, NotFound>> SendMessageAsync(
+    private static async Task<Results<ServerSentEventsResult<ChatStreamEventV1>, NotFound, ProblemHttpResult>> SendMessageAsync(
         ProculDbContext db,
         ChatStreamServiceV1 chat,
+        ChatModelRegistry registry,
+        ModelCatalogService catalog,
         Guid conversationId,
         SendMessageRequestV1 body,
         CancellationToken ct
     )
     {
-        var conversationExists = await db.Conversations.AnyAsync(c => c.Id == conversationId, ct);
-        if (!conversationExists)
+        var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
+        if (conversation is null)
         {
             return TypedResults.NotFound();
         }
 
+        var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, body.AttachmentIds, conversation.Model, ct);
+        if (!gate.IsValid)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: gate.Error);
+        }
+
+        var capabilities = catalog.GetCapabilities(registry.ResolveOrDefault(conversation.Model)).Input;
+
         return TypedResults.ServerSentEvents(
-            chat.StreamAssistantReplyAsync(conversationId, body.Text, ct)
+            chat.StreamAssistantReplyAsync(conversationId, body.Text, gate.Attachments, capabilities, ct)
         );
     }
 }

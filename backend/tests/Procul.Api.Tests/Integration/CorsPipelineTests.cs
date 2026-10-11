@@ -66,6 +66,22 @@ public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>, 
         Assert.Equal("*", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
     }
 
+    [Fact]
+    public async Task A_cross_origin_response_exposes_Content_Disposition()
+    {
+        using var factory = CreateFactory("Production", "https://app.example.com");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/health");
+        request.Headers.Add("Origin", "https://app.example.com");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(
+            "Content-Disposition",
+            response.Headers.GetValues("Access-Control-Expose-Headers").Single());
+    }
+
     private static Task<HttpResponseMessage> PreflightAsync(HttpClient client, string origin)
     {
         var request = new HttpRequestMessage(HttpMethod.Options, "/v1/conversations");

@@ -1,8 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
+import 'attachments.dart';
 import 'chat_controller.dart';
 import 'conversation_actions.dart';
 import 'model_catalog_controller.dart';
@@ -17,6 +20,7 @@ class ChatScreen extends StatefulWidget {
     super.key,
     required this.chat,
     this.catalog,
+    this.picker = const FilePickerAttachmentPicker(),
     this.showMenuButton = false,
     this.compactModelPicker = false,
     this.onMenu,
@@ -27,6 +31,10 @@ class ChatScreen extends StatefulWidget {
   /// The shared model catalog backing the app-bar model picker. When null (or
   /// when only one model is configured) the picker is hidden.
   final ModelCatalogController? catalog;
+
+  /// Picks and saves attachment files. Injected in tests so the platform
+  /// channel is never touched.
+  final AttachmentPicker picker;
 
   /// Whether to show a leading button that opens the conversation drawer.
   final bool showMenuButton;
@@ -132,6 +140,53 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// The active model's input modalities, or null when unknown (catalog not
+  /// loaded), in which case the client does not gate — the backend still does.
+  Set<ModelInputModality>? _activeCapabilities() {
+    final catalog = widget.catalog;
+    final slug = widget.chat.activeModel;
+    if (catalog == null || slug == null) return null;
+    for (final model in catalog.models) {
+      if (model.slug == slug) return model.capabilities.input;
+    }
+    return null;
+  }
+
+  /// Picks a file, restricted to what the active model can read, validates it,
+  /// and uploads it. The backend re-checks both (see [ChatApi.uploadAttachment]).
+  Future<void> _attach() async {
+    final chat = widget.chat;
+    if (chat.isStreaming || chat.isUploadingAttachment) return;
+
+    final capabilities = _activeCapabilities();
+
+    final PickedAttachment? picked;
+    try {
+      picked = await widget.picker.pick(
+        allowedExtensions: capabilities == null
+            ? null
+            : allowedExtensionsForCapabilities(capabilities),
+      );
+    } catch (e) {
+      chat.reportError('Could not open the file picker: $e');
+      return;
+    }
+    if (picked == null || !mounted) return;
+
+    await chat.uploadAttachment(picked, capabilities: capabilities);
+  }
+
+  /// Fetches an attachment's bytes (authenticated) and hands them to the
+  /// platform save dialog.
+  Future<void> _saveAttachment(Attachment attachment) async {
+    try {
+      final bytes = await widget.chat.loadAttachmentBytes(attachment.id);
+      await widget.picker.save(attachment.fileName, bytes);
+    } catch (e) {
+      widget.chat.reportError('Could not save ${attachment.fileName}: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -203,8 +258,9 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               _Composer(
                 controller: _inputController,
-                enabled: !chat.isStreaming,
+                chat: chat,
                 onSubmit: _submit,
+                onAttach: _attach,
               ),
             ],
           ),
@@ -239,7 +295,9 @@ class _ChatScreenState extends State<ChatScreen> {
           animate: animate,
           child: _MessageBubble(
             message: message,
+            chat: chat,
             isStreaming: chat.isStreaming && index == chat.messages.length - 1,
+            onSaveAttachment: _saveAttachment,
           ),
         );
       },
@@ -368,16 +426,24 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, required this.isStreaming});
+  const _MessageBubble({
+    required this.message,
+    required this.chat,
+    required this.isStreaming,
+    required this.onSaveAttachment,
+  });
 
   final ChatMessage message;
+  final ChatController chat;
   final bool isStreaming;
+  final ValueChanged<Attachment> onSaveAttachment;
 
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
     final isUser = message.isUser;
     final hasTools = message.toolCalls.isNotEmpty;
+    final hasAttachments = message.attachments.isNotEmpty;
     // While tools run there is no reply text yet, so don't also show the
     // thinking dots — the tool rows already signal activity.
     final showText = message.text.isNotEmpty || !hasTools;
@@ -395,6 +461,14 @@ class _MessageBubble extends StatelessWidget {
         children: [
           for (final call in message.toolCalls) _ToolCallRow(call: call),
           if (hasTools && showText) const Gap(8),
+          if (hasAttachments) ...[
+            _AttachmentList(
+              chat: chat,
+              attachments: message.attachments,
+              onTap: onSaveAttachment,
+            ),
+            if (showText) const Gap(8),
+          ],
           if (showText)
             isUser
                 ? Text(
@@ -440,6 +514,204 @@ class _MessageBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The attachments of one message: image thumbnails and file chips. Tapping a
+/// file saves it; images are fetched through the authenticated [ChatController].
+class _AttachmentList extends StatelessWidget {
+  const _AttachmentList({
+    required this.chat,
+    required this.attachments,
+    required this.onTap,
+  });
+
+  final ChatController chat;
+  final List<Attachment> attachments;
+  final ValueChanged<Attachment> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final attachment in attachments)
+          if (attachment.isImage)
+            _AttachmentImage(
+              chat: chat,
+              attachment: attachment,
+              onTap: () => onTap(attachment),
+            )
+          else
+            _AttachmentChip(
+              attachment: attachment,
+              onTap: () => onTap(attachment),
+            ),
+      ],
+    );
+  }
+}
+
+/// A compact pill for a non-image attachment (icon, name, size). [onTap] saves
+/// it; [onRemove] turns it into a pending-composer chip.
+class _AttachmentChip extends StatelessWidget {
+  const _AttachmentChip({
+    required this.attachment,
+    this.chat,
+    this.onTap,
+    this.onRemove,
+    this.thumbnail = false,
+  });
+
+  final Attachment attachment;
+  final ChatController? chat;
+  final VoidCallback? onTap;
+  final VoidCallback? onRemove;
+
+  /// Whether to show a small image preview as the leading element.
+  final bool thumbnail;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+    final showThumb = thumbnail && attachment.isImage && chat != null;
+
+    return Clickable(
+      onPressed: onTap,
+      child: Container(
+        padding: EdgeInsets.fromLTRB(8, 5, onRemove != null ? 3 : 10, 5),
+        decoration: BoxDecoration(
+          color: colors.secondary,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (showThumb)
+              SizedBox(
+                width: 30,
+                height: 30,
+                child: _AttachmentImage(
+                  chat: chat!,
+                  attachment: attachment,
+                  maxWidth: 30,
+                  maxHeight: 30,
+                ),
+              )
+            else
+              Icon(
+                _attachmentIcon(attachment.contentType),
+                size: 14,
+                color: colors.mutedForeground,
+              ),
+            const Gap(8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 170),
+              child: Text(
+                attachment.fileName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ).small,
+            ),
+            const Gap(6),
+            Text(formatAttachmentSize(attachment.sizeBytes)).muted.xSmall,
+            if (onRemove != null) ...[
+              const Gap(2),
+              IconButton.ghost(
+                density: ButtonDensity.compact,
+                icon: const Icon(LucideIcons.x, size: 14),
+                onPressed: onRemove,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// An image attachment rendered from bytes fetched through [ChatController]
+/// (never an `<img>` URL, which could not carry the bearer token).
+class _AttachmentImage extends StatelessWidget {
+  const _AttachmentImage({
+    required this.chat,
+    required this.attachment,
+    this.onTap,
+    this.maxWidth = 260,
+    this.maxHeight = 260,
+  });
+
+  final ChatController chat;
+  final Attachment attachment;
+  final VoidCallback? onTap;
+  final double maxWidth;
+  final double maxHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+
+    return FutureBuilder<Uint8List>(
+      future: chat.loadAttachmentBytes(attachment.id),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _AttachmentChip(attachment: attachment, onTap: onTap);
+        }
+
+        if (!snapshot.hasData) {
+          return Container(
+            width: maxWidth,
+            height: maxWidth < 60 ? maxWidth : 120,
+            decoration: BoxDecoration(
+              color: colors.muted,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: colors.border),
+            ),
+            child: const Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          );
+        }
+
+        return Semantics(
+          image: true,
+          label: attachment.fileName,
+          child: Clickable(
+            onPressed: onTap,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: maxWidth,
+                  maxHeight: maxHeight,
+                ),
+                child: Image.memory(
+                  snapshot.data!,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The icon for a file's content type: a modality icon where one exists, else a
+/// generic file (video falls back to its own icon rather than the placeholder).
+IconData _attachmentIcon(String contentType) {
+  final type = contentType.toLowerCase();
+  if (type.startsWith('video/')) return LucideIcons.video;
+  if (type.startsWith('text/')) return LucideIcons.fileText;
+  final modality = attachmentRequiredModality(contentType);
+  return modality == null ? LucideIcons.file : modelInputModalityIcon(modality);
 }
 
 class _AssistantText extends StatelessWidget {
@@ -940,16 +1212,22 @@ class _ToolCallRow extends StatelessWidget {
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
-    required this.enabled,
+    required this.chat,
     required this.onSubmit,
+    required this.onAttach,
   });
 
   final TextEditingController controller;
-  final bool enabled;
+  final ChatController chat;
   final VoidCallback onSubmit;
+  final VoidCallback onAttach;
 
   @override
   Widget build(BuildContext context) {
+    final enabled = !chat.isStreaming;
+    final canAttach = enabled && !chat.isUploadingAttachment;
+    final pending = chat.pendingAttachments;
+
     return SafeArea(
       top: false,
       child: Padding(
@@ -958,9 +1236,35 @@ class _Composer extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (pending.isNotEmpty || chat.isUploadingAttachment)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    for (final attachment in pending)
+                      _AttachmentChip(
+                        attachment: attachment,
+                        chat: chat,
+                        thumbnail: true,
+                        onRemove: () =>
+                            chat.removePendingAttachment(attachment.id),
+                      ),
+                    if (chat.isUploadingAttachment) const _UploadingChip(),
+                  ],
+                ),
+              ),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
+                IconAction(
+                  icon: LucideIcons.paperclip,
+                  label: 'Attach file',
+                  onPressed: canAttach ? onAttach : null,
+                ),
+                const Gap(4),
                 Expanded(
                   child: CallbackShortcuts(
                     // Enter sends; Shift+Enter is left to the field so it
@@ -1013,6 +1317,39 @@ class _Composer extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A small pill shown in the composer while an attachment uploads.
+class _UploadingChip extends StatelessWidget {
+  const _UploadingChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: colors.secondary,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 13,
+            height: 13,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: colors.mutedForeground,
+            ),
+          ),
+          const Gap(8),
+          const Text('Uploading…').muted.small,
+        ],
       ),
     );
   }
