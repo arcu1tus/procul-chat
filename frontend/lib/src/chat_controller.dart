@@ -46,6 +46,15 @@ class ChatController extends ChangeNotifier {
   /// Token usage reported for the most recent reply, or null when none was.
   TokenUsage? lastTurnUsage;
 
+  /// The catalog's default model slug, mirrored from the shell's
+  /// `ModelCatalogController` so [activeModel] can fall back to it. Set via
+  /// [setDefaultModel].
+  String? defaultModel;
+
+  /// A model chosen for a conversation that does not exist yet, applied on the
+  /// first [send]. Persists across [newChat] so the last explicit choice sticks.
+  String? _pendingModel;
+
   String? get activeConversationId => _conversationId;
 
   /// Whether a conversation is already established on the backend.
@@ -59,6 +68,23 @@ class ChatController extends ChangeNotifier {
       if (conversation.id == id) return conversation;
     }
     return null;
+  }
+
+  /// The model the app-bar picker shows and the next turn will use.
+  ///
+  /// The active conversation's model when there is one, else a pending choice
+  /// for a brand-new chat, else the catalog default.
+  String? get activeModel {
+    final conversation = activeConversation;
+    if (conversation != null) return conversation.model ?? defaultModel;
+    return _pendingModel ?? defaultModel;
+  }
+
+  /// Mirrors the catalog's default model (set by the shell when it loads).
+  void setDefaultModel(String? slug) {
+    if (slug == defaultModel) return;
+    defaultModel = slug;
+    notifyListeners();
   }
 
   /// Loads the conversation list and reopens the previously active conversation.
@@ -152,7 +178,7 @@ class ChatController extends ChangeNotifier {
     final reply = StringBuffer();
     try {
       final stream = _conversationId == null
-          ? api.createConversation(trimmed)
+          ? api.createConversation(trimmed, model: activeModel)
           : api.sendMessage(_conversationId!, trimmed);
 
       await for (final event in stream) {
@@ -205,6 +231,39 @@ class ChatController extends ChangeNotifier {
         assistant.text = error == null ? '(no reply)' : '(failed)';
       }
       isStreaming = false;
+      notifyListeners();
+    }
+  }
+
+  /// Selects [slug] for the active conversation, persisting it server-side.
+  ///
+  /// With no conversation yet the choice is pending and applied when the first
+  /// message creates one. Applies optimistically and rolls back on failure
+  /// (same pattern as [renameConversation]).
+  Future<void> setModel(String slug) async {
+    _pendingModel = slug;
+
+    final conversation = activeConversation;
+    if (conversation == null) {
+      notifyListeners();
+      return;
+    }
+
+    final index = conversations.indexWhere((c) => c.id == conversation.id);
+    final previous = index == -1 ? null : conversations[index];
+    if (index != -1) {
+      conversations[index] = conversations[index].copyWith(model: slug);
+      notifyListeners();
+    }
+
+    try {
+      final updated = await api.setConversationModel(conversation.id, slug);
+      _replaceConversation(updated);
+    } catch (e) {
+      if (previous != null) {
+        _replaceConversation(previous);
+      }
+      error = 'Could not change the model: $e';
       notifyListeners();
     }
   }

@@ -10,7 +10,10 @@ The Flutter chat client ("Procul") for the Procul backend. It supports **multipl
 conversations** (list, switch, rename, delete), streams assistant replies over SSE, shows
 tool activity, renders assistant Markdown, and has a persisted **settings** dialog (theme:
 light / dark / system, dark default). It also tracks **token usage**: a per-conversation
-counter chip in the chat app bar and a **Usage** dashboard reachable from the sidebar. It
+counter chip in the chat app bar and a **Usage** dashboard reachable from the sidebar. The
+backend can serve **multiple models**, so the chat app bar carries a per-conversation **model
+picker** and the sidebar's **Models** entry opens a catalog of every configured model (name,
+description, capability badges, live health). It
 talks to the backend's versioned
 `/v1/conversations` API, which is **password-protected**: the app signs in with a shared
 password, keeps the returned session token in secure storage, and can save and switch between
@@ -45,12 +48,16 @@ frontend/
                                   #   ConnectScreen (signed out) and the keyed AuthenticatedShell
     src/
       config.dart                 # apiBaseUrl (PROCUL_API_BASE dart-define)
-      models.dart                 # domain types: Conversation, ChatMessage, ToolCall, MessageRole,
-                                  #   TokenUsage + formatTokenCount (999 / 1.0k / 1.2M)
+      models.dart                 # domain types: Conversation (incl. model), ChatMessage, ToolCall,
+                                  #   MessageRole, TokenUsage + formatTokenCount;
+                                  #   ChatModel/ModelCapabilities/ModelHealth + modality/status enums
       mcp_status.dart             # McpServerStatus: read-only MCP server status DTO
       mcp_status_controller.dart  # McpStatusController: MCP status for the Settings section
+      model_catalog_controller.dart # ModelCatalogController: configured models + default + health
+                                  #   checks; owned by the shell (picker + Models screen share it)
       chat_stream_event.dart      # SSE ChatStreamEvent hierarchy (Created/Token/Usage/ToolCall/...)
-      chat_api.dart               # ChatApi: authenticated REST + SSE client (Bearer token)
+      chat_api.dart               # ChatApi: authenticated REST + SSE client (Bearer token);
+                                  #   conversations, models (+ health checks), usage, MCP status
       auth_api.dart               # AuthApi: unauthenticated POST /v1/auth/session
       auth_controller.dart        # AuthController: server profiles + active session
       server_profile.dart         # ServerProfile + URL parsing/normalization helpers
@@ -66,21 +73,24 @@ frontend/
       usage.dart                  # UsageSummary/UsageDay/UsageModel/UsageBreakdown DTOs
       usage_controller.dart       # UsageController: dashboard summary + range + loading/error
       usage_screen.dart           # Usage dashboard: lifetime cards, fl_chart bars, per-model list
+      models_screen.dart          # Models catalog: name/description/capability badges/health,
+                                  #   per-model + check-all probes, refresh
       app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData, teal + Inter)
                                   #   + ShadcnMaterialBridge (flutter/material theme for markdown)
       home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow);
-                                  #   overlays UsageScreen over the still-mounted chat
-      conversation_sidebar.dart   # conversation list, new chat, usage + settings footer
+                                  #   owns the ModelCatalogController; overlays UsageScreen/ModelsScreen
+      conversation_sidebar.dart   # conversation list, new chat, usage + models + settings footer
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
       settings_dialog.dart        # settings dialog (theme selector + server management)
-      chat_screen.dart            # chat pane: header (+ usage chip), message list, composer;
-                                  #   streaming shimmer over assistant Markdown
+      chat_screen.dart            # chat pane: header (+ model picker + usage chip), message list,
+                                  #   composer; streaming shimmer over assistant Markdown
       widgets/
         skeleton.dart             # Shimmer + Skeleton loading placeholders
         icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label
+        model_badges.dart         # CapabilityBadge(s) + ModelHealthDot (shared by picker & Models)
   test/                           # controller, API, auth, settings, and widget tests
   test/support/                   # shared test doubles (FakeConversationStore, FakeCredentialStore,
-                                  #   FakeServerStore)
+                                  #   FakeServerStore) + model_fixtures.dart (GET /v1/models payloads)
   test/flutter_test_config.dart   # disables google_fonts runtime fetching for all tests
   linux/ android/ ios/ ...        # platform shells (generated)
   pubspec.yaml
@@ -129,11 +139,14 @@ Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's save
 | Action | Request | Response |
 | --- | --- | --- |
 | List chats | `GET /` | JSON `{"conversations":[...]}`, newest activity first |
-| Start chat | `POST /` body `{"initialMessage":"..."}` | SSE |
+| Start chat | `POST /` body `{"initialMessage":"...","model":"<slug>"?}` | SSE |
 | Send message | `POST /{id}/messages` body `{"text":"..."}` | SSE |
 | History | `GET /{id}/messages?limit=1..100&afterMessageId=<guid>` | JSON |
 | Rename | `PATCH /{id}` body `{"title":"..."}` | JSON `{"conversation":{...}}` |
+| Set model | `PUT /{id}/model` body `{"model":"<slug>"}` | JSON `{"conversation":{...}}` |
 | Delete | `DELETE /{id}` | `204` (404 treated as success) |
+| Models | `GET /v1/models` | JSON `{defaultModel, models:[{slug,name,description,provider,isDefault,capabilities:{input[],output[]},health:{status,lastCheckedAt,latencyMs,lastError,lastUsedAt,source}}]}` |
+| Check models | `POST /v1/models/check` · `POST /v1/models/{slug}/check` | JSON (catalog / one model); slugs may contain `/` |
 | MCP status | `GET /v1/mcp/servers` | JSON `{"servers":[{"name","type","url","connected","toolCount","tools","lastError","lastConnectedAt"}]}` |
 | Conversation usage | `GET /v1/usage/conversations/{id}` | JSON totals `{inputTokens,outputTokens,cachedInputTokens,totalTokens,turns}` |
 | Usage summary | `GET /v1/usage?days=30` | JSON `{lifetime, days:[{date,…}], models:[{model,…}]}` |
@@ -204,6 +217,33 @@ reaches the buffer.
   pull-to-refresh via `RefreshTrigger` **plus** an explicit `IconAction`. It is opened from the
   sidebar footer's **Usage** button beside Settings; `HomeShell` overlays it on top of the
   still-mounted chat so the chat's scroll position and buffer survive.
+- **The model catalog is one controller owned by the shell.** `ModelCatalogController` (mirrors
+  `McpStatusController`) holds `models`, `defaultModel` (derived from the `isDefault` entry),
+  `isLoading`/`error`, and the check state (`checkingSlug`/`isCheckingAll`); `check(slug)` /
+  `checkAll()` probe then `refresh()`. `HomeShell` creates it (from `chat.api`), `load()`s it once,
+  and **mirrors its default into the controller** via `ChatController.setDefaultModel` so a
+  brand-new chat can fall back to it. Both the app-bar picker and the Models screen read this one
+  instance. The catalog is *not* re-created per screen (unlike `UsageController`, which
+  `UsageScreen` owns).
+- **The model is per conversation, with a pending choice for new chats.**
+  `Conversation.model` is nullable; `ChatController.activeModel` is the active conversation's
+  model, else a pending choice (`_pendingModel`, set by picking a model with no conversation yet
+  and **kept across `newChat()`** so the last explicit choice sticks), else `defaultModel`.
+  `setModel(slug)` optimistically updates the conversation and `PUT`s `.../model`, rolling back on
+  failure (like `renameConversation`); with no conversation it just records the pending choice.
+  `send` passes the model only on `createConversation`.
+- **The app-bar model picker** (`_ModelPicker` in `chat_screen.dart`) shows the active model's
+  name (or slug), is **hidden when only one model is configured**, is **disabled while streaming**,
+  and opens a `showDropdown`/`DropdownMenu` whose rows carry a health dot, capability badges and a
+  check on the active model. On narrow screens `HomeShell` passes `compactModelPicker: true`, which
+  collapses it to a single `IconAction` (the `showMenuButton` pattern).
+- **The Models screen is a read-only catalog with on-demand checks.** `ModelsScreen` renders each
+  model's name/description/capability badges/a `Default` pill and a health row (status dot, latency,
+  last checked/used, last error), with a per-model **Check** and a **Check all**, plus refresh via
+  `RefreshTrigger` + `IconAction`; loading shimmer / empty / error match `UsageScreen`. Health is
+  advisory — an unhealthy model stays selectable. It is overlaid on the still-mounted chat like
+  Usage, from the sidebar footer's **Models** entry (three compact `_FooterButton`s: Usage, Models,
+  Settings).
 - **Assistant text shimmers while streaming.** `_ShimmerText` (in `chat_screen.dart`) wraps the
   `GptMarkdown` in a `ShaderMask` (`BlendMode.srcIn`) with a sliding `LinearGradient`, active
   only while the reply streams. It owns its own `AnimationController`, so per-token rebuilds do
@@ -310,6 +350,17 @@ surfaces the error rather than downgrading the token to plaintext.
   `VoidCallback`.
 - **`showOverlay(...)` returns an `OverlayCompleter`; use `.future`** to await the dialog's
   result. Pop with `Navigator.pop(context, value)`.
+- **A `showDropdown` menu is an overlay entry, not a route — do not `Navigator.pop` it.**
+  Popping from a `MenuButton.onPressed` pops the *app's* route (leaving a blank screen). Let the
+  button's `autoClose` (the default) dismiss the menu and just run the action, as the model
+  picker does.
+- **Three sidebar footer buttons are tight.** They are `_FooterButton`s (compact-density, small
+  `GhostButton`s with a leading icon and an ellipsizing label) inside `Expanded`s in a 300 px row;
+  a widget test asserts `takeException()` is null so an overflow fails CI.
+- **Backend input modalities include `pdf`, which maps to the `file` badge.** `ModelInputModality`
+  has `text/image/file/audio/video`; `modelInputModalityFromValue` folds `pdf`/`file` into `file`
+  and falls back to `text`. `ModelHealthStatus`/`modelInputModalityFromValue` also fall back, so a
+  new backend value never crashes an older client.
 - **Use `http.Client.send()` with a `http.Request`, not `client.post()`.** `post()` buffers
   the whole body into a `Response`; SSE needs the `StreamedResponse` from `send()`.
 - **`Client.send()` only streams on real IO clients.** Fine on desktop/mobile; on web the

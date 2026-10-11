@@ -194,9 +194,83 @@ class ChatApi {
     );
   }
 
+  /// `GET /v1/models` — the configured models with capabilities and live health.
+  ///
+  /// Never includes secrets. The default model is the entry flagged `isDefault`.
+  Future<List<ChatModel>> fetchModels() async {
+    final response = await _client.get(
+      _uri('/v1/models'),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    return (body['models'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(ChatModel.fromJson)
+        .toList(growable: false);
+  }
+
+  /// `POST /v1/models/check` — re-probes every health-checked model.
+  Future<void> checkModels() async {
+    final response = await _client.post(
+      _uri('/v1/models/check'),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+  }
+
+  /// `POST /v1/models/{slug}/check` — re-probes one model.
+  ///
+  /// [slug] may contain `/` (e.g. `vendor/model`); the backend's catch-all route
+  /// handles the extra segments.
+  Future<void> checkModel(String slug) async {
+    final response = await _client.post(
+      _uri('/v1/models/$slug/check'),
+      headers: _authHeaders,
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+  }
+
+  /// `PUT /v1/conversations/{id}/model` — sets the conversation's model.
+  Future<Conversation> setConversationModel(String id, String slug) async {
+    final response = await _client.put(
+      _uri('/v1/conversations/$id/model'),
+      headers: {..._authHeaders, 'Content-Type': 'application/json'},
+      body: jsonEncode({'model': slug}),
+    );
+
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    return Conversation.fromJson(
+      (body['conversation'] as Map).cast<String, dynamic>(),
+    );
+  }
+
   /// `POST /v1/conversations` — creates a conversation and streams the reply.
-  Stream<ChatStreamEvent> createConversation(String initialMessage) => _stream(
-    _postSse('/v1/conversations/', {'initialMessage': initialMessage}),
+  ///
+  /// [model] selects the model for the new conversation; omit it to let the
+  /// backend use its default.
+  Stream<ChatStreamEvent> createConversation(
+    String initialMessage, {
+    String? model,
+  }) => _stream(
+    _postSse('/v1/conversations/', {
+      'initialMessage': initialMessage,
+      'model': ?model,
+    }),
   );
 
   /// `POST /v1/conversations/{id}/messages` — streams the assistant's reply.
