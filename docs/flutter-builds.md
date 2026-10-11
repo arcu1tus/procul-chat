@@ -335,3 +335,11 @@ const apiBaseUrl = String.fromEnvironment('PROCUL_API_BASE', defaultValue: 'http
 So `--dart-define` is needed on **every** platform's build/run command, and changing the backend
 URL requires a rebuild (it is not a runtime setting). Once the app is running, the user can still
 point it at a different backend from the Connect screen by adding a server profile.
+
+## Related pages
+
+- **[`vps-deploy.md`](vps-deploy.md)** — building the Android APK on a Linux VPS, alongside the
+  backend it talks to.
+- **[`docker-compose.md`](docker-compose.md)** — run the backend the client connects to.
+- **[`configuration.md`](configuration.md)** — every `config.jsonc` field (including the CORS
+  origins a web build needs).
