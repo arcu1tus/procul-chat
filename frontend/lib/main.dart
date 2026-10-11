@@ -3,53 +3,43 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 
 import 'src/app_theme.dart';
+import 'src/auth_controller.dart';
 import 'src/chat_api.dart';
 import 'src/chat_controller.dart';
+import 'src/connect_screen.dart';
 import 'src/home_shell.dart';
 import 'src/settings_controller.dart';
-
-/// Backend base URL. Override at build/run time with, e.g.:
-/// `flutter run -d linux --dart-define=PROCUL_API_BASE=http://localhost:5010`
-const apiBaseUrl = String.fromEnvironment(
-  'PROCUL_API_BASE',
-  defaultValue: 'http://localhost:5010',
-);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Preload the stored theme and the web fonts *before* the first frame so the
-  // app never flashes the default theme or a fallback face.
+  // Preload the stored theme, the saved server session and the web fonts
+  // *before* the first frame so the app never flashes the wrong theme, the
+  // Connect screen when already signed in, or a fallback face.
   final settings = SettingsController();
+  final auth = AuthController();
   await settings.init();
+  await auth.init();
   await GoogleFonts.pendingFonts([interTextStyle, GoogleFonts.coiny()]);
 
-  runApp(ProculChatApp(settings: settings));
+  runApp(ProculChatApp(settings: settings, auth: auth));
 }
 
 class ProculChatApp extends StatefulWidget {
-  const ProculChatApp({super.key, required this.settings});
+  const ProculChatApp({super.key, required this.settings, required this.auth});
 
   final SettingsController settings;
+  final AuthController auth;
 
   @override
   State<ProculChatApp> createState() => _ProculChatAppState();
 }
 
 class _ProculChatAppState extends State<ProculChatApp> {
-  late final ChatController _chat;
-
-  @override
-  void initState() {
-    super.initState();
-    _chat = ChatController(api: ChatApi(baseUrl: apiBaseUrl));
-    _chat.init();
-  }
-
   @override
   void dispose() {
-    _chat.dispose();
     widget.settings.dispose();
+    widget.auth.dispose();
     super.dispose();
   }
 
@@ -66,9 +56,70 @@ class _ProculChatAppState extends State<ProculChatApp> {
           themeMode: widget.settings.themeMode,
           builder: (context, child) =>
               ShadcnMaterialBridge(child: child ?? const SizedBox.shrink()),
-          home: HomeShell(chat: _chat, settings: widget.settings),
+          home: ListenableBuilder(
+            listenable: widget.auth,
+            builder: (context, _) {
+              final session = widget.auth.active;
+              if (session == null) {
+                return ConnectScreen(auth: widget.auth);
+              }
+              return AuthenticatedShell(
+                // Keyed by profile id so switching servers rebuilds the whole
+                // shell (and a fresh ChatController) instead of leaking state.
+                key: ValueKey(session.profile.id),
+                auth: widget.auth,
+                settings: widget.settings,
+              );
+            },
+          ),
         );
       },
     );
+  }
+}
+
+/// Owns the [ChatController] for one authenticated server profile.
+class AuthenticatedShell extends StatefulWidget {
+  const AuthenticatedShell({
+    super.key,
+    required this.auth,
+    required this.settings,
+  });
+
+  final AuthController auth;
+  final SettingsController settings;
+
+  @override
+  State<AuthenticatedShell> createState() => _AuthenticatedShellState();
+}
+
+class _AuthenticatedShellState extends State<AuthenticatedShell> {
+  late final ChatController _chat;
+
+  @override
+  void initState() {
+    super.initState();
+    final session = widget.auth.active!;
+    _chat = ChatController(
+      api: ChatApi(
+        baseUrl: session.baseUrl,
+        token: session.token,
+        // An expired / rejected token bounces the app back to the Connect
+        // screen instead of leaving the user with silent failures.
+        onUnauthorized: widget.auth.logout,
+      ),
+    );
+    _chat.init();
+  }
+
+  @override
+  void dispose() {
+    _chat.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return HomeShell(chat: _chat, settings: widget.settings, auth: widget.auth);
   }
 }

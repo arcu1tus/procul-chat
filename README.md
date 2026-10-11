@@ -38,7 +38,8 @@ Procul is a small ChatGPT-style chat application:
   **tools** (current time, and a sandboxed Python interpreter).
 - A **Flutter client** (Linux desktop, web, and mobile) with multiple conversations
   (list / switch / rename / delete), streaming replies, tool-activity display, Markdown
-  rendering, and a persisted light/dark theme.
+  rendering, a persisted light/dark theme, and **multiple saved server profiles** behind a
+  shared-password sign-in.
 
 The model is reached through [`Microsoft.Extensions.AI`](https://learn.microsoft.com/dotnet/ai/microsoft-extensions-ai)
 against [OpenRouter](https://openrouter.ai/).
@@ -53,6 +54,9 @@ against [OpenRouter](https://openrouter.ai/).
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
   motion.
+- **Password-protected API** with expiring HS256 session tokens stored in the device's secure
+  storage, plus a public `/health` probe.
+- **Multiple server profiles** the client can add, switch between, and remove.
 - **Versioned API** (`/v1/conversations`) built for additive evolution.
 - **Containerized backend** published to GitHub Container Registry on version tags.
 
@@ -64,6 +68,7 @@ against [OpenRouter](https://openrouter.ai/).
 │   ├── src/Procul.Api/       # the API project
 │   │   ├── Chat/             # endpoints, streaming service, tools, DTOs, entities
 │   │   ├── Cors/             # browser CORS policy
+│   │   ├── Security/         # shared-password auth: verifier, session JWTs, endpoints
 │   │   ├── Infrastructure/   # EF Core DbContext
 │   │   ├── Migrations/       # EF Core migrations
 │   │   ├── Versioning/       # API versioning
@@ -89,7 +94,7 @@ architecture, conventions, and hard-won gotchas. Those are the best place to sta
 | -------- | ---------- |
 | Backend  | .NET 10, ASP.NET Core minimal APIs, EF Core 10 + Npgsql, `Microsoft.Extensions.AI`, `Asp.Versioning`, `Lokad.Lython` |
 | Database | PostgreSQL |
-| Frontend | Flutter (Dart 3), `shadcn_flutter`, `gpt_markdown`, `google_fonts`, `package:http` |
+| Frontend | Flutter (Dart 3), `shadcn_flutter`, `gpt_markdown`, `google_fonts`, `package:http`, `flutter_secure_storage` |
 | Model    | OpenRouter (any model slug you configure) |
 | CI/CD    | GitHub Actions, Docker Buildx, GitHub Container Registry |
 
@@ -143,6 +148,11 @@ The base URL defaults to `http://localhost:5010` and can be overridden at build 
 flutter run -d linux --dart-define=PROCUL_API_BASE=http://localhost:5010
 ```
 
+On first launch the app shows a **Connect** screen: enter the server URL (pre-filled from
+`PROCUL_API_BASE`) and the backend's `PROCUL_API_PASSWORD`. The session token is stored in the
+device's secure storage, and Settings lets you add, switch between, and remove **multiple
+server profiles** or log out.
+
 ## Configuration
 
 The backend reads its configuration from environment variables (and the git-ignored
@@ -153,6 +163,8 @@ The backend reads its configuration from environment variables (and the git-igno
 | `ConnectionStrings__ChatContext` | PostgreSQL connection string |
 | `OPENROUTER_API_KEY` | OpenRouter API key (**required**) |
 | `OPENROUTER_MODEL_SLUG` | Model slug to use, e.g. `nvidia/nemotron-3-ultra-550b-a55b:free` (**required**) |
+| `PROCUL_API_PASSWORD` | Shared password protecting the API (**required**) |
+| `PROCUL_SESSION_LIFETIME` | Session-token lifetime, e.g. `12h` (default `30d`) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API |
 
 `.env.example` documents the shape. **No secrets are committed to this repository**, and
@@ -212,6 +224,7 @@ docker run --rm -p 8080:8080 \
   -e OPENROUTER_MODEL_SLUG=nvidia/nemotron-3-ultra-550b-a55b:free \
   -e ConnectionStrings__ChatContext="Host=...;Port=5432;Database=procul;Username=...;Password=..." \
   -e CORS_ALLOWED_ORIGINS=https://app.example.com \
+  -e PROCUL_API_PASSWORD=a-strong-shared-password \
   procul-api
 ```
 

@@ -22,7 +22,8 @@ public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>
             .UseEnvironment("Production")
             .UseSetting("CORS_ALLOWED_ORIGINS", "https://app.example.com")
             .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model"));
+            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
+            .UseSetting("PROCUL_API_PASSWORD", "test-password"));
         using var client = factory.CreateClient();
 
         using var response = await PreflightAsync(client, "https://app.example.com");
@@ -40,7 +41,8 @@ public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>
             .UseEnvironment("Production")
             .UseSetting("CORS_ALLOWED_ORIGINS", "https://app.example.com")
             .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model"));
+            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
+            .UseSetting("PROCUL_API_PASSWORD", "test-password"));
         using var client = factory.CreateClient();
 
         using var response = await PreflightAsync(client, "https://evil.example.com");
@@ -55,7 +57,8 @@ public class CorsPipelineTests : IClassFixture<WebApplicationFactory<Program>>
         using var factory = _factory.WithWebHostBuilder(builder => builder
             .UseEnvironment("Development")
             .UseSetting("OPENROUTER_API_KEY", "test")
-            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model"));
+            .UseSetting("OPENROUTER_MODEL_SLUG", "test/model")
+            .UseSetting("PROCUL_API_PASSWORD", "test-password"));
         using var client = factory.CreateClient();
 
         using var response = await PreflightAsync(client, "http://localhost:12345");

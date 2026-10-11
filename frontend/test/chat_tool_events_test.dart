@@ -28,7 +28,11 @@ void main() {
         headers: {'content-type': 'text/event-stream'},
       );
     });
-    final api = ChatApi(baseUrl: 'http://test', client: client);
+    final api = ChatApi(
+      baseUrl: 'http://test',
+      token: 'test-token',
+      client: client,
+    );
     final controller = ChatController(api: api, store: FakeConversationStore());
 
     await controller.send('what time is it?');
