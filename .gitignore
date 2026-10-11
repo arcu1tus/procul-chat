@@ -1,0 +1,16 @@
+# .NET build output
+bin/
+obj/
+net10.0/
+
+# Local secrets and environment overrides — never commit these.
+# (.env holds OPENROUTER_API_KEY and the Postgres connection string.)
+.env
+.env.*
+!.env*.example
+
+# IDE / editor noise
+.vs/
+.idea/
+.vscode/
+*.user

@@ -16,7 +16,7 @@ builder.Services.AddProculChat(builder.Configuration);
 
 var app = builder.Build();
 
-app.UseCors(CorsExtensions.PolicyName);
+app.UseProculCors();
 
 if (app.Environment.IsDevelopment())
 {
@@ -29,3 +29,11 @@ var v1 = chat.MapGroup("/v{version:apiVersion}/conversations").HasApiVersion(1.0
 v1.MapChatV1();
 
 await app.RunAsync();
+
+/// <summary>
+/// Exposed so the integration test project can boot the real application via
+/// <c>WebApplicationFactory&lt;Program&gt;</c>.
+/// </summary>
+public partial class Program
+{
+}

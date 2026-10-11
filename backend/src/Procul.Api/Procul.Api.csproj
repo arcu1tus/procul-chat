@@ -20,5 +20,10 @@
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.10.1" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
-  
+
+  <ItemGroup>
+    <!-- Expose internal types (endpoints, stream service, tools) to the test project. -->
+    <InternalsVisibleTo Include="Procul.Api.Tests" />
+  </ItemGroup>
+
 </Project>
