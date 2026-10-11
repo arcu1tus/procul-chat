@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Procul.Api.Chat.Tools;
@@ -13,8 +14,71 @@ namespace Procul.Api.Chat.V1;
 /// assistant's reply from the chat model, persists that reply, and emits the events both
 /// the "create conversation" and "send message" endpoints stream to the client.
 /// </summary>
-internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatClient)
+internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatClient, ILogger<ChatStreamServiceV1> logger)
 {
+    /// <summary>Upper bound on the generated title length (characters).</summary>
+    public const int MaxTitleLength = 60;
+
+    /// <summary>Upper bound on the fallback title derived from the first message.</summary>
+    private const int FallbackTitleLength = 50;
+
+    /// <summary>How long we are willing to wait for the title model call.</summary>
+    private static readonly TimeSpan TitleTimeout = TimeSpan.FromSeconds(8);
+
+    /// <summary>
+    /// System prompt for the title model. Kept tiny: the call is capped at
+    /// <see cref="TitleOptions"/> tokens and only ever sees the first user message.
+    /// Written as strict, example-driven instructions because the title call may run on a
+    /// small or reasoning-heavy model that otherwise restates the task.
+    /// </summary>
+    private const string TitleSystemPrompt = """
+        You write short titles for chat conversations. Given the first message of a
+        chat, output a title of at most 5 words. Output the title text only.
+
+        Rules:
+        - No quotes, no leading "Title:", no trailing punctuation.
+        - Never explain, never repeat these instructions, never describe the message.
+        - Use the same language as the message.
+
+        Examples:
+        What is the capital of France? -> France's capital
+        Help me debug this Python error -> Debugging a Python error
+        """;
+
+    private static ChatOptions TitleOptions => new()
+    {
+        // The configured model is a reasoning model that spends tokens thinking before it
+        // emits the title, so the cap must leave room for that. It is still a hard bound:
+        // the call can never produce more than this many output tokens, and the prompt is
+        // just the system instruction plus the first user message.
+        MaxOutputTokens = 300,
+        Temperature = 0.2f,
+    };
+
+    /// <summary>Upper bound on the number of words a generated title may contain.</summary>
+    private const int MaxTitleWords = 8;
+
+    /// <summary>
+    /// Phrases that betray a model that ignored the "title only" instruction. A title
+    /// containing any of these is rejected and the fallback is used instead.
+    /// </summary>
+    private static readonly string[] TitleMetaPhrases =
+    [
+        "the user is",
+        "user is asking",
+        "user wants",
+        "user asked",
+        "asking for a",
+        "conversation about",
+        "chat about",
+        "title for",
+        "here is a title",
+        "here's a title",
+        "i cannot",
+        "i can't",
+        "as an ai",
+    ];
+
     public async IAsyncEnumerable<ChatStreamEventV1> StreamAssistantReplyAsync(
         Guid conversationId,
         string userText,
@@ -45,6 +109,12 @@ internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatCl
 
         db.ConversationMessages.Add(userMessage);
         await db.SaveChangesAsync(ct);
+
+        // Bump the conversation's activity timestamp so it floats to the top of the list.
+        var now = DateTimeOffset.UtcNow;
+        await db.Conversations
+            .Where(c => c.Id == conversationId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.UpdatedAt, now), ct);
 
         history.Add(new ConversationMessageV1(
             Id: userMessage.Id,
@@ -100,6 +170,114 @@ internal sealed class ChatStreamServiceV1(ProculDbContext db, IChatClient chatCl
         await db.SaveChangesAsync(ct);
 
         yield return new ChatStreamEventV1.Done(new());
+    }
+
+    /// <summary>
+    /// Asks the model for a short title for a brand-new conversation. Purely a model call:
+    /// it does not touch the <see cref="ProculDbContext"/>, so it can safely run
+    /// concurrently with <see cref="StreamAssistantReplyAsync"/> on the same request.
+    /// Returns null when the call fails or times out (the caller falls back).
+    /// </summary>
+    public async Task<string?> GenerateTitleAsync(string initialMessage, CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TitleTimeout);
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, TitleSystemPrompt),
+                new(ChatRole.User, $"First message: {initialMessage}\n\nTitle:"),
+            };
+
+            var response = await chatClient.GetResponseAsync(messages, TitleOptions, timeoutCts.Token);
+            logger.LogDebug("Title model output: {RawTitle}", Truncate(response.Text, 600));
+            var title = SanitizeTitle(response.Text);
+            if (title is null)
+            {
+                logger.LogWarning("Title generation produced unusable output: {RawTitle}", Truncate(response.Text, 200));
+            }
+
+            return title;
+        }
+        catch (Exception ex)
+        {
+            // A failed title is never fatal: the caller uses FallbackTitle instead.
+            logger.LogWarning(ex, "Title generation failed; falling back to the first message.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A reasonable title when the model call is unavailable: the first line of the
+    /// user's message, truncated.
+    /// </summary>
+    public static string FallbackTitle(string initialMessage)
+    {
+        var text = initialMessage.Trim();
+        var newline = text.IndexOf('\n');
+        if (newline >= 0)
+        {
+            text = text[..newline].Trim();
+        }
+
+        if (text.Length > FallbackTitleLength)
+        {
+            text = text[..FallbackTitleLength].TrimEnd() + "…";
+        }
+
+        return string.IsNullOrWhiteSpace(text) ? "New Conversation" : text;
+    }
+
+    private static string Truncate(string? value, int max) =>
+        string.IsNullOrEmpty(value) ? string.Empty : value.Length <= max ? value : value[..max];
+
+    /// <summary>Normalizes raw model output into a single tidy line, or null if unusable.</summary>
+    private static string? SanitizeTitle(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var title = raw.Trim();
+
+        // Keep only the first line; models occasionally add a trailing explanation.
+        var newline = title.IndexOfAny(['\n', '\r']);
+        if (newline >= 0)
+        {
+            title = title[..newline];
+        }
+
+        title = title.Trim().Trim('"', '\'', '\u201C', '\u201D', '\u2018', '\u2019');
+
+        // Strip a leading "Title:" the model may have echoed.
+        title = Regex.Replace(title, @"^\s*title\s*[:\-]\s*", "", RegexOptions.IgnoreCase);
+
+        title = Regex.Replace(title, @"\s+", " ").Trim();
+
+        // Reject explanations / instruction restatements that slipped through.
+        var lowered = title.ToLowerInvariant();
+        if (TitleMetaPhrases.Any(lowered.Contains))
+        {
+            return null;
+        }
+
+        // A real title is a handful of words; anything longer is a failed generation.
+        if (title.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > MaxTitleWords)
+        {
+            return null;
+        }
+
+        if (title.Length > MaxTitleLength)
+        {
+            title = title[..MaxTitleLength].TrimEnd();
+        }
+
+        title = title.TrimEnd('.', ':', ';', ',', '!', '?', ' ');
+
+        return string.IsNullOrWhiteSpace(title) ? null : title;
     }
 
     private static async IAsyncEnumerable<ChatStreamEventV1> StreamTokens(
