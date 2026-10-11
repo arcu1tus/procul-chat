@@ -1,0 +1,2 @@
+- remember to start a new branch at the start of each implementation
+- remember to commit and **ASK** if should push
