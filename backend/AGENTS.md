@@ -71,11 +71,12 @@ dotnet run                          # listens on http://localhost:5010 (launchSe
 ```
 
 - Dev Postgres container: `procul_postgres_dev` (db/user/pass = `procul`/`postgres`/`postgres`).
-- Migrations are **not** applied automatically by default; run `dotnet ef database update` or
-  the DB must already be migrated. Check with
-  `docker exec procul_postgres_dev psql -U postgres -d procul -c '\dt'`. Setting
-  `PROCUL_AUTO_MIGRATE=true` makes the app apply pending migrations at startup instead (see
-  Configuration).
+- Migrations are applied automatically at startup: `Program.cs` calls
+  `DbContextExtensions.ApplyProculMigrationsAsync`, which runs `Database.MigrateAsync()` —
+  creating the database if needed and applying any pending migrations (idempotent). It is
+  skipped only when `ConnectionStrings:ChatContext` is unset, so the integration tests still
+  boot with no database. Check with
+  `docker exec procul_postgres_dev psql -U postgres -d procul -c '\dt'`.
 - OpenAPI (dev only): `GET /openapi/v1.json`.
 
 ## Configuration
@@ -90,14 +91,9 @@ Loaded by `DotNetEnv.Env.Load()` at startup from `src/Procul.Api/.env` (gitignor
   impractical). In every other environment the policy allows **no** cross-origin request until
   this is set — there is no wildcard in production. A `*` or a malformed value makes startup
   fail fast. The API is unauthenticated and cookie-less, so no credentials travel.
-- `PROCUL_AUTO_MIGRATE` — when `true`, `Program.cs` calls
-  `DbContextExtensions.ApplyProculMigrationsAsync`, which resolves a scope and runs
-  `Database.MigrateAsync()` before the app serves traffic. **Off by default**: the app
-  connects to Postgres lazily, and the integration tests boot it with no database. The
-  migration classes are compiled into the assembly and EF's relational runtime ships with
-  Npgsql, so this works in the runtime-only container — `dotnet ef`/the SDK are not needed at
-  runtime. Intended for single-instance deployments; concurrent replicas migrating at once can
-  race.
+
+The app manages its own schema: on startup it applies pending EF Core migrations (see
+Build / run / test). There is no flag for this — it happens whenever a database is configured.
 
 `.env.example` documents the shape. **Do not commit `.env`.** Treat any key in it as live.
 

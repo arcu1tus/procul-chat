@@ -18,15 +18,15 @@ public static class DbContextExtensions
     }
 
     /// <summary>
-    /// Applies any pending EF Core migrations at startup when <c>PROCUL_AUTO_MIGRATE</c>
-    /// is enabled. Off by default: the integration tests boot the app without a database,
-    /// and the app otherwise connects to Postgres lazily. Intended for single-instance
-    /// deployments (e.g. a personal Docker Compose stack); running several replicas that
-    /// each migrate concurrently can race.
+    /// Ensures the database exists and is up to date by applying any pending EF Core
+    /// migrations at startup. Runs on every start (it is idempotent) so the container
+    /// manages its own Postgres schema. The only reason to skip is a missing
+    /// <c>ConnectionStrings:ChatContext</c> — the integration tests boot the app without a
+    /// database, and the app otherwise connects to Postgres lazily.
     /// </summary>
     public static async Task ApplyProculMigrationsAsync(this WebApplication app)
     {
-        if (!app.Configuration.GetValue<bool>("PROCUL_AUTO_MIGRATE"))
+        if (string.IsNullOrWhiteSpace(app.Configuration.GetConnectionString("ChatContext")))
         {
             return;
         }
