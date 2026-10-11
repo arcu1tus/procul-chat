@@ -23,9 +23,11 @@ message history. Persistence is PostgreSQL via EF Core; the LLM is called throug
 
 ```
 backend/
-  Procul.slnx                      # solution (references src/Procul.Api/Procul.Api.csproj)
+  Procul.slnx                      # solution (references src/Procul.Api + tests/Procul.Api.Tests)
+  .dockerignore                    # build-context excludes for the image (context root is backend/)
   src/Procul.Api/
     Program.cs                     # host + route wiring (DI lives in the extension files below)
+    Dockerfile                     # multi-stage container build (build context: backend/)
     Chat/
       ChatServiceCollectionExtensions.cs  # AddProculChat: IChatClient + ChatStreamServiceV1
       Conversation.cs              # entity
@@ -43,12 +45,13 @@ backend/
     Infrastructure/
       DbContext.cs                 # ProculDbContext + model config
       DbContextExtensions.cs       # AddProculDbContext
-    Cors/CorsExtensions.cs         # AddProculCors (browser/web origin policy)
+    Cors/CorsExtensions.cs         # AddProculCors/UseProculCors (browser/web origin policy)
     Versioning/                    # ApiVersions + AddProculApiVersioning
     Migrations/                    # EF Core migrations
     docker/docker-compose.yaml     # dev-only Postgres
     justfile                       # dev-compose-* / run-dev helpers
     Procul.Api.http                # manual request examples
+  tests/Procul.Api.Tests/          # xUnit unit + integration tests (no DB/network needed)
 ```
 
 Note the project file is `Procul.Api.csproj`; the assembly/namespace root is `Procul.Api`.
@@ -58,6 +61,7 @@ Note the project file is `Procul.Api.csproj`; the assembly/namespace root is `Pr
 ```bash
 cd backend
 dotnet build Procul.slnx            # builds the whole solution
+dotnet test  Procul.slnx            # unit + integration tests (no DB or network required)
 
 cd src/Procul.Api
 just run-dev                        # docker compose up (Postgres) + dotnet run
@@ -78,13 +82,39 @@ Loaded by `DotNetEnv.Env.Load()` at startup from `src/Procul.Api/.env` (gitignor
 
 - `ConnectionStrings__ChatContext` — Postgres connection string.
 - `OPENROUTER_API_KEY`, `OPENROUTER_MODEL_SLUG` — read once at startup; app throws if missing.
-- `CORS_ALLOWED_ORIGINS` — optional, comma-separated browser origins allowed to call the API.
-  When unset, development allows **any** origin (the Flutter web dev server uses an ephemeral
-  `localhost` port, so pinning an origin is impractical); other environments deny cross-origin
-  requests unless this is set. The API is unauthenticated and cookie-less, so no credentials
-  travel and a wildcard origin is acceptable in dev.
+- `CORS_ALLOWED_ORIGINS` — comma-separated browser origins allowed to call the API
+  (e.g. `https://app.example.com`). In **development** only, when unset, any origin is allowed
+  (the Flutter web dev server uses an ephemeral `localhost` port, so pinning an origin is
+  impractical). In every other environment the policy allows **no** cross-origin request until
+  this is set — there is no wildcard in production. A `*` or a malformed value makes startup
+  fail fast. The API is unauthenticated and cookie-less, so no credentials travel.
 
 `.env.example` documents the shape. **Do not commit `.env`.** Treat any key in it as live.
+
+## Container image & CI
+
+The backend ships as a container image (`src/Procul.Api/Dockerfile`, **build context is
+`backend/`** so the restore/publish paths are `src/Procul.Api/...`):
+
+```bash
+docker build -f backend/src/Procul.Api/Dockerfile -t procul-api backend
+docker run --rm -p 8080:8080 \
+  -e OPENROUTER_API_KEY=... -e OPENROUTER_MODEL_SLUG=... \
+  -e ConnectionStrings__ChatContext="..." -e CORS_ALLOWED_ORIGINS=https://app.example.com \
+  procul-api
+```
+
+- Multi-stage: .NET 10 **SDK** builds/publishes; the final stage is the **ASP.NET Core
+  runtime** only, running as the non-root `app` user on port `8080` (`ASPNETCORE_URLS`).
+- **Caching:** the `.csproj` is copied alone before `dotnet restore`, so the restore layer is
+  reused until dependencies change; NuGet packages live in a BuildKit
+  `--mount=type=cache,target=/root/.nuget/packages` mount, and the workflow exports the Docker
+  layer cache with `cache-from/to: type=gha`.
+- `backend/.dockerignore` (context root) keeps `bin/`, `obj/`, and — importantly — `.env` out
+  of the build context. The image is environment-agnostic; config is injected at run time.
+- GitHub Actions: `.github/workflows/ci.yml` builds/tests on pushes to `main` and PRs;
+  `.github/workflows/publish-backend-image.yml` tests and pushes
+  `ghcr.io/<owner>/<repo>/backend-api` on `v*` tags (via `GITHUB_TOKEN`, `packages: write`).
 
 ## API surface (v1)
 
@@ -191,8 +221,22 @@ final assistant text.
   `toolResult` SSE events. A tool result is boxed as a `JsonElement`, so `FormatResult`
   unwraps string values (otherwise they arrive JSON-quoted with escaped `+`).
 - **Browser clients need CORS; native ones do not.** `Cors/CorsExtensions.cs` registers the
-  `ProculCors` policy and `Program.cs` calls `app.UseCors(...)` before the endpoints. Without
+  `ProculCors` policy and `Program.cs` calls `app.UseProculCors()` before the endpoints. Without
   it, `flutter run -d chrome` fails its preflight before a request ever reaches a handler.
   `application/json` bodies trigger a preflight, so `AllowAnyHeader()`/`AllowAnyMethod()` are
   required for the POST/PATCH/DELETE verbs. The policy must stay registered through the
-  `CreateSlimBuilder` path (it does not add CORS implicitly).
+  `CreateSlimBuilder` path (it does not add CORS implicitly). `UseProculCors` also logs the
+  resolved origins and warns when production has none configured.
+- **CORS origins are validated and fail fast.** `CorsExtensions.ParseOrigins` rejects `*`,
+  non-absolute values, and origins with a path, then normalizes the trailing slash. It runs both
+  at registration and at `UseProculCors()`, so a bad `CORS_ALLOWED_ORIGINS` crashes startup
+  rather than silently blocking (or, worse, over-allowing) clients.
+- **The test project pins EF Core.** `Microsoft.EntityFrameworkCore.Design` is
+  `PrivateAssets=all` on the API, so it does not flow to `Procul.Api.Tests`, while Npgsql pulls
+  an older EF Core. The test project references `Microsoft.EntityFrameworkCore.Relational`
+  10.0.12 directly to keep its compile-time view in sync with the API assembly (otherwise
+  `CS1705`).
+- **Tests reach internals via `InternalsVisibleTo`.** `Procul.Api.csproj` exposes internals to
+  `Procul.Api.Tests`, and `Program.cs` ends with a `public partial class Program` so the
+  integration tests can boot the real app with `WebApplicationFactory<Program>`. CORS preflight
+  tests need no database; keep it that way (the app connects to Postgres lazily).

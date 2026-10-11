@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel a superseded run when a new commit lands on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '10.0.x'
+
+jobs:
+  backend:
+    name: Build & test backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+          cache-dependency-path: backend/**/*.csproj
+
+      - name: Restore
+        run: dotnet restore backend/Procul.slnx
+
+      - name: Build
+        run: dotnet build backend/Procul.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test backend/Procul.slnx --configuration Release --no-build --verbosity normal

@@ -80,6 +80,14 @@ Base URL defaults to `http://localhost:5010`; override without editing code:
 flutter run -d linux --dart-define=PROCUL_API_BASE=http://localhost:5010
 ```
 
+For **release builds** the API base URL must be the deployed backend's public origin (there is
+no default that works in production), and the backend must allow that client's origin via its
+`CORS_ALLOWED_ORIGINS` setting:
+
+```bash
+flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.com
+```
+
 ## Backend contract (v1) as consumed here
 
 Base: `{PROCUL_API_BASE}/v1/conversations`.
@@ -211,7 +219,9 @@ reaches the buffer.
   sends requests from the Flutter web dev-server origin to the backend's origin, so the
   browser enforces CORS; the backend must approve the origin. It now does: in development the
   `ProculCors` policy allows any origin (the web dev-server port is ephemeral), and it can be
-  pinned via the backend's `CORS_ALLOWED_ORIGINS` setting. If Chrome still fails before
+  pinned via the backend's `CORS_ALLOWED_ORIGINS` setting. In **production there is no
+  wildcard** — a Flutter web build served from `https://app.example.com` only works if the
+  backend's `CORS_ALLOWED_ORIGINS` names that exact origin. If Chrome still fails before
   streaming, the running backend predates that policy — rebuild/restart it.
 - **Android: reach the backend with `adb reverse`, don't hardcode an IP.** The dev backend
   binds to `localhost:5010` only, so a phone can't reach it directly. Forward the port over

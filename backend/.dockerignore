@@ -1,0 +1,22 @@
+# Build output
+**/bin/
+**/obj/
+
+# Local secrets and per-environment overrides — never bake these into an image.
+# (.env holds OPENROUTER_API_KEY and the Postgres connection string.)
+**/.env
+**/.env.*
+!**/.env.example
+
+# Editor / VCS noise
+**/.vs/
+**/.idea/
+**/.vscode/
+
+# Not needed inside the image
+**/Dockerfile
+**/*.http
+**/docker/
+**/justfile
+**/AGENTS.md
+**/skills-lock.json
