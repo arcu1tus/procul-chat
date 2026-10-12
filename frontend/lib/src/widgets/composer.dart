@@ -1,0 +1,318 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
+import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
+import 'package:shadcn_flutter/shadcn_flutter.dart';
+
+import '../chat_controller.dart';
+import '../motion.dart';
+import 'attachment_views.dart';
+import 'icon_action.dart';
+import 'pressable.dart';
+
+/// The chat composer: one rounded capsule holding the attach button, the text
+/// field and the circular send button, with the edit banner and attachment chips
+/// living above it.
+///
+/// The capsule carries a subtle border and shadow; an accent focus ring animates
+/// in while the field is focused. Enter sends and Shift+Enter inserts a newline
+/// (desktop only — the hint is hidden on touch), and the accessible labels
+/// (`Send message` / `Attach file`) are preserved.
+class Composer extends StatelessWidget {
+  const Composer({
+    super.key,
+    required this.controller,
+    required this.focusNode,
+    required this.chat,
+    required this.onSubmit,
+    required this.onAttach,
+    required this.onCancelEdit,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final ChatController chat;
+  final VoidCallback onSubmit;
+  final ValueChanged<BuildContext> onAttach;
+  final VoidCallback onCancelEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+    final enabled = !chat.isStreaming;
+    final canAttach = enabled && !chat.isUploadingAttachment;
+    final pending = chat.pendingAttachments;
+    final isEditing = chat.isEditing;
+    // The Enter / Shift+Enter hint is meaningless without a hardware keyboard.
+    final isTouch =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _AnimatedSlot(
+              visible: isEditing,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      LucideIcons.squarePen,
+                      size: 14,
+                      color: colors.mutedForeground,
+                    ),
+                    const Gap(6),
+                    const Text('Editing message').muted.small,
+                    const Spacer(),
+                    IconAction(
+                      key: const Key('cancel-edit'),
+                      icon: LucideIcons.x,
+                      label: 'Cancel edit',
+                      size: 16,
+                      onPressed: onCancelEdit,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            _AnimatedSlot(
+              visible: pending.isNotEmpty || chat.isUploadingAttachment,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    for (final attachment in pending)
+                      AttachmentChip(
+                        attachment: attachment,
+                        chat: chat,
+                        thumbnail: true,
+                        onRemove: () =>
+                            chat.removePendingAttachment(attachment.id),
+                      ),
+                    if (chat.isUploadingAttachment) const UploadingChip(),
+                  ],
+                ),
+              ),
+            ),
+            _Capsule(
+              controller: controller,
+              focusNode: focusNode,
+              enabled: enabled,
+              canAttach: canAttach,
+              isEditing: isEditing,
+              onAttach: onAttach,
+              onSubmit: onSubmit,
+            ),
+            if (!isTouch) ...[
+              const Gap(6),
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Row(
+                  children: [
+                    const KeyboardDisplay(keys: [LogicalKeyboardKey.enter]),
+                    const Gap(6),
+                    const Text('send').muted.xSmall,
+                    const Gap(12),
+                    const KeyboardDisplay(
+                      keys: [
+                        LogicalKeyboardKey.shift,
+                        LogicalKeyboardKey.enter,
+                      ],
+                    ),
+                    const Gap(6),
+                    const Text('new line').muted.xSmall,
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Animates a child in and out of the layout (fade + slide + size), so the edit
+/// banner and the attachment strip appear and disappear smoothly.
+class _AnimatedSlot extends StatelessWidget {
+  const _AnimatedSlot({required this.visible, required this.child});
+
+  final bool visible;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSize(
+      duration: motionDuration(context, Motion.medium),
+      curve: Motion.curve,
+      alignment: Alignment.topCenter,
+      child: AnimatedSwitcher(
+        duration: motionDuration(context, Motion.medium),
+        switchInCurve: Motion.curve,
+        switchOutCurve: Motion.curve,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: SizeTransition(
+            sizeFactor: animation,
+            alignment: Alignment.topCenter,
+            child: child,
+          ),
+        ),
+        child: visible
+            ? KeyedSubtree(key: const ValueKey('shown'), child: child)
+            : const SizedBox.shrink(key: ValueKey('hidden')),
+      ),
+    );
+  }
+}
+
+/// The rounded input surface: attach · field · send.
+class _Capsule extends StatelessWidget {
+  const _Capsule({
+    required this.controller,
+    required this.focusNode,
+    required this.enabled,
+    required this.canAttach,
+    required this.isEditing,
+    required this.onAttach,
+    required this.onSubmit,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final bool enabled;
+  final bool canAttach;
+  final bool isEditing;
+  final ValueChanged<BuildContext> onAttach;
+  final VoidCallback onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+
+    return ListenableBuilder(
+      listenable: focusNode,
+      builder: (context, _) {
+        final focused = focusNode.hasFocus;
+        return AnimatedContainer(
+          duration: motionDuration(context, Motion.fast),
+          curve: Motion.curve,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          decoration: BoxDecoration(
+            color: colors.card,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: focused
+                  ? colors.ring.withValues(alpha: 0.7)
+                  : colors.border,
+              width: focused ? 1.5 : 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF000000).withValues(alpha: 0.08),
+                blurRadius: 12,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Builder(
+                builder: (context) => IconAction(
+                  icon: LucideIcons.paperclip,
+                  label: 'Attach file',
+                  onPressed: canAttach ? () => onAttach(context) : null,
+                ),
+              ),
+              const Gap(2),
+              Expanded(
+                child: CallbackShortcuts(
+                  // Enter sends; Shift+Enter is left to the field so it
+                  // inserts a newline.
+                  bindings: {
+                    const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
+                  },
+                  child: TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    minLines: 1,
+                    maxLines: 6,
+                    textInputAction: TextInputAction.send,
+                    filled: false,
+                    border: const Border(),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 8,
+                    ),
+                    placeholder: Text(
+                      isEditing ? 'Edit your message…' : 'Message Procul…',
+                    ),
+                    onSubmitted: (_) => onSubmit(),
+                  ),
+                ),
+              ),
+              const Gap(6),
+              _SendButton(
+                enabled: enabled,
+                isEditing: isEditing,
+                onSubmit: onSubmit,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The circular send button. Scales and fades between enabled and disabled.
+class _SendButton extends StatelessWidget {
+  const _SendButton({
+    required this.enabled,
+    required this.isEditing,
+    required this.onSubmit,
+  });
+
+  final bool enabled;
+  final bool isEditing;
+  final VoidCallback onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      tooltip: (context) =>
+          TooltipContainer(child: Text(isEditing ? 'Save changes' : 'Send')),
+      child: Semantics(
+        button: true,
+        label: isEditing ? 'Save changes' : 'Send message',
+        child: AnimatedScale(
+          scale: enabled ? 1 : 0.9,
+          duration: motionDuration(context, Motion.fast),
+          curve: Motion.curve,
+          child: AnimatedOpacity(
+            opacity: enabled ? 1 : 0.5,
+            duration: motionDuration(context, Motion.fast),
+            child: PressableScale(
+              enabled: enabled,
+              child: PrimaryButton(
+                shape: ButtonShape.circle,
+                density: ButtonDensity.icon,
+                onPressed: enabled ? onSubmit : null,
+                child: const Icon(LucideIcons.sendHorizontal),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

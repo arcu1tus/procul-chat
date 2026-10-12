@@ -6,30 +6,70 @@ import 'mcp_status.dart';
 import 'mcp_status_controller.dart';
 import 'server_form.dart';
 import 'settings_controller.dart';
+import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/skeleton.dart';
 
-/// Opens the settings dialog: appearance, server management, and tool servers.
-Future<void> showSettingsDialog(
-  BuildContext context,
-  SettingsController settings,
-  AuthController auth,
-  ChatApi api,
-) {
-  return showOverlay<void>(
-    context,
-    DialogConfiguration(),
-    builder: (context) {
-      return AlertDialog(
-        title: const Text('Settings'),
-        content: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 440),
-          child: ListenableBuilder(
-            listenable: Listenable.merge([settings, auth]),
-            builder: (context, _) => SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
+/// The Settings destination: appearance, server management, and tool servers.
+///
+/// A full pane with the same `Scaffold` + `AppBar` treatment as Usage and Models
+/// (a menu button on narrow screens), selected from the sidebar's tab row — not
+/// a popup. Add-server and the remove confirmation stay modal; they are the only
+/// settings flows that are genuinely modal.
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({
+    super.key,
+    required this.settings,
+    required this.auth,
+    required this.api,
+    this.showMenuButton = false,
+    this.onMenu,
+  });
+
+  final SettingsController settings;
+  final AuthController auth;
+  final ChatApi api;
+
+  /// Whether to show a leading button that opens the conversation drawer.
+  final bool showMenuButton;
+  final VoidCallback? onMenu;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([settings, auth]),
+      builder: (context, _) {
+        return Scaffold(
+          headers: [
+            AppBar(
+              title: const Text(
+                'Settings',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: const Text(
+                'Appearance, server, and tools',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ).muted.small,
+              leading: showMenuButton
+                  ? [
+                      IconAction(
+                        icon: LucideIcons.panelLeft,
+                        label: 'Open chats',
+                        onPressed: onMenu,
+                      ),
+                    ]
+                  : const [],
+            ),
+            const Divider(),
+          ],
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final side = centeredSidePadding(constraints.maxWidth);
+              return ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: EdgeInsets.fromLTRB(20 + side, 20, 20 + side, 28),
                 children: [
                   const Text('Appearance').semiBold(),
                   const Gap(2),
@@ -50,19 +90,13 @@ Future<void> showSettingsDialog(
                   const Gap(16),
                   _McpSection(api: api),
                 ],
-              ),
-            ),
+              );
+            },
           ),
-        ),
-        actions: [
-          PrimaryButton(
-            child: const Text('Done'),
-            onPressed: () => Navigator.pop(context),
-          ),
-        ],
-      );
-    },
-  ).future;
+        );
+      },
+    );
+  }
 }
 
 /// Server management: current server, switching, adding, removing and logging
@@ -129,10 +163,7 @@ class _ServerSection extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: OutlineButton(
                   alignment: Alignment.centerLeft,
-                  onPressed: () async {
-                    Navigator.pop(context);
-                    await auth.switchTo(profile.id);
-                  },
+                  onPressed: () => auth.switchTo(profile.id),
                   child: Row(
                     children: [
                       Icon(
@@ -193,10 +224,7 @@ class _ServerSection extends StatelessWidget {
           const Gap(8),
           OutlineButton(
             alignment: Alignment.centerLeft,
-            onPressed: () {
-              Navigator.pop(context);
-              auth.logout();
-            },
+            onPressed: auth.logout,
             child: const Row(
               children: [
                 Icon(LucideIcons.logOut, size: 15),

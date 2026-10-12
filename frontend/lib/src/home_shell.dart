@@ -9,7 +9,9 @@ import 'chat_screen.dart';
 import 'conversation_sidebar.dart';
 import 'model_catalog_controller.dart';
 import 'models_screen.dart';
+import 'motion.dart';
 import 'settings_controller.dart';
+import 'settings_screen.dart';
 import 'usage_screen.dart';
 
 /// The app's root layout: a persistent sidebar next to the chat on wide
@@ -53,12 +55,10 @@ class _HomeShellState extends State<HomeShell>
 
   bool _sidebarOpen = false;
 
-  /// Whether the main pane shows the usage dashboard instead of the chat. The
-  /// chat stays mounted underneath so its scroll position and buffer survive.
-  bool _showUsage = false;
-
-  /// Whether the main pane shows the model catalog. Same overlay treatment.
-  bool _showModels = false;
+  /// Which destination the main pane shows. The chat is always mounted
+  /// underneath, so its scroll position and buffer survive a switch to Usage,
+  /// Models or Settings.
+  SidebarSection _section = SidebarSection.chat;
 
   /// The shared model catalog for the app-bar picker and the Models screen.
   late final ModelCatalogController _catalog;
@@ -123,45 +123,102 @@ class _HomeShellState extends State<HomeShell>
     });
   }
 
-  void _openUsage() {
-    setState(() {
-      _showUsage = true;
-      _showModels = false;
-    });
+  void _openUsage() => _select(SidebarSection.usage);
+
+  void _openModels() => _select(SidebarSection.models);
+
+  void _openSettings() => _select(SidebarSection.settings);
+
+  void _openChat() => _select(SidebarSection.chat);
+
+  /// Switches the main pane's destination. The chat stays mounted; the selected
+  /// pane is overlaid on top.
+  void _select(SidebarSection section) {
+    if (section != SidebarSection.chat || _section != SidebarSection.chat) {
+      setState(() => _section = section);
+    }
     _closeSidebar();
   }
 
-  void _openModels() {
-    setState(() {
-      _showModels = true;
-      _showUsage = false;
-    });
-    _closeSidebar();
+  /// The main pane: the chat, always mounted, with the selected destination
+  /// (Usage / Models / Settings) cross-faded in on top.
+  ///
+  /// The transition is a shared-axis fade + slide driven by [Motion] tokens, so
+  /// switching destinations never snaps. The chat sits underneath so its scroll
+  /// position and buffer survive.
+  Widget _mainPane({required bool narrow}) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ChatScreen(
+            chat: widget.chat,
+            catalog: _catalog,
+            picker: widget.attachmentPicker,
+            showMenuButton: narrow,
+            compactModelPicker: narrow,
+            compactActions: narrow,
+            onMenu: narrow ? _openSidebar : null,
+          ),
+        ),
+        Positioned.fill(
+          child: AnimatedSwitcher(
+            duration: motionDuration(context, Motion.medium),
+            switchInCurve: Motion.emphasized,
+            switchOutCurve: Motion.emphasized,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0.03, 0),
+                  end: Offset.zero,
+                ).animate(animation),
+                child: child,
+              ),
+            ),
+            child: _sectionPane(narrow),
+          ),
+        ),
+      ],
+    );
   }
 
-  void _openChat() {
-    if (!_showUsage && !_showModels) return;
-    setState(() {
-      _showUsage = false;
-      _showModels = false;
-    });
+  Widget _sectionPane(bool narrow) {
+    final onMenu = narrow ? _openSidebar : null;
+    switch (_section) {
+      case SidebarSection.chat:
+        return const SizedBox.shrink(key: ValueKey('pane-chat'));
+      case SidebarSection.usage:
+        return UsageScreen(
+          key: const ValueKey('pane-usage'),
+          api: widget.chat.api,
+          showMenuButton: narrow,
+          onMenu: onMenu,
+        );
+      case SidebarSection.models:
+        return ModelsScreen(
+          key: const ValueKey('pane-models'),
+          catalog: _catalog,
+          showMenuButton: narrow,
+          onMenu: onMenu,
+        );
+      case SidebarSection.settings:
+        return SettingsScreen(
+          key: const ValueKey('pane-settings'),
+          settings: widget.settings,
+          auth: widget.auth,
+          api: widget.chat.api,
+          showMenuButton: narrow,
+          onMenu: onMenu,
+        );
+    }
   }
-
-  /// Which sidebar tab should read as selected.
-  SidebarSection get _section => _showUsage
-      ? SidebarSection.usage
-      : _showModels
-      ? SidebarSection.models
-      : SidebarSection.chat;
 
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
 
     // Respect the platform's reduced-motion preference for the panel slide.
-    _controller.duration =
-        MediaQuery.disableAnimationsOf(context) ||
-            MediaQuery.accessibleNavigationOf(context)
+    _controller.duration = reduceMotion(context)
         ? Duration.zero
         : HomeShell._slideDuration;
 
@@ -183,36 +240,15 @@ class _HomeShellState extends State<HomeShell>
                     width: HomeShell._sidebarWidth,
                     child: ConversationSidebar(
                       chat: widget.chat,
-                      settings: widget.settings,
-                      auth: widget.auth,
                       section: _section,
                       onOpenUsage: _openUsage,
                       onOpenModels: _openModels,
+                      onOpenSettings: _openSettings,
                       onOpenChat: _openChat,
                     ),
                   ),
                   Container(width: 1, color: colors.border),
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: ChatScreen(
-                            chat: widget.chat,
-                            catalog: _catalog,
-                            picker: widget.attachmentPicker,
-                          ),
-                        ),
-                        if (_showUsage)
-                          Positioned.fill(
-                            child: UsageScreen(api: widget.chat.api),
-                          ),
-                        if (_showModels)
-                          Positioned.fill(
-                            child: ModelsScreen(catalog: _catalog),
-                          ),
-                      ],
-                    ),
-                  ),
+                  Expanded(child: _mainPane(narrow: false)),
                 ],
               ),
             );
@@ -220,39 +256,7 @@ class _HomeShellState extends State<HomeShell>
 
           return Stack(
             children: [
-              Positioned.fill(
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: ChatScreen(
-                        chat: widget.chat,
-                        catalog: _catalog,
-                        picker: widget.attachmentPicker,
-                        showMenuButton: true,
-                        compactModelPicker: true,
-                        compactActions: true,
-                        onMenu: _openSidebar,
-                      ),
-                    ),
-                    if (_showUsage)
-                      Positioned.fill(
-                        child: UsageScreen(
-                          api: widget.chat.api,
-                          showMenuButton: true,
-                          onMenu: _openSidebar,
-                        ),
-                      ),
-                    if (_showModels)
-                      Positioned.fill(
-                        child: ModelsScreen(
-                          catalog: _catalog,
-                          showMenuButton: true,
-                          onMenu: _openSidebar,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+              Positioned.fill(child: _mainPane(narrow: true)),
               if (_sidebarOpen)
                 Positioned.fill(
                   child: AnimatedBuilder(
@@ -283,11 +287,10 @@ class _HomeShellState extends State<HomeShell>
                     ),
                     child: ConversationSidebar(
                       chat: widget.chat,
-                      settings: widget.settings,
-                      auth: widget.auth,
                       section: _section,
                       onOpenUsage: _openUsage,
                       onOpenModels: _openModels,
+                      onOpenSettings: _openSettings,
                       onOpenChat: _openChat,
                       onClose: _closeSidebar,
                     ),

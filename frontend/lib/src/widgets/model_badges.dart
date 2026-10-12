@@ -1,6 +1,7 @@
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import '../models.dart';
+import '../motion.dart';
 
 /// The label shown for an input modality (`Text`, `Image`, `File`, `Audio`,
 /// `Video`).
@@ -98,7 +99,12 @@ class CapabilityBadges extends StatelessWidget {
 }
 
 /// A small coloured dot reflecting a model's health, with a tooltip.
-class ModelHealthDot extends StatelessWidget {
+///
+/// A not-yet-observed model (`unknown`) pulses a few times, so a health check
+/// that is still settling reads as "working" rather than a flat grey dot. The
+/// pulse is a bounded animation (it stops on its own) and is skipped entirely
+/// under reduced motion.
+class ModelHealthDot extends StatefulWidget {
   const ModelHealthDot({super.key, required this.status, this.size = 8});
 
   final ModelHealthStatus status;
@@ -121,20 +127,63 @@ class ModelHealthDot extends StatelessWidget {
   };
 
   @override
+  State<ModelHealthDot> createState() => _ModelHealthDotState();
+}
+
+class _ModelHealthDotState extends State<ModelHealthDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: Motion.slow,
+  );
+  bool _pulsing = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final shouldPulse =
+        widget.status == ModelHealthStatus.unknown && !reduceMotion(context);
+    if (shouldPulse && !_pulsing) {
+      _pulsing = true;
+      // Bounded: the dot settles instead of animating forever (and tests settle).
+      _pulse.repeat(reverse: true, count: 4);
+    } else if (!shouldPulse && _pulsing) {
+      _pulsing = false;
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final label = labelFor(status);
+    final label = ModelHealthDot.labelFor(widget.status);
+    final dot = Container(
+      width: widget.size,
+      height: widget.size,
+      decoration: BoxDecoration(
+        color: ModelHealthDot.colorFor(context, widget.status),
+        shape: BoxShape.circle,
+      ),
+    );
+
     return Tooltip(
       tooltip: (context) => TooltipContainer(child: Text(label)),
       child: Semantics(
         label: 'Health: $label',
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            color: colorFor(context, status),
-            shape: BoxShape.circle,
-          ),
-        ),
+        child: _pulsing
+            ? AnimatedBuilder(
+                animation: _pulse,
+                builder: (context, child) =>
+                    Opacity(opacity: 0.35 + 0.65 * _pulse.value, child: child),
+                child: dot,
+              )
+            : dot,
       ),
     );
   }

@@ -1,19 +1,18 @@
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
-import 'auth_controller.dart';
 import 'chat_controller.dart';
 import 'conversation_actions.dart';
 import 'models.dart';
-import 'settings_controller.dart';
-import 'settings_dialog.dart';
+import 'motion.dart';
 import 'time_format.dart';
+import 'widgets/app_dialog.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/skeleton.dart';
 
-/// Which of the sidebar's overlay destinations is currently shown, so its tab
-/// reads as selected.
-enum SidebarSection { chat, usage, models }
+/// Which of the sidebar's destinations is currently shown in the main pane, so
+/// its tab reads as selected.
+enum SidebarSection { chat, usage, models, settings }
 
 /// The conversation list: brand header, a tab row (Usage / Models / Settings),
 /// "new chat", and the chats themselves. Shown persistently on wide screens and
@@ -22,20 +21,17 @@ class ConversationSidebar extends StatelessWidget {
   const ConversationSidebar({
     super.key,
     required this.chat,
-    required this.settings,
-    required this.auth,
     this.section = SidebarSection.chat,
     this.onClose,
     this.onOpenUsage,
     this.onOpenModels,
+    this.onOpenSettings,
     this.onOpenChat,
   });
 
   final ChatController chat;
-  final SettingsController settings;
-  final AuthController auth;
 
-  /// The overlay currently shown in the main pane, if any.
+  /// The destination currently shown in the main pane, if any.
   final SidebarSection section;
 
   /// Called after an action that should dismiss a drawer-hosted sidebar.
@@ -46,6 +42,9 @@ class ConversationSidebar extends StatelessWidget {
 
   /// Opens the model catalog in the main pane.
   final VoidCallback? onOpenModels;
+
+  /// Opens the settings pane in the main pane.
+  final VoidCallback? onOpenSettings;
 
   /// Returns the main pane to the active conversation.
   final VoidCallback? onOpenChat;
@@ -81,8 +80,7 @@ class ConversationSidebar extends StatelessWidget {
                   section: section,
                   onOpenUsage: onOpenUsage,
                   onOpenModels: onOpenModels,
-                  onOpenSettings: () =>
-                      showSettingsDialog(context, settings, auth, chat.api),
+                  onOpenSettings: onOpenSettings,
                 ),
                 const Divider(),
                 Padding(
@@ -137,7 +135,7 @@ class _SectionTabs extends StatelessWidget {
   final SidebarSection section;
   final VoidCallback? onOpenUsage;
   final VoidCallback? onOpenModels;
-  final VoidCallback onOpenSettings;
+  final VoidCallback? onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -167,7 +165,7 @@ class _SectionTabs extends StatelessWidget {
             child: _Tab(
               icon: LucideIcons.settings,
               label: 'Settings',
-              selected: false,
+              selected: section == SidebarSection.settings,
               onPressed: onOpenSettings,
             ),
           ),
@@ -375,65 +373,70 @@ class _ConversationTileState extends State<_ConversationTile> {
         onPressed: widget.onSelect,
         onHover: (value) => setState(() => _hovered = value),
         disableHoverEffect: true,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: selected
-                ? colors.accent
-                : _hovered
-                ? colors.accent.withValues(alpha: 0.5)
-                : const Color(0x00000000),
-            borderRadius: BorderRadius.circular(9),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                LucideIcons.messageSquare,
-                size: 16,
-                color: selected
-                    ? colors.accentForeground
-                    : colors.mutedForeground,
-              ),
-              const Gap(10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      conversation.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: selected
-                            ? FontWeight.w600
-                            : FontWeight.w500,
-                      ),
-                    ),
-                    if (conversation.updatedAt != null) ...[
-                      const Gap(1),
+        child: AnimatedSlide(
+          offset: _hovered ? const Offset(0, -0.02) : Offset.zero,
+          duration: motionDuration(context, Motion.fast),
+          curve: Motion.curve,
+          child: AnimatedContainer(
+            duration: motionDuration(context, Motion.fast),
+            curve: Motion.curve,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: selected
+                  ? colors.accent
+                  : _hovered
+                  ? colors.accent.withValues(alpha: 0.5)
+                  : const Color(0x00000000),
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  LucideIcons.messageSquare,
+                  size: 16,
+                  color: selected
+                      ? colors.accentForeground
+                      : colors.mutedForeground,
+                ),
+                const Gap(10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       Text(
-                        relativeTime(conversation.updatedAt!),
+                        conversation.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 11,
-                          color: colors.mutedForeground,
+                          fontSize: 14,
+                          fontWeight: selected
+                              ? FontWeight.w600
+                              : FontWeight.w500,
                         ),
                       ),
+                      if (conversation.updatedAt != null) ...[
+                        const Gap(1),
+                        Text(
+                          relativeTime(conversation.updatedAt!),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: colors.mutedForeground,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-              if (showOptions)
-                IconAction(
-                  icon: LucideIcons.ellipsis,
-                  label: 'Chat options',
-                  size: 16,
-                  onPressed: () => _showMenu(context),
-                ),
-            ],
+                if (showOptions)
+                  IconAction(
+                    icon: LucideIcons.ellipsis,
+                    label: 'Chat options',
+                    size: 16,
+                    onPressed: () => _showMenu(context),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -441,7 +444,7 @@ class _ConversationTileState extends State<_ConversationTile> {
   }
 
   void _showMenu(BuildContext context) {
-    showDropdown(
+    showAppMenu(
       context: context,
       builder: (context) => DropdownMenu(
         children: [

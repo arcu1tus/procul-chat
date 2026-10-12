@@ -2,6 +2,7 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'chat_controller.dart';
 import 'models.dart';
+import 'widgets/app_dialog.dart';
 
 /// Prompts for a new title and applies it. No-op if cancelled or left blank.
 Future<void> renameConversationDialog(
@@ -11,9 +12,8 @@ Future<void> renameConversationDialog(
 ) async {
   var value = conversation.title;
 
-  final result = await showOverlay<String>(
+  final result = await showAppDialog<String>(
     context,
-    DialogConfiguration(),
     builder: (context) {
       return AlertDialog(
         title: const Text('Rename chat'),
@@ -38,7 +38,7 @@ Future<void> renameConversationDialog(
         ],
       );
     },
-  ).future;
+  );
 
   if (result != null && result.trim().isNotEmpty) {
     await chat.renameConversation(conversation.id, result);
@@ -51,9 +51,8 @@ Future<void> confirmDeleteConversation(
   ChatController chat,
   Conversation conversation,
 ) async {
-  final confirmed = await showOverlay<bool>(
+  final confirmed = await showAppDialog<bool>(
     context,
-    DialogConfiguration(),
     builder: (context) {
       return AlertDialog(
         title: const Text('Delete chat?'),
@@ -72,7 +71,7 @@ Future<void> confirmDeleteConversation(
         ],
       );
     },
-  ).future;
+  );
 
   if (confirmed == true) {
     await chat.deleteConversation(conversation.id);

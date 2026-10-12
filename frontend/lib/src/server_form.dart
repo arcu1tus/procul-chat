@@ -2,6 +2,7 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'auth_controller.dart';
 import 'server_profile.dart';
+import 'widgets/app_dialog.dart';
 
 /// The "add server" form: Name (optional), Base URL and Password, plus the
 /// Connect action and inline error / plain-HTTP warning.
@@ -187,9 +188,8 @@ Future<bool> showAddServerDialog(
   auth.clearError();
   final formKey = GlobalKey<ServerFormState>();
 
-  final connected = await showOverlay<bool>(
+  final connected = await showAppDialog<bool>(
     context,
-    DialogConfiguration(),
     builder: (context) {
       return AlertDialog(
         title: const Text('Add server'),
@@ -216,7 +216,7 @@ Future<bool> showAddServerDialog(
         ],
       );
     },
-  ).future;
+  );
 
   return connected ?? false;
 }
@@ -227,9 +227,8 @@ Future<void> confirmRemoveServer(
   AuthController auth,
   ServerProfile profile,
 ) async {
-  final confirmed = await showOverlay<bool>(
+  final confirmed = await showAppDialog<bool>(
     context,
-    DialogConfiguration(),
     builder: (context) {
       return AlertDialog(
         title: const Text('Remove server?'),
@@ -249,7 +248,7 @@ Future<void> confirmRemoveServer(
         ],
       );
     },
-  ).future;
+  );
 
   if (confirmed == true) {
     await auth.removeProfile(profile.id);

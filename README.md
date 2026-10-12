@@ -89,8 +89,9 @@ against [OpenRouter](https://openrouter.ai/).
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history — **infinite scroll
   up** loads older messages, a **bottom pull-to-refresh** re-syncs without scrolling to the top,
   and a jump-to-latest pill returns to the newest message.
-- **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
-  motion (including a shimmer sweep over assistant text while it streams).
+- **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and a single motion
+  language (a paced streaming reveal with a frontier accent bloom over assistant text, staggered
+  entrances, and one reduced-motion gate).
 - **Password-protected API** with expiring HS256 session tokens stored in the device's secure
   storage, plus a public `/health` probe.
 - **Multiple server profiles** the client can add, switch between, and remove.

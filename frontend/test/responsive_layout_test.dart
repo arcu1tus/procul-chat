@@ -13,6 +13,7 @@ import 'package:procul_chat_flutter/src/conversation_sidebar.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
 import 'package:procul_chat_flutter/src/settings_controller.dart';
 import 'package:procul_chat_flutter/src/widgets/content_width.dart';
+import 'package:procul_chat_flutter/src/widgets/composer.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -104,6 +105,49 @@ MockClient _messagesClient() => MockClient((request) async {
             'text': 'Hi! How can I help?',
             'messageRole': 2,
             'createdAt': '2026-10-11T10:00:01Z',
+          },
+        ],
+      }),
+      200,
+    );
+  }
+  if (path.startsWith('/v1/usage/')) return http.Response('{}', 200);
+  return http.Response('{}', 200);
+});
+
+/// A backend with one conversation holding a single, very long user message, so
+/// the user bubble reaches its width cap.
+MockClient _longUserClient() => MockClient((request) async {
+  final path = request.url.path;
+  if (path == '/v1/models') {
+    return http.Response(jsonEncode(testModelsJson), 200);
+  }
+  if (path == '/v1/conversations' && request.method == 'GET') {
+    return http.Response(
+      jsonEncode({
+        'conversations': [
+          {
+            'id': 'c1',
+            'title': 'Long',
+            'model': 'openai/gpt-4o-mini',
+            'createdAt': '2026-10-11T10:00:00Z',
+            'updatedAt': '2026-10-11T10:00:00Z',
+          },
+        ],
+      }),
+      200,
+    );
+  }
+  if (path.endsWith('/messages')) {
+    return http.Response(
+      jsonEncode({
+        'messages': [
+          {
+            'id': 'm1',
+            'conversationId': 'c1',
+            'text': 'word ' * 120,
+            'messageRole': 1,
+            'createdAt': '2026-10-11T10:00:00Z',
           },
         ],
       }),
@@ -412,5 +456,48 @@ void main() {
 
     // The usable content width never exceeds the reading column cap.
     expect(listWidth - padding.horizontal, lessThanOrEqualTo(kContentMaxWidth));
+  });
+
+  // §4 message surface: the composer capsule builds at every size, and the user
+  // bubble's width is capped by the viewport class.
+  testWidgets('the composer capsule and the user bubble adapt to width', (
+    tester,
+  ) async {
+    Future<void> check(Size size, double capFactor, double hardCap) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = size;
+      addTearDown(tester.view.reset);
+
+      final chat = _chatWith(_longUserClient(), stored: 'c1');
+      await chat.init();
+
+      await tester.pumpWidget(_shell(chat));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byType(Composer), findsOneWidget);
+
+      final bubble = find.byWidgetPredicate(
+        (widget) =>
+            widget is Container &&
+            widget.decoration is BoxDecoration &&
+            (widget.decoration! as BoxDecoration).borderRadius ==
+                const BorderRadius.only(
+                  topLeft: Radius.circular(18),
+                  topRight: Radius.circular(18),
+                  bottomLeft: Radius.circular(18),
+                  bottomRight: Radius.circular(6),
+                ),
+      );
+      expect(bubble, findsOneWidget);
+      final width = tester.getSize(bubble).width;
+      expect(width, lessThanOrEqualTo(size.width * capFactor + 1));
+      expect(width, lessThanOrEqualTo(hardCap + 1));
+    }
+
+    // Compact: ~90% of the viewport.
+    await check(const Size(390, 844), 0.9, double.infinity);
+    // Expanded: capped at 680.
+    await check(const Size(1400, 900), 0.75, 680);
   });
 }

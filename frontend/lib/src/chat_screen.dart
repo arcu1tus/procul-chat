@@ -1,24 +1,27 @@
-import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
-import 'package:flutter/services.dart'
-    show Clipboard, ClipboardData, LogicalKeyboardKey, TextInputAction;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:google_fonts/google_fonts.dart';
-import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'attachments.dart';
-import 'chat_api.dart';
 import 'chat_controller.dart';
 import 'conversation_actions.dart';
 import 'model_catalog_controller.dart';
 import 'models.dart';
+import 'motion.dart';
+import 'responsive.dart';
 import 'time_format.dart';
+import 'widgets/app_dialog.dart';
+import 'widgets/attachment_views.dart';
+import 'widgets/composer.dart';
 import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/model_badges.dart';
 import 'widgets/skeleton.dart';
+import 'widgets/streaming_text.dart';
 
 /// The chat pane: header, message list, and composer.
 class ChatScreen extends StatefulWidget {
@@ -197,7 +200,8 @@ class _ChatScreenState extends State<ChatScreen> {
   /// and does not wrap).
   List<Widget> _trailing(ChatController chat, Conversation? active) {
     final compact =
-        widget.compactActions || MediaQuery.sizeOf(context).width < 720;
+        widget.compactActions ||
+        MediaQuery.sizeOf(context).width < appBarCompactWidth;
     if (compact) {
       return [
         Builder(
@@ -257,7 +261,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final showModels = catalog != null && catalog.hasChoice;
     final usage = chat.activeUsage;
 
-    showDropdown(
+    showAppMenu(
       context: context,
       builder: (context) => DropdownMenu(
         children: [
@@ -358,7 +362,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
-    showDropdown(
+    showAppMenu(
       context: context,
       builder: (context) => DropdownMenu(
         children: [
@@ -486,7 +490,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: _body(chat),
                 ),
               ),
-              _Composer(
+              Composer(
                 controller: _inputController,
                 focusNode: _inputFocus,
                 chat: chat,
@@ -631,12 +635,6 @@ class _LoadingOlderRow extends StatelessWidget {
   }
 }
 
-/// Whether the platform asks for reduced motion (accessibility). Non-essential
-/// animation should be skipped when this is true.
-bool _reduceMotion(BuildContext context) =>
-    MediaQuery.disableAnimationsOf(context) ||
-    MediaQuery.accessibleNavigationOf(context);
-
 /// Fades a message in and lifts it a few pixels, once.
 class _MessageEntrance extends StatefulWidget {
   const _MessageEntrance({required this.animate, required this.child});
@@ -674,7 +672,7 @@ class _MessageEntranceState extends State<_MessageEntrance>
 
   @override
   Widget build(BuildContext context) {
-    if (_reduceMotion(context)) return widget.child;
+    if (reduceMotion(context)) return widget.child;
     return AnimatedBuilder(
       animation: _curve,
       builder: (context, child) => Opacity(
@@ -689,7 +687,7 @@ class _MessageEntranceState extends State<_MessageEntrance>
   }
 }
 
-class _EmptyState extends StatelessWidget {
+class _EmptyState extends StatefulWidget {
   const _EmptyState({required this.onSuggestion});
 
   final ValueChanged<String> onSuggestion;
@@ -702,8 +700,26 @@ class _EmptyState extends StatelessWidget {
   ];
 
   @override
+  State<_EmptyState> createState() => _EmptyStateState();
+}
+
+class _EmptyStateState extends State<_EmptyState>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 520),
+  )..forward();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
+    final reduce = reduceMotion(context);
 
     return Center(
       child: SingleChildScrollView(
@@ -714,13 +730,36 @@ class _EmptyState extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                'Ask Procul anything',
-                textAlign: TextAlign.center,
-                style: GoogleFonts.coiny(
-                  fontSize: 34,
-                  height: 1.1,
-                  color: colors.foreground,
+              _rise(
+                reduce: reduce,
+                index: 0,
+                child: Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    color: colors.primary.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(
+                    LucideIcons.sparkles,
+                    size: 24,
+                    color: colors.primary,
+                  ),
+                ),
+              ),
+              const Gap(16),
+              // The display heading is clamped so 2.0× text scaling cannot
+              // overflow the empty state.
+              MediaQuery.withClampedTextScaling(
+                maxScaleFactor: 1.4,
+                child: Text(
+                  'Ask Procul anything',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.coiny(
+                    fontSize: 34,
+                    height: 1.1,
+                    color: colors.foreground,
+                  ),
                 ),
               ),
               const Gap(10),
@@ -743,15 +782,44 @@ class _EmptyState extends StatelessWidget {
                 runSpacing: 8,
                 alignment: WrapAlignment.center,
                 children: [
-                  for (final suggestion in _suggestions)
-                    OutlineButton(
-                      onPressed: () => onSuggestion(suggestion),
-                      child: Text(suggestion).small,
+                  for (final (index, suggestion)
+                      in _EmptyState._suggestions.indexed)
+                    _rise(
+                      reduce: reduce,
+                      index: index + 1,
+                      child: OutlineButton(
+                        onPressed: () => widget.onSuggestion(suggestion),
+                        child: Text(suggestion).small,
+                      ),
                     ),
                 ],
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// Fades a child in and lifts it, staggered by [index]. Inert under reduced
+  /// motion.
+  Widget _rise({
+    required bool reduce,
+    required int index,
+    required Widget child,
+  }) {
+    if (reduce) return child;
+    final animation = CurvedAnimation(
+      parent: _controller,
+      curve: Interval((0.08 * index).clamp(0.0, 0.6), 1, curve: Motion.curve),
+    );
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, _) => Opacity(
+        opacity: animation.value,
+        child: Transform.translate(
+          offset: Offset(0, 8 * (1 - animation.value)),
+          child: child,
         ),
       ),
     );
@@ -789,96 +857,119 @@ class _MessageBubbleState extends State<_MessageBubble> {
     // While tools run there is no reply text yet, so don't also show the
     // thinking dots — the tool rows already signal activity.
     final showText = message.text.isNotEmpty || !hasTools;
+    // Actions are disabled mid-turn and while already editing.
+    final canAct = !widget.isStreaming && !chat.isEditing;
 
-    final bubble = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-      decoration: BoxDecoration(
-        color: isUser ? colors.primary : colors.card,
-        borderRadius: BorderRadius.circular(16),
-        border: isUser ? null : Border.all(color: colors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final call in message.toolCalls) _ToolCallRow(call: call),
-          if (hasTools && showText) const Gap(8),
-          if (hasAttachments) ...[
-            _AttachmentList(
-              chat: chat,
-              attachments: message.attachments,
-              onTap: widget.onSaveAttachment,
-            ),
-            if (showText) const Gap(8),
-          ],
-          if (showText)
-            isUser
-                ? Text(
-                    message.text,
-                    style: TextStyle(color: colors.primaryForeground),
-                  )
-                : _AssistantText(
-                    text: message.text,
-                    isStreaming: widget.isStreaming,
-                  ),
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final call in message.toolCalls) _ToolCallRow(call: call),
+        if (hasTools && showText) const Gap(8),
+        if (hasAttachments) ...[
+          AttachmentList(
+            chat: chat,
+            attachments: message.attachments,
+            onTap: widget.onSaveAttachment,
+          ),
+          if (showText) const Gap(8),
         ],
-      ),
+        if (showText)
+          isUser
+              ? Text(message.text, style: TextStyle(color: colors.foreground))
+              : _AssistantText(
+                  text: message.text,
+                  isStreaming: widget.isStreaming,
+                ),
+      ],
     );
 
-    // The user-message actions (`…`: Edit / Copy) are always reachable — not
-    // hover-only — so editing works on touch. They are disabled mid-turn and
-    // while already editing.
-    final canAct = isUser && !widget.isStreaming && !chat.isEditing;
+    final actions = _MessageActions(
+      isUser: isUser,
+      canAct: canAct,
+      onEdit: isUser ? () => widget.onEdit(widget.message) : null,
+      onCopy: () => Clipboard.setData(ClipboardData(text: widget.message.text)),
+      onMenu: isUser ? () => _showMessageMenu(context) : null,
+    );
 
+    if (isUser) {
+      // Right-aligned filled bubble on a subtle surface; no avatar on this side.
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Flexible(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: _userBubbleMaxWidth(context),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colors.secondary,
+                        // A slightly tighter corner at the alignment edge.
+                        borderRadius: const BorderRadius.only(
+                          topLeft: Radius.circular(18),
+                          topRight: Radius.circular(18),
+                          bottomLeft: Radius.circular(18),
+                          bottomRight: Radius.circular(6),
+                        ),
+                      ),
+                      child: content,
+                    ),
+                    actions,
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // The assistant reply renders directly on the background (no fill, no
+    // stroke), with a small tappable brand mark at the top.
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: isUser
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
         children: [
-          if (!isUser) ...[
-            _AssistantAvatar(
-              chat: chat,
-              message: message,
-              color: colors.primary,
-              foreground: colors.primaryForeground,
-            ),
-            const Gap(10),
-          ],
-          if (isUser) ...[
-            IconAction(
-              key: const Key('message-options'),
-              icon: LucideIcons.ellipsis,
-              label: 'Message options',
-              size: 16,
-              onPressed: canAct ? () => _showMessageMenu(context) : null,
-            ),
-            const Gap(6),
-          ],
+          _AssistantAvatar(chat: chat, message: message),
+          const Gap(12),
           Flexible(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 680),
-              child: bubble,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [content, actions],
             ),
           ),
-          if (isUser) ...[
-            const Gap(10),
-            _Avatar(
-              icon: LucideIcons.user,
-              background: colors.secondary,
-              foreground: colors.secondaryForeground,
-            ),
-          ],
         ],
       ),
     );
   }
 
+  /// The user bubble's max width: a reading cap on desktop, most of the
+  /// viewport on phones.
+  double _userBubbleMaxWidth(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    if (breakpointForWidth(width) == Breakpoint.expanded) {
+      return math.min(680, width * 0.75);
+    }
+    return width * 0.9;
+  }
+
   /// The user-message `…` menu: Edit (enters the composer edit mode) and Copy.
   void _showMessageMenu(BuildContext context) {
-    showDropdown(
+    showAppMenu(
       context: context,
       builder: (context) => DropdownMenu(
         children: [
@@ -899,24 +990,88 @@ class _MessageBubbleState extends State<_MessageBubble> {
   }
 }
 
+/// The actions under a message: a `…` menu (Edit / Copy) on the user side, a
+/// Copy button on the assistant side.
+///
+/// The row fades and slides in on hover on pointer platforms, and stays visible
+/// on touch. It is always in the tree and always hit-testable, so the actions
+/// remain reachable however they are revealed.
+class _MessageActions extends StatefulWidget {
+  const _MessageActions({
+    required this.isUser,
+    required this.canAct,
+    required this.onCopy,
+    this.onEdit,
+    this.onMenu,
+  });
+
+  final bool isUser;
+  final bool canAct;
+  final VoidCallback onCopy;
+  final VoidCallback? onEdit;
+  final VoidCallback? onMenu;
+
+  @override
+  State<_MessageActions> createState() => _MessageActionsState();
+}
+
+class _MessageActionsState extends State<_MessageActions> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isTouch =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    final shown = isTouch || _hovered;
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedOpacity(
+        opacity: shown ? 1 : 0,
+        duration: motionDuration(context, Motion.fast),
+        curve: Motion.curve,
+        child: AnimatedSlide(
+          offset: shown ? Offset.zero : const Offset(0, -0.15),
+          duration: motionDuration(context, Motion.fast),
+          curve: Motion.curve,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: widget.isUser
+                ? IconAction(
+                    key: const Key('message-options'),
+                    icon: LucideIcons.ellipsis,
+                    label: 'Message options',
+                    size: 16,
+                    onPressed: widget.canAct ? widget.onMenu : null,
+                  )
+                : IconAction(
+                    key: const Key('message-copy'),
+                    icon: LucideIcons.copy,
+                    label: 'Copy reply',
+                    size: 15,
+                    onPressed: widget.onCopy,
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The assistant's avatar, tappable to reveal that response's model, time and
 /// token usage (a live turn's values; "—" once unknown, e.g. for history before
 /// the backend stores per-message metadata).
 class _AssistantAvatar extends StatelessWidget {
-  const _AssistantAvatar({
-    required this.chat,
-    required this.message,
-    required this.color,
-    required this.foreground,
-  });
+  const _AssistantAvatar({required this.chat, required this.message});
 
   final ChatController chat;
   final ChatMessage message;
-  final Color color;
-  final Color foreground;
 
   @override
   Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
     return Semantics(
       key: const Key('response-details'),
       button: true,
@@ -929,8 +1084,10 @@ class _AssistantAvatar extends StatelessWidget {
           disableHoverEffect: true,
           child: _Avatar(
             icon: LucideIcons.sparkles,
-            background: color,
-            foreground: foreground,
+            size: 26,
+            radius: 9,
+            background: colors.primary.withValues(alpha: 0.14),
+            foreground: colors.primary,
           ),
         ),
       ),
@@ -940,7 +1097,7 @@ class _AssistantAvatar extends StatelessWidget {
   void _showDetails(BuildContext context) {
     final usage = message.usage;
     final created = message.createdAt;
-    showDropdown(
+    showAppMenu(
       context: context,
       builder: (context) => DropdownMenu(
         children: [
@@ -981,252 +1138,6 @@ String _formatDateTime(DateTime value) {
       '${two(local.hour)}:${two(local.minute)}';
 }
 
-/// The attachments of one message: image thumbnails and file chips. Tapping a
-/// file saves it; images are fetched through the authenticated [ChatController].
-class _AttachmentList extends StatelessWidget {
-  const _AttachmentList({
-    required this.chat,
-    required this.attachments,
-    required this.onTap,
-  });
-
-  final ChatController chat;
-  final List<Attachment> attachments;
-  final ValueChanged<Attachment> onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final attachment in attachments)
-          if (attachment.isImage)
-            _AttachmentImage(
-              chat: chat,
-              attachment: attachment,
-              onTap: () => onTap(attachment),
-            )
-          else
-            _AttachmentChip(
-              attachment: attachment,
-              onTap: () => onTap(attachment),
-            ),
-      ],
-    );
-  }
-}
-
-/// A compact pill for a non-image attachment (icon, name, size). [onTap] saves
-/// it; [onRemove] turns it into a pending-composer chip.
-class _AttachmentChip extends StatelessWidget {
-  const _AttachmentChip({
-    required this.attachment,
-    this.chat,
-    this.onTap,
-    this.onRemove,
-    this.thumbnail = false,
-  });
-
-  final Attachment attachment;
-  final ChatController? chat;
-  final VoidCallback? onTap;
-  final VoidCallback? onRemove;
-
-  /// Whether to show a small image preview as the leading element.
-  final bool thumbnail;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-    final showThumb = thumbnail && attachment.isImage && chat != null;
-
-    return Clickable(
-      onPressed: onTap,
-      child: Container(
-        padding: EdgeInsets.fromLTRB(8, 5, onRemove != null ? 3 : 10, 5),
-        decoration: BoxDecoration(
-          color: colors.secondary,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: colors.border),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (showThumb)
-              SizedBox(
-                width: 30,
-                height: 30,
-                child: _AttachmentImage(
-                  chat: chat!,
-                  attachment: attachment,
-                  maxWidth: 30,
-                  maxHeight: 30,
-                ),
-              )
-            else
-              Icon(
-                _attachmentIcon(attachment.contentType),
-                size: 14,
-                color: colors.mutedForeground,
-              ),
-            const Gap(8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 170),
-              child: Text(
-                attachment.fileName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ).small,
-            ),
-            const Gap(6),
-            Text(formatAttachmentSize(attachment.sizeBytes)).muted.xSmall,
-            if (onRemove != null) ...[
-              const Gap(2),
-              IconButton.ghost(
-                density: ButtonDensity.compact,
-                icon: const Icon(LucideIcons.x, size: 14),
-                onPressed: onRemove,
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// An image attachment rendered from bytes fetched through [ChatController]
-/// (never an `<img>` URL, which could not carry the bearer token).
-class _AttachmentImage extends StatelessWidget {
-  const _AttachmentImage({
-    required this.chat,
-    required this.attachment,
-    this.onTap,
-    this.maxWidth = 260,
-    this.maxHeight = 260,
-  });
-
-  final ChatController chat;
-  final Attachment attachment;
-  final VoidCallback? onTap;
-  final double maxWidth;
-  final double maxHeight;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-
-    return FutureBuilder<Uint8List>(
-      future: chat.loadAttachmentBytes(attachment.id),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          // A 404 means the backend's retention window purged the bytes (the
-          // metadata is kept). Say so instead of showing a broken image.
-          final error = snapshot.error;
-          if (error is ChatApiException && error.statusCode == 404) {
-            return _ExpiredAttachmentChip(attachment: attachment);
-          }
-          return _AttachmentChip(attachment: attachment, onTap: onTap);
-        }
-
-        if (!snapshot.hasData) {
-          return Container(
-            width: maxWidth,
-            height: maxWidth < 60 ? maxWidth : 120,
-            decoration: BoxDecoration(
-              color: colors.muted,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: colors.border),
-            ),
-            child: const Center(
-              child: SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          );
-        }
-
-        return Semantics(
-          image: true,
-          label: attachment.fileName,
-          child: Clickable(
-            onPressed: onTap,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: maxWidth,
-                  maxHeight: maxHeight,
-                ),
-                child: Image.memory(
-                  snapshot.data!,
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// A chip for an attachment whose bytes the backend has purged (its retention
-/// window elapsed). The metadata is kept, so history still shows what was there
-/// — just not the file itself.
-class _ExpiredAttachmentChip extends StatelessWidget {
-  const _ExpiredAttachmentChip({required this.attachment});
-
-  final Attachment attachment;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-    return Semantics(
-      label: 'File expired: ${attachment.fileName}',
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(
-          color: colors.muted,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: colors.border),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(LucideIcons.fileX, size: 14, color: colors.mutedForeground),
-            const Gap(8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 170),
-              child: Text(
-                attachment.fileName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ).small,
-            ),
-            const Gap(6),
-            const Text('no longer stored').muted.xSmall,
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// The icon for a file's content type: a modality icon where one exists, else a
-/// generic file (video falls back to its own icon rather than the placeholder).
-IconData _attachmentIcon(String contentType) {
-  final type = contentType.toLowerCase();
-  if (type.startsWith('video/')) return LucideIcons.video;
-  if (type.startsWith('text/')) return LucideIcons.fileText;
-  final modality = attachmentRequiredModality(contentType);
-  return modality == null ? LucideIcons.file : modelInputModalityIcon(modality);
-}
-
 class _AssistantText extends StatelessWidget {
   const _AssistantText({required this.text, required this.isStreaming});
 
@@ -1241,9 +1152,11 @@ class _AssistantText extends StatelessWidget {
           ? const _ThinkingDots()
           : Text('…', style: TextStyle(color: colors.mutedForeground));
     }
-    return _ShimmerText(
-      active: isStreaming,
-      child: GptMarkdown(text, isStreaming: isStreaming),
+    return StreamingText(
+      text: text,
+      isStreaming: isStreaming,
+      // A slightly taller line-height keeps long replies readable.
+      style: const TextStyle(height: 1.55),
     );
   }
 }
@@ -1303,7 +1216,7 @@ class _ModelPicker extends StatelessWidget {
 
   void _open(BuildContext context) {
     final activeSlug = chat.activeModel;
-    showDropdown(
+    showAppMenu(
       context: context,
       builder: (context) => DropdownMenu(
         children: [
@@ -1457,7 +1370,7 @@ class _UsageChip extends StatelessWidget {
   }
 
   void _showBreakdown(BuildContext context) {
-    showDropdown(
+    showAppMenu(
       context: context,
       builder: (context) => DropdownMenu(
         children: [
@@ -1487,87 +1400,6 @@ class _UsageChip extends StatelessWidget {
   );
 }
 
-/// Sweeps a gradient highlight across [child] while [active], so streaming
-/// assistant text shimmers. It owns its own controller, so per-token rebuilds of
-/// the text do not restart the sweep; once [active] is false the overlay is
-/// removed and the text renders normally.
-class _ShimmerText extends StatefulWidget {
-  const _ShimmerText({required this.active, required this.child});
-
-  final bool active;
-  final Widget child;
-
-  @override
-  State<_ShimmerText> createState() => _ShimmerTextState();
-}
-
-class _ShimmerTextState extends State<_ShimmerText>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.active) _controller.repeat();
-  }
-
-  @override
-  void didUpdateWidget(_ShimmerText oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.active && !_controller.isAnimating) {
-      _controller.repeat();
-    } else if (!widget.active && _controller.isAnimating) {
-      _controller.stop();
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!widget.active || _reduceMotion(context)) {
-      return widget.child;
-    }
-
-    final foreground = ColorScheme.of(context).foreground;
-    final base = foreground.withValues(alpha: 0.45);
-
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) => ShaderMask(
-        blendMode: BlendMode.srcIn,
-        shaderCallback: (bounds) => LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: [base, foreground, base],
-          stops: const [0.35, 0.5, 0.65],
-          transform: _SlidingGradientTransform(_controller.value * 2 - 1),
-        ).createShader(bounds),
-        child: child,
-      ),
-      child: widget.child,
-    );
-  }
-}
-
-/// Slides a gradient horizontally by a fraction of its bounds.
-class _SlidingGradientTransform extends GradientTransform {
-  const _SlidingGradientTransform(this.slidePercent);
-
-  final double slidePercent;
-
-  @override
-  Matrix4? transform(Rect bounds, {TextDirection? textDirection}) =>
-      Matrix4.translationValues(bounds.width * slidePercent, 0, 0);
-}
-
 /// Three softly pulsing dots shown in an assistant bubble until the first token
 /// arrives.
 class _ThinkingDots extends StatefulWidget {
@@ -1593,7 +1425,7 @@ class _ThinkingDotsState extends State<_ThinkingDots>
   @override
   Widget build(BuildContext context) {
     final color = ColorScheme.of(context).mutedForeground;
-    if (_reduceMotion(context)) {
+    if (reduceMotion(context)) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1647,19 +1479,26 @@ class _Avatar extends StatelessWidget {
     required this.icon,
     required this.background,
     required this.foreground,
+    this.size = 30,
+    this.radius = 15,
   });
 
   final IconData icon;
   final Color background;
   final Color foreground;
+  final double size;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 30,
-      height: 30,
-      decoration: BoxDecoration(color: background, shape: BoxShape.circle),
-      child: Icon(icon, size: 16, color: foreground),
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(radius),
+      ),
+      child: Icon(icon, size: size * 0.55, color: foreground),
     );
   }
 }
@@ -1738,209 +1577,6 @@ class _ToolCallRow extends StatelessWidget {
   }
 }
 
-class _Composer extends StatelessWidget {
-  const _Composer({
-    required this.controller,
-    required this.focusNode,
-    required this.chat,
-    required this.onSubmit,
-    required this.onAttach,
-    required this.onCancelEdit,
-  });
-
-  final TextEditingController controller;
-  final FocusNode focusNode;
-  final ChatController chat;
-  final VoidCallback onSubmit;
-  final ValueChanged<BuildContext> onAttach;
-  final VoidCallback onCancelEdit;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-    final enabled = !chat.isStreaming;
-    final canAttach = enabled && !chat.isUploadingAttachment;
-    final pending = chat.pendingAttachments;
-    final isEditing = chat.isEditing;
-    // The Enter / Shift+Enter hint is meaningless without a hardware keyboard.
-    final isTouch =
-        defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS;
-
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (isEditing)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    Icon(
-                      LucideIcons.squarePen,
-                      size: 14,
-                      color: colors.mutedForeground,
-                    ),
-                    const Gap(6),
-                    const Text('Editing message').muted.small,
-                    const Spacer(),
-                    IconAction(
-                      key: const Key('cancel-edit'),
-                      icon: LucideIcons.x,
-                      label: 'Cancel edit',
-                      size: 16,
-                      onPressed: onCancelEdit,
-                    ),
-                  ],
-                ),
-              ),
-            if (pending.isNotEmpty || chat.isUploadingAttachment)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    for (final attachment in pending)
-                      _AttachmentChip(
-                        attachment: attachment,
-                        chat: chat,
-                        thumbnail: true,
-                        onRemove: () =>
-                            chat.removePendingAttachment(attachment.id),
-                      ),
-                    if (chat.isUploadingAttachment) const _UploadingChip(),
-                  ],
-                ),
-              ),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Builder(
-                  builder: (context) => IconAction(
-                    icon: LucideIcons.paperclip,
-                    label: 'Attach file',
-                    onPressed: canAttach ? () => onAttach(context) : null,
-                  ),
-                ),
-                const Gap(4),
-                Expanded(
-                  child: CallbackShortcuts(
-                    // Enter sends; Shift+Enter is left to the field so it
-                    // inserts a newline.
-                    bindings: {
-                      const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
-                    },
-                    child: TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      minLines: 1,
-                      maxLines: 6,
-                      textInputAction: TextInputAction.send,
-                      placeholder: Text(
-                        isEditing ? 'Edit your message…' : 'Message Procul…',
-                      ),
-                      onSubmitted: (_) => onSubmit(),
-                    ),
-                  ),
-                ),
-                const Gap(8),
-                Tooltip(
-                  tooltip: (context) => TooltipContainer(
-                    child: Text(isEditing ? 'Save changes' : 'Send'),
-                  ),
-                  child: Semantics(
-                    button: true,
-                    label: isEditing ? 'Save changes' : 'Send message',
-                    child: AnimatedScale(
-                      scale: enabled ? 1 : 0.9,
-                      duration: _reduceMotion(context)
-                          ? Duration.zero
-                          : const Duration(milliseconds: 150),
-                      curve: Curves.easeOut,
-                      child: AnimatedOpacity(
-                        opacity: enabled ? 1 : 0.5,
-                        duration: _reduceMotion(context)
-                            ? Duration.zero
-                            : const Duration(milliseconds: 150),
-                        child: PrimaryButton(
-                          density: ButtonDensity.icon,
-                          onPressed: enabled ? onSubmit : null,
-                          child: const Icon(LucideIcons.sendHorizontal),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            if (!isTouch) ...[
-              const Gap(6),
-              Padding(
-                padding: const EdgeInsets.only(left: 4),
-                child: Row(
-                  children: [
-                    const KeyboardDisplay(keys: [LogicalKeyboardKey.enter]),
-                    const Gap(6),
-                    const Text('send').muted.xSmall,
-                    const Gap(12),
-                    const KeyboardDisplay(
-                      keys: [
-                        LogicalKeyboardKey.shift,
-                        LogicalKeyboardKey.enter,
-                      ],
-                    ),
-                    const Gap(6),
-                    const Text('new line').muted.xSmall,
-                  ],
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// A small pill shown in the composer while an attachment uploads.
-class _UploadingChip extends StatelessWidget {
-  const _UploadingChip();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: colors.secondary,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colors.border),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 13,
-            height: 13,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: colors.mutedForeground,
-            ),
-          ),
-          const Gap(8),
-          const Text('Uploading…').muted.small,
-        ],
-      ),
-    );
-  }
-}
-
 /// Shimmer bubbles shown while a conversation's history loads.
 class _MessageHistorySkeleton extends StatelessWidget {
   const _MessageHistorySkeleton();
@@ -1985,8 +1621,8 @@ class _SkeletonBubble extends StatelessWidget {
             : MainAxisAlignment.start,
         children: [
           if (!isUser) ...[
-            const Skeleton(width: 30, height: 30, radius: 15),
-            const Gap(10),
+            const Skeleton(width: 26, height: 26, radius: 9),
+            const Gap(12),
           ],
           Flexible(
             child: FractionallySizedBox(
@@ -1998,8 +1634,9 @@ class _SkeletonBubble extends StatelessWidget {
                   vertical: 11,
                 ),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: colors.border),
+                  color: isUser ? colors.secondary : null,
+                  borderRadius: BorderRadius.circular(18),
+                  border: isUser ? null : Border.all(color: colors.border),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2019,10 +1656,6 @@ class _SkeletonBubble extends StatelessWidget {
               ),
             ),
           ),
-          if (isUser) ...[
-            const Gap(10),
-            const Skeleton(width: 30, height: 30, radius: 15),
-          ],
         ],
       ),
     );
