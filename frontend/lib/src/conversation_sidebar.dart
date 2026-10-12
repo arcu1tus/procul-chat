@@ -14,9 +14,10 @@ import 'widgets/skeleton.dart';
 /// its tab reads as selected.
 enum SidebarSection { chat, usage, models, settings }
 
-/// The conversation list: brand header, a tab row (Usage / Models / Settings),
-/// "new chat", and the chats themselves. Shown persistently on wide screens and
-/// inside a drawer on narrow ones (where [onClose] dismisses it).
+/// The conversation list: brand header, a stack of chat-like section entries
+/// (Usage / Models / Settings), a divider, "new chat", and the chats
+/// themselves. Shown persistently on wide screens and inside a drawer on narrow
+/// ones (where [onClose] dismisses it).
 class ConversationSidebar extends StatelessWidget {
   const ConversationSidebar({
     super.key,
@@ -76,7 +77,7 @@ class ConversationSidebar extends StatelessWidget {
                   onRefresh: chat.refreshConversations,
                   isRefreshing: chat.isRefreshing,
                 ),
-                _SectionTabs(
+                _SectionList(
                   section: section,
                   onOpenUsage: onOpenUsage,
                   onOpenModels: onOpenModels,
@@ -122,10 +123,13 @@ class ConversationSidebar extends StatelessWidget {
   }
 }
 
-/// The tab row above the chat list: Usage / Models / Settings. The one whose
-/// overlay is currently shown reads as selected.
-class _SectionTabs extends StatelessWidget {
-  const _SectionTabs({
+/// The stack of section entries above the chat list: Usage / Models / Settings.
+/// They read exactly like the conversation tiles below (same rounded, hoverable,
+/// accent-on-select surface) so the sidebar is one uniform list; a `Divider`
+/// separates them from the chats. The entry whose overlay is currently shown
+/// reads as selected.
+class _SectionList extends StatelessWidget {
+  const _SectionList({
     required this.section,
     required this.onOpenUsage,
     required this.onOpenModels,
@@ -140,34 +144,26 @@ class _SectionTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
+      child: Column(
         children: [
-          Expanded(
-            child: _Tab(
-              icon: LucideIcons.chartColumn,
-              label: 'Usage',
-              selected: section == SidebarSection.usage,
-              onPressed: onOpenUsage,
-            ),
+          _SidebarTile(
+            selected: section == SidebarSection.usage,
+            onPressed: onOpenUsage,
+            leading: const Icon(LucideIcons.chartColumn),
+            title: 'Usage',
           ),
-          const Gap(4),
-          Expanded(
-            child: _Tab(
-              icon: LucideIcons.blocks,
-              label: 'Models',
-              selected: section == SidebarSection.models,
-              onPressed: onOpenModels,
-            ),
+          _SidebarTile(
+            selected: section == SidebarSection.models,
+            onPressed: onOpenModels,
+            leading: const Icon(LucideIcons.blocks),
+            title: 'Models',
           ),
-          const Gap(4),
-          Expanded(
-            child: _Tab(
-              icon: LucideIcons.settings,
-              label: 'Settings',
-              selected: section == SidebarSection.settings,
-              onPressed: onOpenSettings,
-            ),
+          _SidebarTile(
+            selected: section == SidebarSection.settings,
+            onPressed: onOpenSettings,
+            leading: const Icon(LucideIcons.settings),
+            title: 'Settings',
           ),
         ],
       ),
@@ -175,47 +171,109 @@ class _SectionTabs extends StatelessWidget {
   }
 }
 
-/// One tab in the sidebar's section row. Kept compact so three fit across the
-/// 300 px sidebar; the label ellipsizes rather than overflowing.
-class _Tab extends StatelessWidget {
-  const _Tab({
-    required this.icon,
-    required this.label,
+/// One row in the sidebar, styled like a conversation: a rounded surface that
+/// tints on hover and fills with the accent when selected, a leading icon, a
+/// single-line title (plus an optional muted subtitle) and an optional trailing
+/// action revealed on hover/selection. Shared by the section entries and the
+/// conversations so the whole column looks the same.
+class _SidebarTile extends StatefulWidget {
+  const _SidebarTile({
     required this.selected,
     required this.onPressed,
+    required this.leading,
+    required this.title,
+    this.subtitle,
+    this.trailing,
   });
 
-  final IconData icon;
-  final String label;
   final bool selected;
   final VoidCallback? onPressed;
+  final Widget leading;
+  final String title;
+  final String? subtitle;
+  final Widget? trailing;
+
+  @override
+  State<_SidebarTile> createState() => _SidebarTileState();
+}
+
+class _SidebarTileState extends State<_SidebarTile> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
-    const ghost = ButtonStyle.ghost(
-      size: ButtonSize.small,
-      density: ButtonDensity.compact,
-    );
-    const selectedStyle = ButtonStyle.secondary(
-      size: ButtonSize.small,
-      density: ButtonDensity.compact,
-    );
-    return SelectedButton(
-      value: selected,
-      onChanged: onPressed == null ? null : (_) => onPressed!(),
-      style: ghost,
-      selectedStyle: selectedStyle,
-      alignment: Alignment.center,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 15),
-          const Gap(6),
-          Flexible(
-            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+    final colors = ColorScheme.of(context);
+    final selected = widget.selected;
+    final showTrailing = _hovered || selected;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Clickable(
+        onPressed: widget.onPressed,
+        onHover: (value) => setState(() => _hovered = value),
+        disableHoverEffect: true,
+        child: AnimatedSlide(
+          offset: _hovered ? const Offset(0, -0.02) : Offset.zero,
+          duration: motionDuration(context, Motion.fast),
+          curve: Motion.curve,
+          child: AnimatedContainer(
+            duration: motionDuration(context, Motion.fast),
+            curve: Motion.curve,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: selected
+                  ? colors.accent
+                  : _hovered
+                  ? colors.accent.withValues(alpha: 0.5)
+                  : const Color(0x00000000),
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Row(
+              children: [
+                IconTheme.merge(
+                  data: IconThemeData(
+                    size: 16,
+                    color: selected
+                        ? colors.accentForeground
+                        : colors.mutedForeground,
+                  ),
+                  child: widget.leading,
+                ),
+                const Gap(10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        widget.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: selected
+                              ? FontWeight.w600
+                              : FontWeight.w500,
+                        ),
+                      ),
+                      if (widget.subtitle != null) ...[
+                        const Gap(1),
+                        Text(
+                          widget.subtitle!,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: colors.mutedForeground,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (showTrailing && widget.trailing != null) widget.trailing!,
+              ],
+            ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -338,7 +396,7 @@ class _ConversationList extends StatelessWidget {
   }
 }
 
-class _ConversationTile extends StatefulWidget {
+class _ConversationTile extends StatelessWidget {
   const _ConversationTile({
     required this.conversation,
     required this.selected,
@@ -354,91 +412,19 @@ class _ConversationTile extends StatefulWidget {
   final VoidCallback onDelete;
 
   @override
-  State<_ConversationTile> createState() => _ConversationTileState();
-}
-
-class _ConversationTileState extends State<_ConversationTile> {
-  bool _hovered = false;
-
-  @override
   Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-    final conversation = widget.conversation;
-    final selected = widget.selected;
-    final showOptions = _hovered || selected;
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Clickable(
-        onPressed: widget.onSelect,
-        onHover: (value) => setState(() => _hovered = value),
-        disableHoverEffect: true,
-        child: AnimatedSlide(
-          offset: _hovered ? const Offset(0, -0.02) : Offset.zero,
-          duration: motionDuration(context, Motion.fast),
-          curve: Motion.curve,
-          child: AnimatedContainer(
-            duration: motionDuration(context, Motion.fast),
-            curve: Motion.curve,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: selected
-                  ? colors.accent
-                  : _hovered
-                  ? colors.accent.withValues(alpha: 0.5)
-                  : const Color(0x00000000),
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  LucideIcons.messageSquare,
-                  size: 16,
-                  color: selected
-                      ? colors.accentForeground
-                      : colors.mutedForeground,
-                ),
-                const Gap(10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        conversation.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: selected
-                              ? FontWeight.w600
-                              : FontWeight.w500,
-                        ),
-                      ),
-                      if (conversation.updatedAt != null) ...[
-                        const Gap(1),
-                        Text(
-                          relativeTime(conversation.updatedAt!),
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: colors.mutedForeground,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                if (showOptions)
-                  IconAction(
-                    icon: LucideIcons.ellipsis,
-                    label: 'Chat options',
-                    size: 16,
-                    onPressed: () => _showMenu(context),
-                  ),
-              ],
-            ),
-          ),
-        ),
+    final updatedAt = conversation.updatedAt;
+    return _SidebarTile(
+      selected: selected,
+      onPressed: onSelect,
+      leading: const Icon(LucideIcons.messageSquare),
+      title: conversation.title,
+      subtitle: updatedAt == null ? null : relativeTime(updatedAt),
+      trailing: IconAction(
+        icon: LucideIcons.ellipsis,
+        label: 'Chat options',
+        size: 16,
+        onPressed: () => _showMenu(context),
       ),
     );
   }
@@ -449,11 +435,11 @@ class _ConversationTileState extends State<_ConversationTile> {
       builder: (context) => DropdownMenu(
         children: [
           MenuButton(
-            onPressed: (context) => widget.onRename(),
+            onPressed: (context) => onRename(),
             child: const Text('Rename'),
           ),
           MenuButton(
-            onPressed: (context) => widget.onDelete(),
+            onPressed: (context) => onDelete(),
             child: const Text('Delete'),
           ),
         ],

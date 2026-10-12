@@ -100,7 +100,7 @@ frontend/
       home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow);
                                   #   owns the ModelCatalogController; cross-fades Chat/Usage/
                                   #   Models/Settings panes; lifecycle/periodic sync
-      conversation_sidebar.dart   # conversation list, new chat, usage/models/settings tab row
+      conversation_sidebar.dart   # conversation list, new chat, chat-like usage/models/settings pills
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
       chat_screen.dart            # chat pane: header (+ model picker + usage chip, or a single
                                   #   overflow on narrow bars), reversed message list with
@@ -340,7 +340,9 @@ are editable. A hard failure triggers a resync (see below).
 - **The composer is a capsule.** `Composer` (`widgets/composer.dart`) is one rounded surface
   (attach · text field · circular primary send) with a subtle border/shadow and an accent focus
   ring that animates in while focused; the edit banner and the pending-attachment strip animate in
-  above it (`_AnimatedSlot`). The a11y labels (`Send message` / `Attach file`) and the single
+  above it (`_AnimatedSlot`). The field's **own** `FocusOutline` is cleared with a
+  `ComponentTheme<FocusOutlineTheme>` so only the capsule's outer ring shows (no double outline).
+  The a11y labels (`Send message` / `Attach file`) and the single
   `TextField`/`PrimaryButton` are preserved (tests rely on them). Composer keyboard semantics are
   unchanged (see the keyboard bullet below).
 - **Errors are user-facing strings** on `ChatController.error`; `ChatScreen` shows them as a
@@ -447,9 +449,9 @@ are editable. A hard failure triggers a resync (see below).
   and the shell is keyed by profile id, so it always reflects the active backend.
 - **Settings is a full pane, not a dialog.** `settings_screen.dart`'s `SettingsScreen` uses the
   same `Scaffold` + `AppBar` treatment as Usage/Models (a menu button on narrow screens) and is
-  selected from the sidebar's tab row; `HomeShell` cross-fades it in over the still-mounted chat
-  (so the chat's scroll/buffer survive). Only the genuinely-modal flows stay modals: add-server,
-  rename, delete/remove confirmations, toasts.
+  selected from the sidebar's section pills; `HomeShell` cross-fades it in over the still-mounted
+  chat (so the chat's scroll/buffer survive). Only the genuinely-modal flows stay modals:
+  add-server, rename, delete/remove confirmations, toasts.
 - **All UI is shadcn_flutter.** Use shadcn components (`Scaffold` + `headers: [AppBar(...)]`,
   `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `SelectedButton` (used
   for the segmented theme selector), `TextField`, `AlertDialog` via `showAppDialog`/
@@ -509,11 +511,14 @@ surfaces the error rather than downgrading the token to plaintext.
   Popping from a `MenuButton.onPressed` pops the *app's* route (leaving a blank screen). Let the
   button's `autoClose` (the default) dismiss the menu and just run the action, as the model
   picker does.
-- **The sidebar's section tabs are tight.** Usage / Models / Settings are
-  `SelectedButton`s (compact-density, small) inside `Expanded`s in a 300 px row
-  above the chat list, with a `Divider` below them. A widget test asserts
-  `takeException()` is null so an overflow fails CI. The selected tab follows
-  `HomeShell`'s single `SidebarSection` field (which now includes `settings`).
+- **The sidebar's section entries read as chat-like pills.** Usage / Models /
+  Settings are stacked vertically above the chat list as `_SidebarTile`s — the
+  same rounded, hoverable, accent-on-select surface as the conversation tiles
+  (both use the shared `_SidebarTile`, which owns the hover/slide/selection
+  styling), with a `Divider` below them and "New chat" plus the chats beneath.
+  A widget test asserts they stack above "New chat" and that `takeException()`
+  is null so an overflow fails CI. The selected entry follows `HomeShell`'s
+  single `SidebarSection` field (which now includes `settings`).
 - **A `showDropdown` menu needs a `DrawerOverlay` ancestor.** On mobile
   platforms shadcn presents a menu as a bottom sheet, which routes through
   `openRawDrawer` and asserts a `DrawerOverlay` in the tree. The chat pane gets
