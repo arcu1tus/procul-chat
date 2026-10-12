@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -188,7 +187,7 @@ void main() {
     expect(messageGets, greaterThan(before));
   });
 
-  testWidgets('hovering a user bubble reveals Edit; submitting edits', (
+  testWidgets('the user bubble menu opens Edit; submitting edits', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1000, 800));
@@ -201,17 +200,15 @@ void main() {
     await tester.pumpWidget(_app(ChatScreen(chat: chat)));
     await tester.pumpAndSettle();
 
-    // The Edit action is hover-revealed on user messages only.
-    expect(find.byKey(const Key('edit-message')), findsNothing);
-
-    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
-    await gesture.addPointer(location: Offset.zero);
-    addTearDown(gesture.removePointer);
-    await gesture.moveTo(tester.getCenter(find.text('original')));
+    // The `…` action is always present on a user bubble (not hover-only), so
+    // editing is reachable on touch.
+    await tester.tap(find.byKey(const Key('message-options')).first);
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('edit-message')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('edit-message')));
+    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Copy'), findsOneWidget);
+
+    await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
 
     expect(find.text('Editing message'), findsOneWidget);

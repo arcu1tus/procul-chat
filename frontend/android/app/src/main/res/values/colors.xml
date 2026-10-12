@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's dark surface; the launch screen matches it so there is no
+         white flash before Flutter draws (dark is the default theme). -->
+    <color name="procul_splash">#09090B</color>
+</resources>

@@ -230,6 +230,80 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('an expired attachment shows a "no longer stored" chip', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    // History has an image, but the backend purged its bytes (404 on fetch).
+    final client = MockClient((request) async {
+      final path = request.url.path;
+      if (path == '/v1/conversations' && request.method == 'GET') {
+        return http.Response(
+          jsonEncode({
+            'conversations': [
+              {
+                'id': 'c1',
+                'title': 'Files',
+                'createdAt': '2026-10-11T10:00:00Z',
+                'updatedAt': '2026-10-11T10:00:00Z',
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (path == '/v1/conversations/c1/messages') {
+        return http.Response(
+          jsonEncode({
+            'messages': [
+              {
+                'id': 'm1',
+                'conversationId': 'c1',
+                'text': 'look at this',
+                'messageRole': 1,
+                'createdAt': '2026-10-11T10:00:00Z',
+                'attachments': [
+                  {
+                    'id': 'a1',
+                    'fileName': 'photo.png',
+                    'contentType': 'image/png',
+                    'sizeBytes': 100,
+                    'createdAt': '2026-10-11T10:00:00Z',
+                  },
+                ],
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (path == '/v1/usage/conversations/c1') {
+        return http.Response('{}', 200);
+      }
+      if (path == '/v1/attachments/a1') {
+        return http.Response('gone', 404);
+      }
+      return http.Response('{}', 200);
+    });
+    final chat = _chat(client, stored: 'c1');
+    await chat.init();
+
+    await tester.pumpWidget(_app(ChatScreen(chat: chat)));
+    await tester.pumpAndSettle();
+
+    expect(find.text('photo.png'), findsOneWidget);
+    expect(find.text('no longer stored'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is Image && widget.image is MemoryImage,
+      ),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('tapping a persisted file chip saves it through the picker', (
     tester,
   ) async {

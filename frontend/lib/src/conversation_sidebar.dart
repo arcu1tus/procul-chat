@@ -11,15 +11,20 @@ import 'time_format.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/skeleton.dart';
 
-/// The conversation list: brand header, "new chat", the chats themselves, and
-/// a settings footer. Shown persistently on wide screens and inside a drawer on
-/// narrow ones (where [onClose] dismisses it).
+/// Which of the sidebar's overlay destinations is currently shown, so its tab
+/// reads as selected.
+enum SidebarSection { chat, usage, models }
+
+/// The conversation list: brand header, a tab row (Usage / Models / Settings),
+/// "new chat", and the chats themselves. Shown persistently on wide screens and
+/// inside a drawer on narrow ones (where [onClose] dismisses it).
 class ConversationSidebar extends StatelessWidget {
   const ConversationSidebar({
     super.key,
     required this.chat,
     required this.settings,
     required this.auth,
+    this.section = SidebarSection.chat,
     this.onClose,
     this.onOpenUsage,
     this.onOpenModels,
@@ -29,6 +34,9 @@ class ConversationSidebar extends StatelessWidget {
   final ChatController chat;
   final SettingsController settings;
   final AuthController auth;
+
+  /// The overlay currently shown in the main pane, if any.
+  final SidebarSection section;
 
   /// Called after an action that should dismiss a drawer-hosted sidebar.
   final VoidCallback? onClose;
@@ -45,20 +53,40 @@ class ConversationSidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
+    // Use the raw view padding, not `MediaQuery.padding`: the narrow sidebar is
+    // a `Positioned` panel in a `Stack` (not inside a `Scaffold`), and an
+    // ancestor may have consumed the bottom inset — this guarantees the list
+    // clears the system navigation bar on gesture-nav devices.
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
 
     return Container(
       color: colors.background,
       child: SafeArea(
         right: false,
+        // The bottom inset is added explicitly below (via `viewPadding`), so
+        // don't let `SafeArea` add `padding.bottom` too.
+        bottom: false,
         child: ListenableBuilder(
           listenable: chat,
           builder: (context, _) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _Header(onClose: onClose, onRefresh: chat.refreshConversations),
+                _Header(
+                  onClose: onClose,
+                  onRefresh: chat.refreshConversations,
+                  isRefreshing: chat.isRefreshing,
+                ),
+                _SectionTabs(
+                  section: section,
+                  onOpenUsage: onOpenUsage,
+                  onOpenModels: onOpenModels,
+                  onOpenSettings: () =>
+                      showSettingsDialog(context, settings, auth, chat.api),
+                ),
+                const Divider(),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                   child: PrimaryButton(
                     onPressed: chat.isStreaming
                         ? null
@@ -80,42 +108,7 @@ class ConversationSidebar extends StatelessWidget {
                     onOpenChat: onOpenChat,
                   ),
                 ),
-                const Divider(),
-                Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: _FooterButton(
-                          icon: LucideIcons.chartColumn,
-                          label: 'Usage',
-                          onPressed: onOpenUsage,
-                        ),
-                      ),
-                      const Gap(4),
-                      Expanded(
-                        child: _FooterButton(
-                          icon: LucideIcons.blocks,
-                          label: 'Models',
-                          onPressed: onOpenModels,
-                        ),
-                      ),
-                      const Gap(4),
-                      Expanded(
-                        child: _FooterButton(
-                          icon: LucideIcons.settings,
-                          label: 'Settings',
-                          onPressed: () => showSettingsDialog(
-                            context,
-                            settings,
-                            auth,
-                            chat.api,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                SizedBox(height: bottomInset),
               ],
             );
           },
@@ -131,43 +124,117 @@ class ConversationSidebar extends StatelessWidget {
   }
 }
 
-/// One of the sidebar's three footer entries. Kept compact so three fit across
-/// the 300 px sidebar; the label ellipsizes rather than overflowing.
-class _FooterButton extends StatelessWidget {
-  const _FooterButton({
+/// The tab row above the chat list: Usage / Models / Settings. The one whose
+/// overlay is currently shown reads as selected.
+class _SectionTabs extends StatelessWidget {
+  const _SectionTabs({
+    required this.section,
+    required this.onOpenUsage,
+    required this.onOpenModels,
+    required this.onOpenSettings,
+  });
+
+  final SidebarSection section;
+  final VoidCallback? onOpenUsage;
+  final VoidCallback? onOpenModels;
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: _Tab(
+              icon: LucideIcons.chartColumn,
+              label: 'Usage',
+              selected: section == SidebarSection.usage,
+              onPressed: onOpenUsage,
+            ),
+          ),
+          const Gap(4),
+          Expanded(
+            child: _Tab(
+              icon: LucideIcons.blocks,
+              label: 'Models',
+              selected: section == SidebarSection.models,
+              onPressed: onOpenModels,
+            ),
+          ),
+          const Gap(4),
+          Expanded(
+            child: _Tab(
+              icon: LucideIcons.settings,
+              label: 'Settings',
+              selected: false,
+              onPressed: onOpenSettings,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One tab in the sidebar's section row. Kept compact so three fit across the
+/// 300 px sidebar; the label ellipsizes rather than overflowing.
+class _Tab extends StatelessWidget {
+  const _Tab({
     required this.icon,
     required this.label,
+    required this.selected,
     required this.onPressed,
   });
 
   final IconData icon;
   final String label;
+  final bool selected;
   final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return GhostButton(
-      alignment: Alignment.centerLeft,
-      density: ButtonDensity.compact,
+    const ghost = ButtonStyle.ghost(
       size: ButtonSize.small,
-      onPressed: onPressed,
-      leading: Icon(icon, size: 15),
-      child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+      density: ButtonDensity.compact,
+    );
+    const selectedStyle = ButtonStyle.secondary(
+      size: ButtonSize.small,
+      density: ButtonDensity.compact,
+    );
+    return SelectedButton(
+      value: selected,
+      onChanged: onPressed == null ? null : (_) => onPressed!(),
+      style: ghost,
+      selectedStyle: selectedStyle,
+      alignment: Alignment.center,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15),
+          const Gap(6),
+          Flexible(
+            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
     );
   }
 }
 
 class _Header extends StatelessWidget {
-  const _Header({this.onClose, this.onRefresh});
+  const _Header({this.onClose, this.onRefresh, this.isRefreshing = false});
 
   final VoidCallback? onClose;
   final VoidCallback? onRefresh;
+  final bool isRefreshing;
 
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 12, 14),
+      padding: const EdgeInsets.fromLTRB(16, 16, 12, 8),
       child: Row(
         children: [
           Container(
@@ -199,6 +266,7 @@ class _Header extends StatelessWidget {
               icon: LucideIcons.refreshCw,
               label: 'Refresh chats',
               size: 18,
+              busy: isRefreshing,
               onPressed: onRefresh,
             ),
           if (onClose != null)
@@ -299,6 +367,7 @@ class _ConversationTileState extends State<_ConversationTile> {
     final colors = ColorScheme.of(context);
     final conversation = widget.conversation;
     final selected = widget.selected;
+    final showOptions = _hovered || selected;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
@@ -357,7 +426,7 @@ class _ConversationTileState extends State<_ConversationTile> {
                   ],
                 ),
               ),
-              if (_hovered || selected)
+              if (showOptions)
                 IconAction(
                   icon: LucideIcons.ellipsis,
                   label: 'Chat options',

@@ -4,13 +4,12 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Procul's shadcn themes.
 ///
-/// Both are built on the neutral "zinc" palette with a teal/emerald accent, so
-/// the app reads as one cohesive design in either mode. Dark mode is the default
-/// (see [SettingsController]). The UI face is Inter; GeistMono (bundled by
-/// shadcn) stays on for inline code and code blocks, and Coiny is used for a
-/// couple of display accents (see `GoogleFonts.coiny`).
-const _lightAccent = Color(0xFF0D9488);
-const _darkAccent = Color(0xFF2DD4BF);
+/// Both are built on the neutral "zinc" palette with a magenta accent
+/// (`#a832a0`), so the app reads as one cohesive design in either mode. Dark
+/// mode is the default (see [SettingsController]). The UI face is Inter;
+/// GeistMono (bundled by shadcn) stays on for inline code and code blocks, and
+/// Coiny is used for a couple of display accents (see `GoogleFonts.coiny`).
+const _accent = Color(0xFFA832A0);
 
 /// The UI face. Shared by the shadcn themes and the Material bridge so the
 /// markdown matches.
@@ -18,9 +17,9 @@ final interTextStyle = GoogleFonts.inter();
 
 final proculLightTheme = ThemeData(
   colorScheme: ColorSchemes.lightZinc.copyWith(
-    primary: () => _lightAccent,
+    primary: () => _accent,
     primaryForeground: () => const Color(0xFFFFFFFF),
-    ring: () => _lightAccent,
+    ring: () => _accent,
   ),
   typography: Typography.geist(sans: interTextStyle),
   radius: 0.625,
@@ -28,9 +27,9 @@ final proculLightTheme = ThemeData(
 
 final proculDarkTheme = ThemeData(
   colorScheme: ColorSchemes.darkZinc.copyWith(
-    primary: () => _darkAccent,
-    primaryForeground: () => const Color(0xFF042F2E),
-    ring: () => _darkAccent,
+    primary: () => _accent,
+    primaryForeground: () => const Color(0xFFFFFFFF),
+    ring: () => _accent,
   ),
   typography: Typography.geist(sans: interTextStyle),
   radius: 0.625,

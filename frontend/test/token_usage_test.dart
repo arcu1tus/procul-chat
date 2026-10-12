@@ -99,4 +99,22 @@ void main() {
     expect(usage.cachedInputTokens, 2);
     expect(usage.totalTokens, 17);
   });
+
+  test('decodes a usage SSE event with a model slug', () async {
+    const sse =
+        'data: {"value":{"inputTokens":1,"outputTokens":2,'
+        '"cachedInputTokens":3,"totalTokens":6,"model":"local/llama",'
+        '"type":"usage"}}\n\n';
+    final client = MockClient.streaming(
+      (request, body) async => http.StreamedResponse(
+        Stream.value(utf8.encode(sse)),
+        200,
+        headers: {'content-type': 'text/event-stream'},
+      ),
+    );
+    final api = ChatApi(baseUrl: 'http://test', token: 'tok', client: client);
+
+    final event = (await api.sendMessage('c1', 'hi').toList()).single;
+    expect((event as UsageEvent).model, 'local/llama');
+  });
 }

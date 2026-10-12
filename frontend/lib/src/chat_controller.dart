@@ -6,6 +6,15 @@ import 'chat_stream_event.dart';
 import 'conversation_store.dart';
 import 'models.dart';
 
+/// A friendly message for an optimistic-concurrency conflict (`409`): the chat
+/// changed on another device, so the client resyncs instead of failing hard.
+const _conflictMessage = 'This chat changed on another device — refreshed.';
+
+/// Whether [error] is the backend's optimistic-concurrency conflict (`409`),
+/// which the client answers by resyncing rather than reporting a hard failure.
+bool _isConflict(Object error) =>
+    error is ChatApiException && error.statusCode == 409;
+
 /// Holds the conversation list and the active conversation's messages, and
 /// drives the SSE turn lifecycle.
 ///
@@ -30,8 +39,25 @@ class ChatController extends ChangeNotifier {
   /// True while the conversation list is being fetched.
   bool isLoadingConversations = false;
 
+  /// True while an explicit refresh (the list, or the whole app) is in flight.
+  ///
+  /// Distinct from [isLoadingConversations], which drives the full skeleton:
+  /// this is what the refresh buttons use to show a spinner without blanking
+  /// the list.
+  bool isRefreshing = false;
+
   /// True while the active conversation's history is being fetched.
   bool isLoadingMessages = false;
+
+  /// True while a page of *older* messages is being fetched (infinite scroll up).
+  bool isLoadingOlder = false;
+
+  /// Whether the backend may hold more history before the oldest loaded message.
+  /// Set from "the last page was full"; cleared when a short page arrives.
+  bool hasMoreHistory = false;
+
+  /// The number of messages fetched per history page.
+  static const int _pageSize = 100;
 
   /// True while an assistant reply is being streamed.
   bool isStreaming = false;
@@ -136,6 +162,8 @@ class ChatController extends ChangeNotifier {
 
   /// Re-fetches the conversation list (used after a failed load, for example).
   Future<void> refreshConversations() async {
+    isRefreshing = true;
+    notifyListeners();
     try {
       final list = await api.listConversations();
       conversations
@@ -144,6 +172,9 @@ class ChatController extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       error = 'Could not refresh your chats: $e';
+      notifyListeners();
+    } finally {
+      isRefreshing = false;
       notifyListeners();
     }
   }
@@ -163,6 +194,43 @@ class ChatController extends ChangeNotifier {
     await reloadActiveConversation();
   }
 
+  /// Fetches the page of messages older than the oldest one loaded and prepends
+  /// it (infinite scroll up). No-op while a reply streams or a page is already
+  /// in flight, and when the backend has no more history.
+  Future<void> loadOlderMessages() async {
+    final id = _conversationId;
+    if (id == null || isLoadingOlder || !hasMoreHistory || isStreaming) return;
+    final oldestId = messages.isEmpty ? null : messages.first.id;
+    if (oldestId == null) {
+      hasMoreHistory = false;
+      notifyListeners();
+      return;
+    }
+
+    isLoadingOlder = true;
+    notifyListeners();
+    try {
+      final older = await api.fetchMessages(
+        id,
+        limit: _pageSize,
+        afterMessageId: oldestId,
+      );
+      if (_conversationId != id) return; // Switched away mid-fetch.
+      final existing = {for (final message in messages) message.id};
+      final fresh = [
+        for (final message in older)
+          if (!existing.contains(message.id)) message,
+      ];
+      messages.insertAll(0, fresh);
+      hasMoreHistory = older.length >= _pageSize;
+    } catch (e) {
+      error = 'Could not load older messages: $e';
+    } finally {
+      isLoadingOlder = false;
+      notifyListeners();
+    }
+  }
+
   /// Opens [id], loading its history into the buffer.
   Future<void> selectConversation(String id) async {
     if (id == _conversationId && messages.isNotEmpty) return;
@@ -178,6 +246,8 @@ class ChatController extends ChangeNotifier {
     editingMessageId = null;
     activeUsage = const TokenUsage();
     lastTurnUsage = null;
+    hasMoreHistory = false;
+    isLoadingOlder = false;
     error = null;
     await _store.clear();
     notifyListeners();
@@ -242,6 +312,17 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Uploads several picked files (a gallery/file multi-select), keeping going
+  /// when one fails so a single bad file does not drop the rest.
+  Future<void> uploadAttachments(
+    List<PickedAttachment> picked, {
+    Set<ModelInputModality>? capabilities,
+  }) async {
+    for (final file in picked) {
+      await uploadAttachment(file, capabilities: capabilities);
+    }
+  }
+
   /// The bytes for an attachment, fetched through the authenticated [api] and
   /// cached for the lifetime of the controller.
   ///
@@ -277,10 +358,15 @@ class ChatController extends ChangeNotifier {
       ChatMessage(
         text: trimmed,
         role: MessageRole.user,
+        createdAt: DateTime.now(),
         attachments: attachments,
       ),
     );
-    final assistant = ChatMessage(text: '', role: MessageRole.assistant);
+    final assistant = ChatMessage(
+      text: '',
+      role: MessageRole.assistant,
+      createdAt: DateTime.now(),
+    );
     messages.add(assistant);
     _promoteActive();
     isStreaming = true;
@@ -378,7 +464,11 @@ class ChatController extends ChangeNotifier {
       ..clear()
       ..addAll(attachments);
     messages.removeRange(index + 1, messages.length);
-    final assistant = ChatMessage(text: '', role: MessageRole.assistant);
+    final assistant = ChatMessage(
+      text: '',
+      role: MessageRole.assistant,
+      createdAt: DateTime.now(),
+    );
     messages.add(assistant);
     pendingAttachments.clear();
     editingMessageId = null;
@@ -387,6 +477,7 @@ class ChatController extends ChangeNotifier {
 
     final reply = StringBuffer();
     var hardFailure = false;
+    var conflict = false;
     try {
       await _consumeReply(
         api.editMessage(
@@ -399,7 +490,8 @@ class ChatController extends ChangeNotifier {
         reply: reply,
       );
     } catch (e) {
-      error = '$e';
+      conflict = _isConflict(e);
+      error = conflict ? _conflictMessage : '$e';
       hardFailure = true;
     } finally {
       if (assistant.text.isEmpty) {
@@ -412,6 +504,12 @@ class ChatController extends ChangeNotifier {
     // A hard failure means the server may hold a different branch; resync.
     if (hardFailure) {
       await reloadActiveConversation();
+      if (conflict) {
+        // The resync cleared `error`; re-surface the conflict so the user sees
+        // why the chat was refreshed.
+        error = _conflictMessage;
+        notifyListeners();
+      }
     }
   }
 
@@ -459,11 +557,15 @@ class ChatController extends ChangeNotifier {
           // flight (it is emitted after the reply).
           isStreaming = false;
           notifyListeners();
-        case UsageEvent(:final usage):
+        case UsageEvent(:final usage, :final model):
           // The turn's token usage, summed across any tool-loop calls. Add it
           // to the conversation's running total and remember it for the chip.
+          // Also stamp it on the response so the per-response popover can show
+          // *this* reply's model and tokens.
           activeUsage = activeUsage + usage;
           lastTurnUsage = usage;
+          assistant.usage = usage;
+          assistant.model = model ?? activeModel;
           notifyListeners();
         case AcknowledgeEvent():
       }
@@ -498,6 +600,12 @@ class ChatController extends ChangeNotifier {
       if (previous != null) {
         _replaceConversation(previous);
       }
+      if (_isConflict(e)) {
+        await reloadActiveConversation();
+        error = _conflictMessage;
+        notifyListeners();
+        return;
+      }
       error = 'Could not change the model: $e';
       notifyListeners();
     }
@@ -522,6 +630,12 @@ class ChatController extends ChangeNotifier {
       if (previous != null) {
         _replaceConversation(previous);
       }
+      if (_isConflict(e)) {
+        await reloadActiveConversation();
+        error = _conflictMessage;
+        notifyListeners();
+        return;
+      }
       error = 'Could not rename the chat: $e';
       notifyListeners();
     }
@@ -539,6 +653,8 @@ class ChatController extends ChangeNotifier {
         editingMessageId = null;
         activeUsage = const TokenUsage();
         lastTurnUsage = null;
+        hasMoreHistory = false;
+        isLoadingOlder = false;
         await _store.clear();
       }
       notifyListeners();
@@ -551,6 +667,8 @@ class ChatController extends ChangeNotifier {
   Future<void> _openConversation(String id) async {
     _conversationId = id;
     isLoadingMessages = true;
+    isLoadingOlder = false;
+    hasMoreHistory = false;
     messages.clear();
     pendingAttachments.clear();
     editingMessageId = null;
@@ -560,10 +678,12 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final history = await api.fetchMessages(id);
+      final history = await api.fetchMessages(id, limit: _pageSize);
       messages
         ..clear()
         ..addAll(history);
+      // A full page means the backend may hold more before the oldest message.
+      hasMoreHistory = history.length >= _pageSize;
       await _store.write(id);
     } catch (e) {
       error = 'Could not load the chat: $e';

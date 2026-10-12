@@ -10,6 +10,7 @@ import 'package:procul_chat_flutter/src/auth_api.dart';
 import 'package:procul_chat_flutter/src/auth_controller.dart';
 import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
+import 'package:procul_chat_flutter/src/conversation_sidebar.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
 import 'package:procul_chat_flutter/src/settings_controller.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -293,5 +294,57 @@ void main() {
     expect(find.text('GPT-4o mini'), findsWidgets);
     expect(find.text('Fast and cheap'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the sidebar sections render as a tab row above the chats', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient(
+      (request) async => http.Response('{"conversations":[]}', 200),
+    );
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      store: FakeConversationStore(),
+    );
+
+    await tester.pumpWidget(
+      _app(chat: chat, settings: SettingsController(), auth: _auth()),
+    );
+    await tester.pumpAndSettle();
+
+    // The three actions live in a tab row above the list.
+    expect(find.text('Usage'), findsOneWidget);
+    expect(find.text('Models'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Usage')).dy,
+      lessThan(
+        tester
+            .getTopLeft(
+              find.descendant(
+                of: find.byType(ConversationSidebar),
+                matching: find.text('New chat'),
+              ),
+            )
+            .dy,
+      ),
+    );
+
+    // A divider separates the tab row from the chats.
+    expect(
+      find.descendant(
+        of: find.byType(ConversationSidebar),
+        matching: find.byType(Divider),
+      ),
+      findsOneWidget,
+    );
+
+    // The active section reads as selected after opening it.
+    await tester.tap(find.text('Models'));
+    await tester.pumpAndSettle();
+    expect(find.text('Models configured on this server'), findsOneWidget);
   });
 }

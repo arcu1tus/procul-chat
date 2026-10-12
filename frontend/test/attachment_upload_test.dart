@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -21,6 +22,8 @@ final _pngBytes = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYA'
   'AjCB0C8AAAAASUVORK5CYII=',
 );
+
+final _textBytes = Uint8List.fromList(utf8.encode('hello'));
 
 Widget _app(ChatScreen screen) => MaterialShadcnApp(
   theme: proculLightTheme,
@@ -45,35 +48,38 @@ ModelCatalogController _catalog(
     ),
   ];
 
-MockClient _client({void Function(http.Request request)? onRequest}) =>
-    MockClient((request) async {
-      onRequest?.call(request);
-      final path = request.url.path;
+MockClient _client({void Function(http.Request request)? onRequest}) {
+  var uploads = 0;
+  return MockClient((request) async {
+    onRequest?.call(request);
+    final path = request.url.path;
 
-      if (path == '/v1/conversations' && request.method == 'GET') {
-        return http.Response(jsonEncode({'conversations': <dynamic>[]}), 200);
-      }
-      if (path == '/v1/attachments' && request.method == 'POST') {
-        return http.Response(
-          jsonEncode({
-            'id': 'a1',
-            'fileName': 'photo.png',
-            'contentType': 'image/png',
-            'sizeBytes': _pngBytes.length,
-            'createdAt': '2026-10-11T10:00:00Z',
-          }),
-          201,
-        );
-      }
-      if (path == '/v1/attachments/a1' && request.method == 'GET') {
-        return http.Response.bytes(
-          _pngBytes,
-          200,
-          headers: {'content-type': 'image/png'},
-        );
-      }
-      return http.Response('{}', 200);
-    });
+    if (path == '/v1/conversations' && request.method == 'GET') {
+      return http.Response(jsonEncode({'conversations': <dynamic>[]}), 200);
+    }
+    if (path == '/v1/attachments' && request.method == 'POST') {
+      uploads++;
+      return http.Response(
+        jsonEncode({
+          'id': 'a$uploads',
+          'fileName': 'photo.png',
+          'contentType': 'image/png',
+          'sizeBytes': _pngBytes.length,
+          'createdAt': '2026-10-11T10:00:00Z',
+        }),
+        201,
+      );
+    }
+    if (path.startsWith('/v1/attachments/') && request.method == 'GET') {
+      return http.Response.bytes(
+        _pngBytes,
+        200,
+        headers: {'content-type': 'image/png'},
+      );
+    }
+    return http.Response('{}', 200);
+  });
+}
 
 ChatController _chat(MockClient client) => ChatController(
   api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
@@ -81,6 +87,13 @@ ChatController _chat(MockClient client) => ChatController(
 );
 
 void main() {
+  setUp(() {
+    // The `image_picker` platform channel is not registered under flutter_test,
+    // so pin camera availability per test.
+    AttachmentSources.debugCameraSupported = false;
+  });
+  tearDown(() => AttachmentSources.debugCameraSupported = null);
+
   testWidgets('picking a file uploads it, shows a chip, and removes it', (
     tester,
   ) async {
@@ -98,12 +111,22 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    picker.next = PickedAttachment(
-      bytes: _pngBytes,
-      fileName: 'photo.png',
-      contentType: 'image/png',
-    );
+    picker.filesResult = [
+      PickedAttachment(
+        bytes: _pngBytes,
+        fileName: 'photo.png',
+        contentType: 'image/png',
+      ),
+    ];
+
+    // The paperclip opens the source menu (Gallery + Files on desktop).
     await tester.tap(find.byIcon(LucideIcons.paperclip));
+    await tester.pumpAndSettle();
+    expect(find.text('Gallery'), findsOneWidget);
+    expect(find.text('Files'), findsOneWidget);
+    expect(find.text('Camera'), findsNothing);
+
+    await tester.tap(find.text('Files'));
     await tester.pumpAndSettle();
 
     expect(chat.pendingAttachments, hasLength(1));
@@ -130,12 +153,13 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('the model cannot read the file: rejected with a message', (
+  testWidgets('the model cannot read images: camera and gallery are hidden', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1000, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
+    AttachmentSources.debugCameraSupported = true;
     final requests = <http.Request>[];
     final chat = _chat(_client(onRequest: requests.add));
     // A text-only model: an image has no home.
@@ -148,15 +172,20 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    picker.next = PickedAttachment(
-      bytes: _pngBytes,
-      fileName: 'photo.png',
-      contentType: 'image/png',
-    );
+    picker.filesResult = [
+      PickedAttachment(
+        bytes: _pngBytes,
+        fileName: 'photo.png',
+        contentType: 'image/png',
+      ),
+    ];
+    // Only Files remains, so the paperclip opens it directly (no menu).
     await tester.tap(find.byIcon(LucideIcons.paperclip));
     await tester.pumpAndSettle();
 
-    expect(picker.pickCalls, 1);
+    expect(picker.filesCalls, 1);
+    expect(picker.cameraCalls, 0);
+    expect(picker.galleryCalls, 0);
     // The picker was restricted to text files, so an image could not be chosen.
     expect(picker.lastAllowedExtensions, contains('txt'));
     expect(picker.lastAllowedExtensions, isNot(contains('png')));
@@ -193,10 +222,161 @@ void main() {
 
     await tester.tap(find.byIcon(LucideIcons.paperclip));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Files'));
+    await tester.pumpAndSettle();
 
-    expect(picker.pickCalls, 1);
+    expect(picker.filesCalls, 1);
     expect(chat.pendingAttachments, isEmpty);
     expect(chat.error, isNull);
+  });
+
+  testWidgets('camera captures and uploads where the platform supports it', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    AttachmentSources.debugCameraSupported = true;
+    final chat = _chat(_client());
+    final catalog = _catalog(chat.api);
+    chat.setDefaultModel('solo');
+    final picker = FakeAttachmentPicker();
+
+    await tester.pumpWidget(
+      _app(ChatScreen(chat: chat, catalog: catalog, picker: picker)),
+    );
+    await tester.pumpAndSettle();
+
+    picker.cameraResult = PickedAttachment(
+      bytes: _pngBytes,
+      fileName: 'shot.png',
+      contentType: 'image/png',
+    );
+
+    await tester.tap(find.byIcon(LucideIcons.paperclip));
+    await tester.pumpAndSettle();
+    expect(find.text('Camera'), findsOneWidget);
+    await tester.tap(find.text('Camera'));
+    await tester.pumpAndSettle();
+
+    expect(picker.cameraCalls, 1);
+    expect(chat.pendingAttachments, hasLength(1));
+    expect(chat.pendingAttachments.single.fileName, 'photo.png');
+  });
+
+  testWidgets('gallery multi-select uploads every file', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final chat = _chat(_client());
+    final catalog = _catalog(chat.api);
+    chat.setDefaultModel('solo');
+    final picker = FakeAttachmentPicker();
+
+    await tester.pumpWidget(
+      _app(ChatScreen(chat: chat, catalog: catalog, picker: picker)),
+    );
+    await tester.pumpAndSettle();
+
+    picker.galleryResult = [
+      PickedAttachment(
+        bytes: _pngBytes,
+        fileName: 'one.png',
+        contentType: 'image/png',
+      ),
+      PickedAttachment(
+        bytes: _pngBytes,
+        fileName: 'two.png',
+        contentType: 'image/png',
+      ),
+    ];
+
+    await tester.tap(find.byIcon(LucideIcons.paperclip));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Gallery'));
+    await tester.pumpAndSettle();
+
+    expect(picker.galleryCalls, 1);
+    expect(chat.pendingAttachments, hasLength(2));
+    // The mock upload endpoint echoes a fixed file name, so both chips show it.
+    expect(find.text('photo.png'), findsNWidgets(2));
+  });
+
+  testWidgets('a single failing upload keeps the rest (multi-upload)', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    // The backend rejects the second upload.
+    var uploads = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/v1/attachments' && request.method == 'POST') {
+        uploads++;
+        if (uploads == 2) return http.Response('too big', 413);
+        return http.Response(
+          jsonEncode({
+            'id': 'a$uploads',
+            'fileName': 'ok.txt',
+            'contentType': 'text/plain',
+            'sizeBytes': 5,
+            'createdAt': '2026-10-11T10:00:00Z',
+          }),
+          201,
+        );
+      }
+      return http.Response('{"conversations":[]}', 200);
+    });
+    final chat = _chat(client);
+    final catalog = _catalog(chat.api);
+    chat.setDefaultModel('solo');
+    final picker = FakeAttachmentPicker();
+
+    await tester.pumpWidget(
+      _app(ChatScreen(chat: chat, catalog: catalog, picker: picker)),
+    );
+    await tester.pumpAndSettle();
+
+    picker.filesResult = [
+      PickedAttachment(
+        bytes: _textBytes,
+        fileName: 'ok.txt',
+        contentType: 'text/plain',
+      ),
+      PickedAttachment(
+        bytes: _textBytes,
+        fileName: 'bad.txt',
+        contentType: 'text/plain',
+      ),
+    ];
+
+    await tester.tap(find.byIcon(LucideIcons.paperclip));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Files'));
+    await tester.pumpAndSettle();
+
+    expect(chat.pendingAttachments, hasLength(1));
+    expect(chat.pendingAttachments.single.fileName, 'ok.txt');
+    expect(chat.error, isNotNull);
+
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('the attachment sources helper follows the platform', (
+    tester,
+  ) async {
+    AttachmentSources.debugCameraSupported = false;
+    expect(AttachmentSources.available(), [
+      AttachmentSource.gallery,
+      AttachmentSource.files,
+    ]);
+    AttachmentSources.debugCameraSupported = true;
+    expect(AttachmentSources.available(), [
+      AttachmentSource.camera,
+      AttachmentSource.gallery,
+      AttachmentSource.files,
+    ]);
   });
 
   test('attachmentProblem gates by capability and size', () {

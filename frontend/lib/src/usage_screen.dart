@@ -60,8 +60,16 @@ class _UsageScreenState extends State<UsageScreen> {
           loadingProgressIndeterminate: _controller.isLoading,
           headers: [
             AppBar(
-              title: const Text('Usage'),
-              subtitle: const Text('Tokens used by the assistant').muted.small,
+              title: const Text(
+                'Usage',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: const Text(
+                'Tokens used by the assistant',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ).muted.small,
               leading: widget.showMenuButton
                   ? [
                       IconAction(

@@ -10,6 +10,13 @@ import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 /// back to Material's default light scheme, so in dark mode its code blocks turn
 /// near-white and its headings and rules use the wrong greys.
 void main() {
+  test('both themes use the magenta accent', () {
+    expect(proculLightTheme.colorScheme.primary, const Color(0xFFA832A0));
+    expect(proculDarkTheme.colorScheme.primary, const Color(0xFFA832A0));
+    expect(proculLightTheme.colorScheme.ring, const Color(0xFFA832A0));
+    expect(proculDarkTheme.colorScheme.ring, const Color(0xFFA832A0));
+  });
+
   Future<material.ThemeData> pumpWithMode(
     WidgetTester tester,
     ThemeMode mode,
