@@ -37,7 +37,8 @@ exits. You never get a half-configured server.
 | ------- | -------- | ------- |
 | [`server`](#server) | no | CORS origins and session-token lifetime |
 | [`database`](#database) | no\* | PostgreSQL connection string |
-| [`attachments`](#attachments) | no | Upload storage, limits, and content mapping |
+| [`attachments`](#attachments) | no | Upload storage, limits, retention, and content mapping |
+| [`imageGeneration`](#imagegeneration) | no | The `generate_image` tool and generated-image retention |
 | [`models`](#models) | **yes** | One or more chat models |
 | [`titleModel`](#titlemodel) | no | Slug for the AI title call |
 | [`modelHealth`](#modelhealth) | no | Model liveness probing |
@@ -89,6 +90,7 @@ needed) whenever a connection string is configured. There is no separate migrati
 | `allowedContentTypes` | `string[]` | `[]` | Content-type **patterns** (wildcards like `image/*` allowed). An **empty list rejects every upload**, so set it explicitly. |
 | `resendHistory` | boolean | `true` | `true` re-sends earlier turns' attachment bytes every turn (so a model chosen later can still read them); `false` sends the bytes only on the turn the file was attached and a short text note afterwards. |
 | `textInlineMaxBytes` | integer ≥ 1 | `262144` (256 KiB) | Cap on how much of a `text/*` file is inlined into the prompt. |
+| `retention` | duration \| `"0"` | `14d` | Media age limit. After the window, **orphaned** media (never attached to a message) is deleted outright and **referenced** media keeps its metadata but loses its bytes (history shows an "expired" chip; `GET /v1/attachments/{id}` 404s). `"0"` keeps media forever. See [Retention](#retention). |
 | `s3` | object | – | Required when `storage` is `s3`. See below. |
 
 `attachments.s3`:
@@ -109,6 +111,7 @@ needed) whenever a connection string is configured. There is no separate migrati
   "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
   "resendHistory": true,
   "textInlineMaxBytes": 262144,
+  "retention": "14d",
   "s3": {
     "bucket": "${S3_BUCKET}",
     "region": "${S3_REGION}",
@@ -126,6 +129,21 @@ top-level README. In short: `image/*` → image part (`image`), `application/pdf
 (`file`/`pdf`), `audio/*` → input-audio (`audio`), `text/*` always inlined, everything else
 (video, unknown) stored and shown but never sent. The backend enforces the capability gate at
 **upload** *and* at **send**.
+
+#### Retention
+
+Media lives forever only if you set `"0"`. Otherwise the backend applies an **age limit** (default
+**14 days**) per category — `attachments.retention` for uploads and `imageGeneration.retention`
+for generated/shown images — via a background sweep (hourly). Two outcomes, driven by the same
+window:
+
+1. **Orphaned media** (`messageId` is null — uploaded but never sent, a failed send, or a generated
+   image from a turn that never persisted) is **deleted outright** (metadata + bytes).
+2. **Referenced media** (attached to a message) keeps its **metadata** but loses its **bytes**, so
+   history still shows an "expired" chip and `GET /v1/attachments/{id}` returns `404`.
+
+Bytes are always deleted through the configured store (S3 objects do not cascade with the database
+rows). Set the window to `"0"` to keep media indefinitely.
 
 ### `models`
 
@@ -181,6 +199,44 @@ conversation's model. Must reference a configured slug.
 ```jsonc
 "titleModel": "openrouter/free"
 ```
+
+### `imageGeneration`
+
+Controls the `generate_image` tool (and the `show_image` tool's stored media). **Disabled by
+default**: with `enabled: false` the tool is not offered to the model and the system prompt does
+not mention it.
+
+| Field | Type | Default | Meaning |
+| ----- | ---- | ------- | ------- |
+| `enabled` | boolean | `false` | Master switch for `generate_image`. |
+| `provider` | `"openrouter"` \| `"openai-compatible"` | `openrouter` | `openrouter` uses the dedicated Image API (`POST {baseUrl}/images`); `openai-compatible` uses `POST {baseUrl}/images/generations`. |
+| `baseUrl` | string | `https://openrouter.ai/api/v1` | Provider base URL (absolute `http(s)`). |
+| `apiKey` | string (`${VAR}` ok) | – | Provider key. **Never returned by the API.** Reuses `OPENROUTER_KEY` in the example. |
+| `model` | string | `google/gemini-2.5-flash-image` | An image-**output** model. Required when `enabled` is true. |
+| `defaultSize` | string | `1024x1024` | Default size when the model omits one. |
+| `defaultAspectRatio` | string | `1:1` | Default aspect ratio when the model omits one. |
+| `maxReferenceImages` | integer ≥ 0 | `4` | Cap on reference images sent with one generation. |
+| `timeout` | duration | `120s` | Per-request budget. |
+| `retention` | duration \| `"0"` | inherits `attachments.retention` | Age limit for generated/shown images; same semantics as `attachments.retention`. |
+
+```jsonc
+"imageGeneration": {
+  "enabled": false,
+  "provider": "openrouter",
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "apiKey": "${OPENROUTER_KEY}",
+  "model": "google/gemini-2.5-flash-image",
+  "defaultSize": "1024x1024",
+  "defaultAspectRatio": "1:1",
+  "maxReferenceImages": 4,
+  "timeout": "120s",
+  "retention": "14d"
+}
+```
+
+Generated and shown images are stored like uploads and served from `GET /v1/attachments/{id}`; the
+chat receives an `image` SSE event carrying the attachment id. The `show_image` tool (URL or
+base64) is always offered; its URL fetches are SSRF-guarded (public `http(s)` only).
 
 ### `modelHealth`
 
@@ -268,7 +324,7 @@ The example references these variables:
 | Variable | Referenced from | Purpose |
 | -------- | --------------- | ------- |
 | `DB_CONNECTION_STRING` | `database.connectionString` | PostgreSQL connection string |
-| `OPENROUTER_KEY` | `models[].apiKey` | OpenRouter API key |
+| `OPENROUTER_KEY` | `models[].apiKey`, `imageGeneration.apiKey` | OpenRouter API key |
 | `S3_BUCKET` / `S3_REGION` / `S3_ENDPOINT` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `attachments.s3.*` | Only when `attachments.storage` is `s3` |
 | `GITHUB_MCP_TOKEN` | `mcpServers.*.headers` | Example MCP server token |
 
@@ -289,9 +345,11 @@ Two are read directly by the process (not from `config.jsonc`):
 ## Durations
 
 Every duration field (`sessionLifetime`, `modelHealth.interval`/`timeout`,
-`mcp.connectTimeout`/`healthInterval`) accepts one or more `<number><unit>` segments, where the
-unit is `d`, `h`, `m`, or `s`: `30d`, `12h`, `90s`, `1h30m`. A malformed value fails startup and
-names the field.
+`mcp.connectTimeout`/`healthInterval`, `imageGeneration.timeout`, `attachments.retention`/
+`imageGeneration.retention`) accepts one or more `<number><unit>` segments, where the unit is `d`,
+`h`, `m`, or `s`: `30d`, `12h`, `90s`, `1h30m`. A malformed value fails startup and names the
+field. A **retention** field additionally accepts the literal `"0"`, meaning "keep forever"
+(retention disabled for that category).
 
 ## Related pages
 

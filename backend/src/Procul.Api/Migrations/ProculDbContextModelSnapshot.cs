@@ -54,6 +54,13 @@ namespace Procul.Api.Migrations
                     b.Property<long>("SizeBytes")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("upload");
+
                     b.Property<string>("StorageKey")
                         .IsRequired()
                         .HasMaxLength(512)
@@ -91,6 +98,9 @@ namespace Procul.Api.Migrations
                     b.Property<string>("Model")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer");
 
                     b.Property<string>("Title")
                         .IsRequired()
@@ -153,6 +163,9 @@ namespace Procul.Api.Migrations
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)");
 
+                    b.Property<Guid?>("MessageId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Model")
                         .IsRequired()
                         .HasMaxLength(256)
@@ -169,6 +182,8 @@ namespace Procul.Api.Migrations
                     b.HasIndex("ConversationId");
 
                     b.HasIndex("CreatedAt");
+
+                    b.HasIndex("MessageId");
 
                     b.ToTable("TurnUsages");
                 });

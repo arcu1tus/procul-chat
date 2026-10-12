@@ -40,12 +40,14 @@ public class UsageStreamingTests
 
     private static async Task<(List<ChatStreamEventV1> Events, string Reply)> Run(
         IAsyncEnumerable<ChatResponseUpdate> updates,
-        TurnUsageTotals usage)
+        TurnUsageTotals usage,
+        string? model = null)
     {
         var events = new List<ChatStreamEventV1>();
         var reply = new StringBuilder();
 
-        await foreach (var evt in ChatStreamServiceV1.StreamTokens(updates, reply, usage, CancellationToken.None))
+        await foreach (var evt in ChatStreamServiceV1.StreamTokens(
+            updates, reply, usage, media: null, model: model, CancellationToken.None))
         {
             events.Add(evt);
         }
@@ -120,5 +122,16 @@ public class UsageStreamingTests
 
         var usageEvent = Assert.Single(events.OfType<ChatStreamEventV1.Usage>());
         Assert.Equal(10, usageEvent.Value.TotalTokens);
+    }
+
+    [Fact]
+    public async Task The_usage_event_carries_the_model_slug()
+    {
+        var usage = new TurnUsageTotals();
+
+        var (events, _) = await Run(Updates(Usage(input: 1, output: 1, cached: 0)), usage, model: "test/model");
+
+        var usageEvent = Assert.Single(events.OfType<ChatStreamEventV1.Usage>());
+        Assert.Equal("test/model", usageEvent.Value.Model);
     }
 }

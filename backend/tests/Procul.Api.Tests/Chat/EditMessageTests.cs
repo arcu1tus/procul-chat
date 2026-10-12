@@ -40,6 +40,7 @@ public class EditMessageTests
             McpTestHelpers.DisabledManager(),
             store,
             TestAttachmentOptions.Create(resendHistory: true),
+            Procul.Api.Chat.Tools.TurnToolFactory.CreateForTests(),
             NullLogger<ChatStreamServiceV1>.Instance);
 
     /// <summary>A client that streams <paramref name="reply"/> plus a usage payload, so a reply's

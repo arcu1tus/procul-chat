@@ -22,6 +22,7 @@
     "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
     "resendHistory": true,            // true = earlier turns re-send the bytes; false = note only
     "textInlineMaxBytes": 262144,     // cap for inlining a text/* file into the prompt (256 KiB)
+    "retention": "14d",               // media age limit: orphans deleted, referenced bytes purged; "0" = keep forever
     "s3": {
       "bucket": "${S3_BUCKET}",
       "region": "${S3_REGION}",
@@ -49,6 +50,20 @@
   ],
 
   "titleModel": "openrouter/free",     // optional; defaults to the conversation's model
+
+  "imageGeneration": {
+    // The generate_image tool (OpenRouter Image API or an OpenAI-compatible images endpoint).
+    "enabled": false,                  // when false the tool is not offered to the model
+    "provider": "openrouter",          // "openrouter" | "openai-compatible"
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKey": "${OPENROUTER_KEY}",     // ${VAR}; never returned
+    "model": "google/gemini-2.5-flash-image", // an image-output model
+    "defaultSize": "1024x1024",
+    "defaultAspectRatio": "1:1",
+    "maxReferenceImages": 4,
+    "timeout": "120s",
+    "retention": "14d"                 // generated/shown image age limit; omit to inherit attachments.retention
+  },
 
   "modelHealth": {
     "enabled": true,

@@ -11,6 +11,7 @@ internal static class TestAttachmentOptions
         IReadOnlyList<string>? allowed = null,
         bool resendHistory = false,
         long textInlineMaxBytes = 256 * 1024,
+        TimeSpan? retention = null,
         S3AttachmentOptions? s3 = null) => new()
     {
         Storage = storage,
@@ -18,6 +19,7 @@ internal static class TestAttachmentOptions
         AllowedContentTypes = allowed ?? ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
         ResendHistory = resendHistory,
         TextInlineMaxBytes = textInlineMaxBytes,
+        Retention = retention ?? TimeSpan.FromDays(14),
         S3 = s3,
     };
 }

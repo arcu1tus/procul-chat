@@ -11,6 +11,7 @@
     "server": { "$ref": "#/$defs/server" },
     "database": { "$ref": "#/$defs/database" },
     "attachments": { "$ref": "#/$defs/attachments" },
+    "imageGeneration": { "$ref": "#/$defs/imageGeneration" },
     "models": {
       "type": "array",
       "minItems": 1,
@@ -55,7 +56,24 @@
         },
         "resendHistory": { "type": "boolean" },
         "textInlineMaxBytes": { "type": "integer", "minimum": 1 },
+        "retention": { "type": "string", "minLength": 1 },
         "s3": { "$ref": "#/$defs/s3" }
+      }
+    },
+    "imageGeneration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "provider": { "enum": ["openrouter", "openai-compatible"] },
+        "baseUrl": { "type": "string", "minLength": 1 },
+        "apiKey": { "type": "string" },
+        "model": { "type": "string", "minLength": 1 },
+        "defaultSize": { "type": "string" },
+        "defaultAspectRatio": { "type": "string" },
+        "maxReferenceImages": { "type": "integer", "minimum": 0 },
+        "timeout": { "type": "string" },
+        "retention": { "type": "string", "minLength": 1 }
       }
     },
     "s3": {

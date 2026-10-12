@@ -1,5 +1,7 @@
+using Microsoft.EntityFrameworkCore;
 using Procul.Api.Chat.Tools;
-using Procul.Api.Chat.V1;
+using Procul.Api.Configuration;
+using Procul.Api.Infrastructure;
 using Procul.Api.Mcp;
 using Procul.Api.Tests.Support;
 
@@ -24,17 +26,51 @@ public class ChatToolsMergeTests
         await manager.StartAsync(CancellationToken.None);
         try
         {
-            var names = ChatStreamServiceV1.MergeTools(manager).Select(tool => tool.Name).ToList();
+            var factory = TurnToolFactory.CreateForTests();
+
+            await using var db = new ProculDbContext(
+                new DbContextOptionsBuilder<ProculDbContext>()
+                    .UseInMemoryDatabase($"merge-{Guid.NewGuid():N}")
+                    .Options);
+            var context = new TurnToolContext(
+                db,
+                new FakeAttachmentStore(),
+                TestAttachmentOptions.Create(),
+                Guid.NewGuid(),
+                "test/model",
+                new GeneratedMediaCollector());
+
+            var names = factory.BuildTurnTools(context, manager).Select(tool => tool.Name).ToList();
 
             Assert.Contains("get_current_time", names);
             Assert.Contains("run_python", names);
+            Assert.Contains("show_image", names);
             Assert.Contains("testserver__echo", names);
 
-            Assert.StartsWith(AgentTools.SystemPrompt, ChatStreamServiceV1.ComposeSystemPrompt(manager));
+            Assert.StartsWith(AgentTools.SystemPrompt, factory.ComposeSystemPrompt(manager));
         }
         finally
         {
             await manager.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Fact]
+    public void Generate_image_is_offered_only_when_enabled()
+    {
+        var disabled = TurnToolFactory.CreateForTests(
+            imageOptions: ImageGenerationOptions.FromConfig(new ProculConfig()));
+        var enabled = TurnToolFactory.CreateForTests(
+            imageOptions: ImageGenerationOptions.FromConfig(new ProculConfig
+            {
+                ImageGeneration = new ImageGenerationConfig
+                {
+                    Enabled = true,
+                    Model = "google/gemini-2.5-flash-image",
+                },
+            }));
+
+        Assert.False(disabled.ImageGenerationEnabled);
+        Assert.True(enabled.ImageGenerationEnabled);
     }
 }

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Procul.Api.Chat;
+using Procul.Api.Chat.V1;
 using Procul.Api.Infrastructure;
 using Procul.Api.Security.V1;
 using Procul.Api.Tests.Support;
@@ -212,5 +213,54 @@ public class UsagePipelineTests : IClassFixture<WebApplicationFactory<Program>>,
         Assert.NotNull(totals);
         Assert.Equal(0, totals!.TotalTokens);
         Assert.Equal(0, totals.Turns);
+    }
+
+    [Fact]
+    public async Task Message_history_carries_the_per_response_model_and_usage()
+    {
+        var factory = CreateFactory();
+        Guid conversationId;
+        Guid messageId;
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProculDbContext>();
+            var conversation = new Conversation { Title = "t" };
+            db.Conversations.Add(conversation);
+
+            var message = new ConversationMessage
+            {
+                ConversationId = conversation.Id,
+                Text = "hello",
+                MessageRole = MessageRole.Assistant,
+            };
+            db.ConversationMessages.Add(message);
+
+            db.TurnUsages.Add(new TurnUsage
+            {
+                ConversationId = conversation.Id,
+                MessageId = message.Id,
+                Model = "test/model",
+                Kind = TurnKind.Chat,
+                InputTokens = 10,
+                OutputTokens = 5,
+                CachedInputTokens = 2,
+                TotalTokens = 15,
+            });
+
+            await db.SaveChangesAsync();
+            conversationId = conversation.Id;
+            messageId = message.Id;
+        }
+
+        using var client = await SignedInClientAsync(factory);
+        var body = await client.GetFromJsonAsync<GetConversationMessagesResponseV1>(
+            $"/v1/conversations/{conversationId}/messages");
+
+        var dto = body!.Messages.Single(m => m.Id == messageId);
+        Assert.Equal("test/model", dto.Model);
+        Assert.NotNull(dto.Usage);
+        Assert.Equal(15, dto.Usage!.TotalTokens);
+        Assert.Equal(10, dto.Usage.InputTokens);
     }
 }

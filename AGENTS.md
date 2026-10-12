@@ -13,11 +13,13 @@ development. It has two halves:
 - **`backend/`** — a .NET 10 / ASP.NET Core minimal-API service. It stores conversations in
   PostgreSQL (EF Core), streams assistant replies over Server-Sent Events (SSE), calls the model
   through `Microsoft.Extensions.AI`, supports **multiple configured models** (one client each,
-  selected per conversation), runs agent tools (current time + a sandboxed Python interpreter),
-  connects to remote **MCP** tool servers, tracks **token usage**, stores/serves **file
-  attachments** (PostgreSQL or S3), and supports **editing a user message** (destructive in v1).
-  Configuration lives in a single `config.jsonc`; only secrets and the config path are environment
-  variables.
+  selected per conversation), runs agent tools (current time, a sandboxed Python interpreter, and —
+  when enabled — `generate_image`/`show_image`), connects to remote **MCP** tool servers, tracks
+  **token usage** (including per-assistant-response metadata), stores/serves **file attachments**
+  (PostgreSQL or S3) with **media retention**, supports **editing a user message**
+  (destructive in v1), and guards mutations with a per-conversation **revision** (`409` on a stale
+  `expectedRevision`). Configuration lives in a single `config.jsonc`; only secrets and the config
+  path are environment variables.
 - **`frontend/`** — a Flutter client (Linux desktop, web, mobile) with multiple conversations,
   streaming replies, **message editing**, tool-activity display, Markdown rendering, a **model
   picker** and a **Models** catalog screen, **file attachments** with inline image rendering, a

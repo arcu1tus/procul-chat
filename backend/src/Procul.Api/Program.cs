@@ -5,6 +5,7 @@ using Procul.Api.Chat.V1;
 using Procul.Api.Configuration;
 using Procul.Api.Cors;
 using Procul.Api.Infrastructure;
+using Procul.Api.Images;
 using Procul.Api.Mcp;
 using Procul.Api.Mcp.V1;
 using Procul.Api.Security;
@@ -36,6 +37,7 @@ builder.Services.AddProculAuth(builder.Configuration, config);
 builder.Services.AddProculDbContext(config);
 builder.Services.AddProculChat(config);
 builder.Services.AddProculAttachments(config);
+builder.Services.AddProculImageGeneration(config);
 builder.Services.AddProculMcp(config);
 
 var app = builder.Build();

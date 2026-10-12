@@ -48,6 +48,8 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
             e.Property(u => u.Kind).HasConversion<string>().HasMaxLength(16);
             e.HasIndex(u => u.ConversationId);
             e.HasIndex(u => u.CreatedAt);
+            // Per-response metadata: the reply's usage row points at its assistant message.
+            e.HasIndex(u => u.MessageId);
         });
 
         modelBuilder.Entity<Attachment>(e =>
@@ -58,6 +60,7 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
             e.Property(a => a.ContentType).HasMaxLength(256);
             e.Property(a => a.Sha256).HasMaxLength(64);
             e.Property(a => a.StorageKey).HasMaxLength(512);
+            e.Property(a => a.Source).HasMaxLength(32).HasDefaultValue(Attachment.SourceUpload);
 
             // An attachment is removed with the message it is part of (which is itself removed
             // with its conversation). ConversationId is a plain column, not a second FK, so there

@@ -25,6 +25,11 @@ public sealed class AttachmentOptions
     /// <summary>Cap, in bytes, on how much of a <c>text/*</c> file is inlined into the prompt.</summary>
     public required long TextInlineMaxBytes { get; init; }
 
+    /// <summary>
+    /// Media age limit for uploads. <see cref="TimeSpan.Zero"/> disables retention (keep forever).
+    /// </summary>
+    public required TimeSpan Retention { get; init; }
+
     /// <summary>S3-compatible storage settings; present only when <see cref="Storage"/> is <c>s3</c>.</summary>
     public S3AttachmentOptions? S3 { get; init; }
 
@@ -36,6 +41,8 @@ public sealed class AttachmentOptions
         AllowedContentTypes = config.Attachments.AllowedContentTypes,
         ResendHistory = config.Attachments.ResendHistory,
         TextInlineMaxBytes = config.Attachments.TextInlineMaxBytes,
+        Retention = DurationParser.ParseRetention(
+            config.Attachments.Retention, TimeSpan.FromDays(14), "attachments.retention"),
         S3 = config.Attachments.S3 is { } s3
             ? new S3AttachmentOptions
             {

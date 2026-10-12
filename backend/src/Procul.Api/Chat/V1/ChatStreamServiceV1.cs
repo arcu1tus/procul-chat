@@ -26,6 +26,7 @@ internal sealed class ChatStreamServiceV1(
     McpClientManager mcp,
     IAttachmentStore attachmentStore,
     AttachmentOptions attachmentOptions,
+    TurnToolFactory toolFactory,
     ILogger<ChatStreamServiceV1> logger)
 {
     /// <summary>Upper bound on the generated title length (characters).</summary>
@@ -110,7 +111,7 @@ internal sealed class ChatStreamServiceV1(
     )
     {
         yield return new ChatStreamEventV1.Created(new ChatStreamCreatedV1(
-            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model)
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model, conversation.Revision)
         ));
 
         var titleDefinition = ResolveTitleModel(conversation.Model);
@@ -171,6 +172,7 @@ internal sealed class ChatStreamServiceV1(
         if (conversation is not null)
         {
             conversation.UpdatedAt = DateTimeOffset.UtcNow;
+            conversation.Revision++;
         }
 
         await db.SaveChangesAsync(ct);
@@ -241,6 +243,7 @@ internal sealed class ChatStreamServiceV1(
         if (conversation is not null)
         {
             conversation.UpdatedAt = DateTimeOffset.UtcNow;
+            conversation.Revision++;
         }
 
         await db.SaveChangesAsync(ct);
@@ -320,7 +323,7 @@ internal sealed class ChatStreamServiceV1(
 
         var messages = new List<ChatMessage>(history.Count + 1)
         {
-            new(ChatRole.System, ComposeSystemPrompt(mcp)),
+            new(ChatRole.System, toolFactory.ComposeSystemPrompt(mcp)),
         };
 
         foreach (var message in history)
@@ -334,7 +337,13 @@ internal sealed class ChatStreamServiceV1(
                     ct)));
         }
 
-        var options = new ChatOptions { Tools = MergeTools(mcp) };
+        // Media produced by a tool mid-stream is collected here and linked to the assistant
+        // message once the reply is persisted.
+        var media = new GeneratedMediaCollector();
+        var toolContext = new TurnToolContext(
+            db, attachmentStore, attachmentOptions, conversationId, definition.Slug, media);
+
+        var options = new ChatOptions { Tools = toolFactory.BuildTurnTools(toolContext, mcp) };
 
         var reply = new StringBuilder();
         var failed = false;
@@ -345,6 +354,8 @@ internal sealed class ChatStreamServiceV1(
                 chatClient.GetStreamingResponseAsync(messages, options, ct),
                 reply,
                 usage,
+                media,
+                definition.Slug,
                 ct
             ),
             ex => new ChatStreamEventV1.Failed(new(Error: ex.Message)),
@@ -364,16 +375,26 @@ internal sealed class ChatStreamServiceV1(
             yield break;
         }
 
-        db.ConversationMessages.Add(new ConversationMessage
+        var assistantMessage = new ConversationMessage
         {
             ConversationId = conversationId,
             Text = reply.ToString(),
             MessageRole = MessageRole.Assistant
-        });
+        };
+        db.ConversationMessages.Add(assistantMessage);
+
+        // Link the turn's generated/shown images to the reply so they survive a reload.
+        foreach (var attachment in media.Attachments)
+        {
+            attachment.ConversationId = conversationId;
+            attachment.MessageId = assistantMessage.Id;
+        }
 
         if (usage.HasUsage)
         {
-            db.TurnUsages.Add(usage.ToTurnUsage(conversationId, definition.Slug, TurnKind.Chat));
+            var usageRow = usage.ToTurnUsage(conversationId, definition.Slug, TurnKind.Chat);
+            usageRow.MessageId = assistantMessage.Id;
+            db.TurnUsages.Add(usageRow);
         }
 
         await db.SaveChangesAsync(ct);
@@ -432,22 +453,6 @@ internal sealed class ChatStreamServiceV1(
         await stream.CopyToAsync(buffer, ct);
         return buffer.ToArray();
     }
-
-    /// <summary>
-    /// The tools offered on a turn: the built-ins plus every tool discovered from the connected
-    /// MCP servers. MCP tools are <see cref="AIFunction"/>s too, so
-    /// <c>UseFunctionInvocation()</c> dispatches them unchanged.
-    /// </summary>
-    internal static List<AITool> MergeTools(McpClientManager mcp)
-    {
-        var tools = new List<AITool>(AgentTools.All);
-        tools.AddRange(mcp.Tools);
-        return tools;
-    }
-
-    /// <summary>The system prompt for a turn: the base prompt plus any MCP server instructions.</summary>
-    internal static string ComposeSystemPrompt(McpClientManager mcp) =>
-        AgentTools.SystemPrompt + mcp.SystemPromptSuffix;
 
     /// <summary>
     /// Asks the model for a short title for a brand-new conversation. Purely a model call:
@@ -579,6 +584,8 @@ internal sealed class ChatStreamServiceV1(
         IAsyncEnumerable<ChatResponseUpdate> updates,
         StringBuilder reply,
         TurnUsageTotals usage,
+        GeneratedMediaCollector? media,
+        string? model,
         [EnumeratorCancellation] CancellationToken ct
     )
     {
@@ -615,6 +622,15 @@ internal sealed class ChatStreamServiceV1(
                 }
             }
 
+            // A media tool ran during this update; surface the image now that the tool finished.
+            if (media is not null)
+            {
+                while (media.TryDequeueEvent(out var imageEvent) && imageEvent is not null)
+                {
+                    yield return imageEvent;
+                }
+            }
+
             if (string.IsNullOrEmpty(update.Text))
             {
                 continue;
@@ -622,6 +638,15 @@ internal sealed class ChatStreamServiceV1(
 
             reply.Append(update.Text);
             yield return new ChatStreamEventV1.Token(new(Content: update.Text));
+        }
+
+        // Drain any images enqueued by a tool whose result landed on the final update.
+        if (media is not null)
+        {
+            while (media.TryDequeueEvent(out var imageEvent) && imageEvent is not null)
+            {
+                yield return imageEvent;
+            }
         }
 
         // Emit a single usage event once the reply is fully streamed (just before `done`),
@@ -632,7 +657,8 @@ internal sealed class ChatStreamServiceV1(
                 InputTokens: usage.InputTokens,
                 OutputTokens: usage.OutputTokens,
                 CachedInputTokens: usage.CachedInputTokens,
-                TotalTokens: usage.TotalTokens
+                TotalTokens: usage.TotalTokens,
+                Model: model
             ));
         }
     }

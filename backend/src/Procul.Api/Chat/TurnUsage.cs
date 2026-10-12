@@ -21,6 +21,13 @@ public class TurnUsage
     public Guid Id { get; set; } = Guid.CreateVersion7();
     public Guid ConversationId { get; set; }
 
+    /// <summary>
+    /// The assistant message this usage belongs to, or null for rows that are not tied to a
+    /// message (e.g. the title call). Set for the reply row so message history can show a
+    /// per-response model/token breakdown.
+    /// </summary>
+    public Guid? MessageId { get; set; }
+
     /// <summary>The OpenRouter model slug that produced these tokens.</summary>
     public string Model { get; set; } = "";
 

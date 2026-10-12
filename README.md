@@ -35,7 +35,8 @@ Procul is a small ChatGPT-style chat application:
 
 - A **.NET 10 / ASP.NET Core minimal-API backend** that stores conversations in PostgreSQL,
   streams assistant replies over **Server-Sent Events (SSE)**, and lets the model call
-  **tools** (current time, and a sandboxed Python interpreter).
+  **tools** (current time, a sandboxed Python interpreter, and — when enabled — image generation
+  and image display).
 - A **Flutter client** (Linux desktop, web, and mobile) with multiple conversations
   (list / switch / rename / delete), streaming replies, tool-activity display, Markdown
   rendering, a persisted light/dark theme, a **token-usage dashboard**, and **multiple saved
@@ -47,18 +48,26 @@ against [OpenRouter](https://openrouter.ai/).
 ## Features
 
 - **Streaming replies** over SSE, with a `type`-tagged event protocol (`created`,
-  `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`, `title`, `error`, `done`).
+  `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`, `image`, `title`, `error`, `done`).
 - **Multiple models** declared in `config.jsonc`, each with its own client, capability metadata,
   and live health (`GET /v1/models`); a conversation remembers and can switch its model. The
   client picks the model per conversation from the chat app bar and lists every model — with
   capability badges and on-demand health checks — on a **Models** screen.
 - **Token-usage tracking**: every model call (reply and title) records its input / output /
-  cached / total tokens in PostgreSQL. The backend serves lifetime, per-day, and per-model
-  totals from the authenticated `GET /v1/usage` endpoint (and per-conversation totals from
-  `GET /v1/usage/conversations/{id}`); the client shows a live counter in the chat app bar and
-  a **Usage** dashboard (daily chart, lifetime cards, per-model breakdown).
+  cached / total tokens in PostgreSQL, and each assistant message is linked to its own usage row
+  so the client can show **per-response** model + token details. The backend serves lifetime,
+  per-day, and per-model totals from the authenticated `GET /v1/usage` endpoint (and
+  per-conversation totals from `GET /v1/usage/conversations/{id}`); the client shows a live
+  counter in the chat app bar and a **Usage** dashboard (daily chart, lifetime cards, per-model
+  breakdown).
 - **Agent tools** the model can call mid-turn: `get_current_time` and `run_python`
-  (a contained, file/network-denying Python subset via `Lokad.Lython`).
+  (a contained, file/network-denying Python subset via `Lokad.Lython`), plus `show_image` and —
+  when `imageGeneration.enabled` — `generate_image` (OpenRouter Image API or any OpenAI-compatible
+  images endpoint). Generated/shown images are stored like uploads and streamed to the client as
+  `image` events.
+- **Media retention**: user uploads and generated images expire after a configurable window
+  (default 14 days). Orphaned media is deleted outright; media attached to a message keeps its
+  metadata but loses its bytes (an "expired" chip). Set `"0"` to keep media forever.
 - **MCP tool servers**: connect to remote Streamable HTTP / SSE MCP servers, discover their
   tools, and expose them to the model (namespaced `{server}__{tool}`), with live status in the
   client's Settings.
@@ -72,6 +81,9 @@ against [OpenRouter](https://openrouter.ai/).
 - **Message editing** (destructive in v1): rewrite an earlier user message, optionally swap its
   attachments, and re-prompt the model. Every later message — and its attachments — is discarded,
   and the model replies afresh. A future version could branch instead (keep both versions).
+- **Multi-device consistency**: each conversation carries a revision number, and mutating requests
+  may echo the `expectedRevision` they last saw — a stale one is a `409 Conflict` instead of
+  silently overwriting another device's change.
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
   motion (including a shimmer sweep over assistant text while it streams).
@@ -204,7 +216,8 @@ cp backend/src/Procul.Api/config.jsonc.example backend/src/Procul.Api/config.jso
 | `server.corsAllowedOrigins[]` | Browser origins allowed to call the API |
 | `server.sessionLifetime` | Session-token lifetime, e.g. `12h` (default `30d`) |
 | `database.connectionString` | PostgreSQL connection string |
-| `attachments.*` | Upload storage (`postgres`/`s3`), size limit, allowed content types, history re-send, text-inline cap |
+| `attachments.*` | Upload storage (`postgres`/`s3`), size limit, allowed content types, history re-send, text-inline cap, **retention** (default `14d`) |
+| `imageGeneration.*` | The `generate_image` tool (provider, model, key, defaults, **retention**) — disabled by default |
 | `models[]` | One or more chat models (slug, name, base URL, key, provider, capabilities, default) |
 | `titleModel` | Optional slug used for the AI title call (defaults to the conversation's model) |
 | `modelHealth.*` | Liveness-probe enable/interval/timeout/prompt |
@@ -264,6 +277,7 @@ service, including MinIO via `serviceUrl` + `forcePathStyle`).
   "resendHistory": true,            // true = earlier turns re-send the bytes, so a model
                                     // picked later can still read them; false = note only
   "textInlineMaxBytes": 262144,     // cap for inlining a text/* file into the prompt
+  "retention": "14d",               // media age limit; "0" = keep forever
   "s3": { "bucket": "${S3_BUCKET}", "region": "${S3_REGION}", "serviceUrl": "${S3_ENDPOINT}",
           "forcePathStyle": true, "accessKey": "${S3_ACCESS_KEY}", "secretKey": "${S3_SECRET_KEY}" }
 }
@@ -291,6 +305,34 @@ that have attachments, so switching to a more capable model later lets it read f
 before the switch. A per-attachment capability check still degrades any type the current model
 cannot read to a placeholder. Set it to `false` to send the bytes only on the turn the file was
 attached and use a short text note for earlier turns.
+
+### Image generation & media retention
+
+The model can **generate** images (when `imageGeneration.enabled` is true) and **show** images from
+a URL or base64 bytes via the `show_image` tool. Generated/shown images are stored like uploads
+(PostgreSQL or S3) and served from `GET /v1/attachments/{id}`, so the client shows them inline and
+they survive a reload:
+
+```jsonc
+"imageGeneration": {
+  "enabled": false,                  // off by default; enables generate_image
+  "provider": "openrouter",          // "openrouter" (POST {baseUrl}/images) | "openai-compatible"
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "apiKey": "${OPENROUTER_KEY}",
+  "model": "google/gemini-2.5-flash-image",
+  "defaultSize": "1024x1024",
+  "defaultAspectRatio": "1:1",
+  "maxReferenceImages": 4,
+  "timeout": "120s",
+  "retention": "14d"                 // omit to inherit attachments.retention
+}
+```
+
+Media expires after a configurable window (`attachments.retention` for uploads,
+`imageGeneration.retention` for generated/shown images; both default **14 days**). Orphaned media
+(uploaded but never sent, a failed send, or an image from a turn that never persisted) is deleted
+outright; media attached to a message keeps its metadata but loses its bytes, so history shows an
+"expired" chip. Set a window to `"0"` to keep media forever.
 
 ### MCP tool servers
 
@@ -347,11 +389,13 @@ cd frontend && flutter test
 cd frontend && flutter analyze     # must stay clean
 ```
 
-The backend suite covers title generation and sanitization, tool invocation (time and the
-Python sandbox), token-usage aggregation and its HTTP pipeline, the SSE/JSON wire contract,
-API versioning, and the CORS policy — including a full `WebApplicationFactory` preflight test
-against the real pipeline — plus the attachment stores, validation, the content-mapping table,
-and an end-to-end upload → download → attach → model-request test.
+The backend suite covers title generation and sanitization, tool invocation (time, the
+Python sandbox's isolation guarantees, image generation, and show-image), media retention,
+token-usage aggregation and its HTTP pipeline, per-response metadata, optimistic concurrency
+(409), the SSE/JSON wire contract, API versioning, and the CORS policy — including a full
+`WebApplicationFactory` preflight test against the real pipeline — plus the attachment stores,
+validation, the content-mapping table, and an end-to-end upload → download → attach →
+model-request test.
 
 ## Container image
 

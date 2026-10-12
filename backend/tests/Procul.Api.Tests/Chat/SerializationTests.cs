@@ -56,6 +56,20 @@ public class SerializationTests
     }
 
     [Fact]
+    public void The_image_sse_event_serializes_under_the_value_envelope()
+    {
+        var id = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var evt = new ChatStreamEventV1.Image(new ChatStreamImageV1(id, "cat.png", "image/png"));
+
+        var json = JsonSerializer.Serialize<object>(evt, Web);
+
+        Assert.Equal(
+            "{\"value\":{\"attachmentId\":\"11111111-1111-1111-1111-111111111111\"," +
+            "\"fileName\":\"cat.png\",\"contentType\":\"image/png\",\"type\":\"image\"}}",
+            json);
+    }
+
+    [Fact]
     public void Usage_dtos_serialize_as_camelCase()
     {
         var response = new GetUsageResponseV1(

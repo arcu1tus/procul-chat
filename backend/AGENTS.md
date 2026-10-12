@@ -52,9 +52,15 @@ backend/
         ModelCatalogService.cs     # IHostedService: startup + idle health probes, on-demand checks
         ModelHealthOptions.cs      # modelHealth.* (enabled, interval, timeout, prompt, maxTokens)
       Tools/
-        AgentTools.cs              # AITool registry + system prompt (source of ChatOptions.Tools)
+        AgentTools.cs              # built-in AITool registry + system prompt (source of ChatOptions.Tools)
+        TurnToolFactory.cs         # builds the per-turn tools (built-ins + media + MCP) + prompt
+        TurnToolContext.cs         # the scoped services + per-turn state a tool receives
+        GeneratedMediaCollector.cs # tool -> SSE `image` events + assistant-message linking
+        ToolMedia.cs               # shared store-bytes-and-emit-image helper for the media tools
         TimeTool.cs                # get_current_time
         PythonSandbox.cs           # run_python via Lokad.Lython + DenyAllLythonHost
+        ImageGenerationTool.cs     # generate_image (OpenRouter / OpenAI-compatible)
+        ShowImageTool.cs           # show_image (URL or base64, SSRF-guarded)
       V1/
         ChatEndpointsV1.cs         # minimal-API endpoints + route mapping
         ChatStreamServiceV1.cs     # conversation-turn streaming (create + reply + title)
@@ -70,15 +76,26 @@ backend/
       AttachmentValidation.cs      # size/wildcard content-type checks + filename sanitize
       AttachmentContentBuilder.cs  # attachment -> AIContent mapping + capability gating (pure)
       AttachmentGate.cs            # load/validate/capability-gate the ids on a send
-      AttachmentServiceCollectionExtensions.cs  # AddProculAttachments(config): pick the store
+      MediaRetentionOptions.cs     # attachments.retention + imageGeneration.retention windows
+      MediaRetentionService.cs     # IHostedService: orphan delete / referenced byte-purge sweep
+      AttachmentServiceCollectionExtensions.cs  # AddProculAttachments(config): store + retention
       V1/
         AttachmentEndpointsV1.cs   # POST/GET/DELETE /v1/attachments
         DataTypesV1.cs             # AttachmentV1 DTO
+    Images/
+      IImageGenerationClient.cs    # seam + request/result records for image generation
+      HttpImageGenerationClient.cs # shared HTTP/timeout/response plumbing
+      OpenRouterImageClient.cs     # POST {baseUrl}/images
+      OpenAiCompatibleImageClient.cs # POST {baseUrl}/images/generations
+      RemoteUrlPolicy.cs           # IRemoteUrlPolicy + SsrfRemoteUrlPolicy (show_image guardrails)
+      ImageTypeDetector.cs         # magic-byte media-type sniffing (pure)
+      ImageGenerationServiceCollectionExtensions.cs # AddProculImageGeneration(config)
     Configuration/
       ProculConfig.cs              # root POCO for config.jsonc (server/db/models/mcp/...)
       ProculConfigLoader.cs        # locate + JSONC parse + schema validate + ${ENV} + domain validate
-      DurationParser.cs            # shared <number><unit> duration parsing (d/h/m/s)
+      DurationParser.cs            # shared <number><unit> duration parsing (d/h/m/s) + retention "0"
       AttachmentOptions.cs         # attachments.* derived options
+      ImageGenerationOptions.cs    # imageGeneration.* derived options
     Mcp/
       McpOptions.cs                # mcp.* (enabled, connect timeout, health interval)
       McpServerConfig.cs           # { Type, Url, Headers, Enabled }
@@ -171,11 +188,15 @@ references a configured slug). Sections:
 - `database.connectionString` — Postgres connection string (was `ConnectionStrings__ChatContext`).
   Unset means "no database" (integration tests boot this way).
 - `attachments.*` — upload storage (`storage` selects the Postgres or S3 byte store), size limit,
-  allowed content types, `resendHistory`, and `textInlineMaxBytes`; plus the `s3` connection
-  settings (`bucket`/`region`/`serviceUrl`/`forcePathStyle`/`accessKey`/`secretKey`).
+  allowed content types, `resendHistory`, `textInlineMaxBytes`, and `retention` (the media age
+  limit, default `14d`); plus the `s3` connection settings
+  (`bucket`/`region`/`serviceUrl`/`forcePathStyle`/`accessKey`/`secretKey`).
 - `models[]` — one or more chat models (replaces `OPENROUTER_MODEL_SLUG`/`OPENROUTER_API_KEY`);
   see **Multi-model registry** below.
 - `titleModel` — optional slug used for the title call; defaults to the conversation's model.
+- `imageGeneration.*` — the `generate_image` tool: enable flag, provider (`openrouter` /
+  `openai-compatible`), `baseUrl`, `apiKey`, `model`, default size/aspect ratio, reference cap,
+  `timeout`, and `retention` (defaults to `attachments.retention`). Disabled by default.
 - `modelHealth.*` — probe enable/interval/timeout/prompt (see **Model catalog & health**).
 - `mcp.*` + `mcpServers` — MCP settings and servers (was `MCP_ENABLED`/`MCP_CONNECT_TIMEOUT`/
   `MCP_HEALTH_INTERVAL` and the old config file).
@@ -262,14 +283,14 @@ the auth and health routes do not (see Authentication).
 | GET | `/` | JSON `GetConversationsResponseV1`. All conversations, newest activity first. |
 | POST | `/` | **SSE** stream. Creates a conversation, streams the assistant reply, then a `title` event. Body may carry `attachmentIds`. |
 | GET | `/{conversationId:guid}` | JSON `ConversationV1` or 404. |
-| PATCH | `/{conversationId:guid}` | Rename. Body `{"title":"..."}` (1–60 chars). `ConversationV1`, 400, or 404. |
-| PUT | `/{conversationId:guid}/model` | Set the conversation's model. Body `{"model":"slug"}`. `ConversationV1`, 400 (unknown slug), or 404. |
+| PATCH | `/{conversationId:guid}` | Rename. Body `{"title":"...","expectedRevision"?}` (1–60 chars). `ConversationV1`, 400, 404, or **409** on a stale revision. |
+| PUT | `/{conversationId:guid}/model` | Set the conversation's model. Body `{"model":"slug","expectedRevision"?}`. `ConversationV1`, 400 (unknown slug), 404, or **409** on a stale revision. |
 | DELETE | `/{conversationId:guid}` | Deletes the conversation, its messages, and their attachment bytes. 204 or 404. |
-| GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). |
-| POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. Body may carry `attachmentIds`. 404 if missing. |
-| POST | `/{conversationId:guid}/messages/{messageId:guid}/edit` | **SSE** stream. Rewrites an existing **user** message and re-prompts the model. **Destructive** (see *Message editing*). 404 conversation/message; 400 non-user message, empty/oversized `text`, or a bad `attachmentIds`. |
+| GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). Assistant messages carry `model` + `usage` when known. |
+| POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. Body may carry `attachmentIds` and `expectedRevision`. 404 if missing, **409** on a stale revision. May stream `image` events. |
+| POST | `/{conversationId:guid}/messages/{messageId:guid}/edit` | **SSE** stream. Rewrites an existing **user** message and re-prompts the model. Body may carry `expectedRevision`. **Destructive** (see *Message editing*). 404 conversation/message; 400 non-user message, empty/oversized `text`, or a bad `attachmentIds`; **409** on a stale revision. |
 | POST | `/v{version}/attachments[?model=<slug>]` | Multipart upload (`file` field) → `201 AttachmentV1`. `400` disallowed type or a type the model (`model` query, else default) cannot read, `413` too large. |
-| GET | `/v{version}/attachments/{id:guid}` | The raw bytes, with the stored `Content-Type` and an inline `Content-Disposition`; `404` if unknown. |
+| GET | `/v{version}/attachments/{id:guid}` | The raw bytes, with the stored `Content-Type` and an inline `Content-Disposition`; `404` if unknown **or after retention purged the bytes** (metadata kept). |
 | DELETE | `/v{version}/attachments/{id:guid}` | `204`, idempotent (unknown id is also `204`). |
 | GET | `/v{version}/models` | JSON `GetModelsResponseV1`: `defaultModel` + every model with capabilities + live health. No secrets. |
 | POST | `/v{version}/models/check` | Re-probe every health-checked model. `GetModelsResponseV1`. |
@@ -328,7 +349,7 @@ one attached to a *different* message is still rejected. Empty/oversized (`> 64 
   (or the `IAsyncEnumerable<T>` overload). The response is `text/event-stream`, no `event:`
   name is emitted, and the event kind is carried by a `type` discriminator **inside the JSON
   payload** (e.g. `created`, `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`,
-  `error`, `done`).
+  `image`, `error`, `done`).
 - **Streaming turn logic** lives once in `ChatStreamServiceV1`. The reply core is
   `StreamReplyAsync(conversationId, userMessage, …)`, which takes an already-persisted user
   message; `StreamAssistantReplyAsync` wraps it and persists the new user message, and
@@ -345,27 +366,45 @@ one attached to a *different* message is still rejected. Empty/oversized (`> 64 
 
 ## Tools (agent function calling)
 
-The model is given two built-in tools, registered in `Chat/Tools/`, plus every tool discovered
-from the configured MCP servers (see below). All are passed on every turn through
-`ChatOptions.Tools`. `ChatStreamServiceV1.StreamAssistantReplyAsync` prepends
-`AgentTools.SystemPrompt + mcp.SystemPromptSuffix` as a `System` message and supplies
-`MergeTools(mcp)`:
+Every turn is given the built-in tools plus every tool discovered from the configured MCP servers
+(see below). They are passed through `ChatOptions.Tools`; execution is automatic because the
+client is wrapped with `.UseFunctionInvocation()`.
 
-- `AgentTools.cs` — the `AITool` registry (`AgentTools.All`) and the system prompt.
+Tools are built **per turn** by `Chat/Tools/TurnToolFactory.BuildTurnTools(TurnToolContext, mcp)`,
+because the media tools need the request-scoped `ProculDbContext`/`IAttachmentStore` and the turn's
+event sink. `ChatStreamServiceV1.StreamReplyAsync` constructs a `TurnToolContext` (db, store,
+attachment options, conversation id, model slug, and a `GeneratedMediaCollector`) and passes it to
+the factory; `TurnToolFactory.ComposeSystemPrompt(mcp)` prepends the base prompt (plus a media-tool
+note) as a `System` message.
+
+- `AgentTools.cs` — the static built-in registry (`AgentTools.All`) and the system prompt.
 - `TimeTool.cs` — `get_current_time`: current ISO-8601 time at a numeric UTC offset (named
   IANA zones are unreliable under `InvariantGlobalization`).
 - `PythonSandbox.cs` — `run_python`: runs a short Python 3 script through `Lokad.Lython` and
   returns its captured stdout/stderr.
+- `ImageGenerationTool.cs` — `generate_image` (only when `imageGeneration.enabled`): generates an
+  image through the configured provider, stores it as a generated attachment, and emits an `image`
+  event. See **Image generation & media tools**.
+- `ShowImageTool.cs` — `show_image`: downloads an image from a URL (SSRF-guarded) or decodes base64
+  bytes, stores it, and emits an `image` event.
+
+**Emitting mid-stream events from a tool.** A tool runs inside `UseFunctionInvocation()` and cannot
+`yield` into the SSE enumerable, so `GeneratedMediaCollector` queues an `ChatStreamEventV1.Image`
+and holds the created `Attachment` rows; `StreamTokens` drains the queue after each update. The
+assistant message does not exist during the tool call, so `StreamReplyAsync` links the collected
+attachments (`MessageId = assistantMessage.Id`) in the same save as the reply.
 
 **`Lokad.Lython` 0.9.0** (MIT, pinned) is the Python runtime: pure managed C#, no native
 dependencies, and contained by design. Scripts reach the outside world only through the
 `ILythonHost` we supply, and `DenyAllLythonHost` grants nothing: the clock is real, but every
 file/path/process operation throws `LythonHostCapabilityUnavailableException`, so
-`open`/`os`/`pathlib`/`subprocess` fail explicitly. Runs are bounded by `MaxExecutionSteps`
-(5M) plus a 5s cancellation deadline. The stdlib is a small allowlist (`math`, `statistics`,
-`decimal`, `random`, `json`, `re`, `collections`, `itertools`, `functools`, `datetime`,
-`time`, ...). Lython is a Python *subset*: unsupported constructs fail explicitly and the
-error is fed back to the model, which can retry.
+`open`/`pathlib`/`glob`/`subprocess` fail explicitly. The environment is empty
+(`os.environ` is `[]`), so no host secrets leak. The stdlib subset includes `os`/`sys`/`importlib`
+as *importable* names, but every host operation they attempt is denied; the guarantees are
+enforced at the host boundary, not by hiding modules. Runs are bounded by `MaxExecutionSteps`
+(5M) plus a 5s cancellation deadline, with 16 KiB stdout / 8 KiB stderr caps. Lython is a Python
+*subset*: unsupported constructs fail explicitly and the error is fed back to the model, which can
+retry. The isolation guarantees are locked in by `Chat/PythonSandboxTests.cs`.
 
 Tool call/result messages are **not persisted** (the schema stores only text + role), but tool
 activity **is surfaced** in the SSE stream: the streaming turn logic scans each
@@ -382,8 +421,9 @@ estimate** — tokens only, bucketed by **UTC** calendar day.
 
 - **Entity.** `Chat/TurnUsage.cs`: one row per model call, with `Kind` (`TurnKind.Chat` for the
   reply, `TurnKind.Title` for the concurrent title call), the `Model` slug, and
-  input/output/cached/total counts. Registered in `ProculDbContext` with a cascade delete from
-  the conversation and indexes on `ConversationId`/`CreatedAt`.
+  input/output/cached/total counts. The reply row also carries `MessageId` (the assistant message
+  it produced; title rows keep it null). Registered in `ProculDbContext` with a cascade delete from
+  the conversation and indexes on `ConversationId`/`CreatedAt`/`MessageId`.
 - **Capture seam.** In `ChatStreamServiceV1.StreamTokens`, a `case UsageContent usageContent:`
   feeds a `TurnUsageTotals` accumulator. Because `UseFunctionInvocation()` can make several
   underlying model calls, the payloads are **summed**, not replaced; a single `usage` SSE event
@@ -394,6 +434,10 @@ estimate** — tokens only, bucketed by **UTC** calendar day.
 - **Model slug.** Each row records the slug of the model that produced it: `ChatStreamServiceV1`
   resolves the conversation's `Model` (falling back to `ChatModelRegistry.Default`) and passes
   `definition.Slug` to `TurnUsageTotals.ToTurnUsage`.
+- **Per-response metadata.** The reply's `TurnKind.Chat` row carries `MessageId`. When
+  `GET /{id}/messages` builds history it joins each assistant message to its row and exposes
+  `ConversationMessageV1.Model` + `.Usage` (null when unknown), so the client can show one
+  response's model/tokens without a second call. The `usage` SSE event also carries `model`.
 - **Aggregation.** `Usage/UsageAggregator.cs` is a pure function over `TurnUsage` rows: it
   buckets by UTC day, zero-fills every day in the window, and totals per model — kept in C# so
   it is testable without Postgres.
@@ -456,6 +500,53 @@ The **capability gate is the backend's job** (`AttachmentContentBuilder.IsSuppor
 model cannot read is a `400` naming the file and the missing capability. Video (and unknown
 types) are deliberately *not* gated — the OpenAI adapter drops them for every model, so they are
 stored + rendered but only ever contribute a placeholder.
+
+## Image generation & media tools
+
+Two model-facing tools produce media that is stored like an upload and rendered in the chat:
+
+- **`generate_image`** (only when `imageGeneration.enabled`) — `IImageGenerationClient` resolves to
+  `OpenRouterImageClient` (`POST {baseUrl}/images`, `input_references` as base64 data URLs) or
+  `OpenAiCompatibleImageClient` (`POST {baseUrl}/images/generations`, `response_format: "b64_json"`,
+  `image` array). Reference images are loaded from the conversation's attachments (image types
+  only, capped at `maxReferenceImages`); the decoded `data[0].b64_json` is size-checked against
+  `attachments.maxFileSizeBytes` and stored. Provider errors are returned to the model as text —
+  they never fail the turn.
+- **`show_image`** — fetches a public URL (bounded timeout, size cap, `Content-Type: image/*` or
+  magic-byte sniff) or decodes base64, then stores the bytes. `IRemoteUrlPolicy`
+  (`SsrfRemoteUrlPolicy`) blocks non-http(s) schemes and loopback/private/link-local addresses
+  (hostnames are resolved first). Stored rows are marked `Source = "generated"`; the filename is
+  `generated-<timestamp>.<ext>` / `shown-<timestamp>.<ext>`.
+
+Stored media is emitted to the client as an `image` SSE event (`{"attachmentId","fileName",
+"contentType"}`); the client fetches the bytes from the normal `GET /v1/attachments/{id}` route so
+images are served from our own endpoint. See **Tools** for how the event is surfaced mid-stream and
+linked to the assistant message.
+
+## Media retention
+
+There is a single **age limit** per category, applied by `MediaRetentionService` (an
+`IHostedService` sweeping hourly; `PurgeAsync` is invoked directly in tests):
+
+- `attachments.retention` (default **`14d`**) bounds user uploads;
+- `imageGeneration.retention` (default: inherit) bounds generated/shown images.
+
+After the window: **orphaned** media (`MessageId == null` — uploaded but never sent, a failed send,
+or a generated image from a turn that never persisted) is **deleted outright** (metadata + bytes);
+**referenced** media (`MessageId != null`) keeps its metadata but has its **bytes purged**, so
+history still shows a "file expired" chip and `GET /v1/attachments/{id}` returns `404`. Every purge
+calls `IAttachmentStore.DeleteBytesAsync` first (S3 objects do not cascade). A window of `"0"`
+disables retention for that category (keep media forever). `Attachment.Source`
+(`upload`/`generated`) selects the window; a malformed duration fails startup.
+
+## Optimistic concurrency (multi-device)
+
+Each conversation has an integer `Revision` bumped on every mutating save (send, edit, rename,
+set-model). The mutating endpoints accept an optional `expectedRevision`; a mismatch returns
+**`409 Conflict`** naming the current revision, so two clients cannot silently clobber each other.
+Send/edit are SSE, so the check runs *before* the stream starts and a conflict is a normal JSON
+problem response. `ConversationV1.Revision` exposes the value so the client can echo it back. (An
+Npgsql `xmin` token was rejected: unsupported by the in-memory provider used in tests.)
 
 ## Multi-model registry
 
@@ -533,9 +624,11 @@ image is ASP.NET-only (no node/npx for stdio).
 
 ## Known limitations (documented, not yet addressed)
 
-- **Orphaned uploads.** An attachment uploaded but never attached (the chip was removed, or the
-  send failed) stays in the store; there is no garbage-collection job. Metadata is unreferenced
-  (`MessageId`/`ConversationId` null).
+- **Orphaned media is swept, not immediate.** An attachment uploaded but never attached (or a
+  generated image from a turn that never persisted) is unreferenced and is deleted by
+  `MediaRetentionService` once it is older than its retention window (default 14d). An operator who
+  sets `"0"` keeps unreferenced media forever. The sweep is periodic (hourly), so an orphan can
+  linger up to a window plus one interval.
 - **History paging is shallow.** `GET /{id}/messages` caps a page at 100, and the client fetches
   exactly one page of 100 — a longer conversation loses its oldest messages until cursor paging
   is implemented in the UI. The composite `(ConversationId, CreatedAt, Id)` index already backs
@@ -641,3 +734,20 @@ image is ASP.NET-only (no node/npx for stdio).
   the client to have filtered unsupported files: `AttachmentGate` re-checks every referenced id
   against the resolved model's effective capabilities and `400`s a mismatch (video and unknown
   types are exempt — they are never sent to any model).
+- **`AIFunctionFactory` optional parameters need C# defaults.** A nullable parameter without a
+  default (`Guid[]? ids`) is treated as **required** by the reflection marshaller; an omitted tool
+  argument then throws `missing a value for the required parameter`. Give every optional tool
+  parameter a `= null` (and the `CancellationToken` a `= default`).
+- **`Microsoft.Extensions.AI` has its own `ImageGenerationOptions`/`ImageGenerationRequest`.** Code
+  that imports both `Microsoft.Extensions.AI` and `Procul.Api.Configuration`/`Procul.Api.Images`
+  hits `CS0104`; alias the Procul types (`using ImageGenerationOptions =
+  Procul.Api.Configuration.ImageGenerationOptions;`). The package's abstractions are not used — the
+  `IImageGenerationClient` seam is ours.
+- **Media tools save mid-stream, then the reply links the rows.** `ToolMedia.StoreAsync` adds the
+  attachment metadata, calls `store.PutAsync` (so the Postgres blob FK is satisfied), and saves —
+  all on the request's scoped `ProculDbContext`, which is safe because the tool runs before the
+  reply is persisted. `StreamReplyAsync` then sets `MessageId = assistantMessage.Id` and saves
+  again. If the turn fails, the rows stay orphaned and retention removes them.
+- **`show_image`'s URL policy is a seam.** In production `SsrfRemoteUrlPolicy` resolves the host and
+  blocks private/loopback/link-local addresses; tests inject `PermissiveRemoteUrlPolicy` so they
+  never touch DNS.
