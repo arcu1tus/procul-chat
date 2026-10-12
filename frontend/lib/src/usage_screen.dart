@@ -194,38 +194,31 @@ class _LifetimeCards extends StatelessWidget {
       spacing: 8,
       runSpacing: 8,
       children: [
-        _StatCard(
-          label: 'Total',
-          value: formatTokenCount(lifetime.totalTokens),
-        ),
-        _StatCard(
-          label: 'Input',
-          value: formatTokenCount(lifetime.inputTokens),
-        ),
-        _StatCard(
-          label: 'Output',
-          value: formatTokenCount(lifetime.outputTokens),
-        ),
-        _StatCard(
-          label: 'Cached',
-          value: formatTokenCount(lifetime.cachedInputTokens),
-        ),
-        _StatCard(label: 'Turns', value: '${lifetime.turns}'),
+        _StatCard(label: 'Total', value: lifetime.totalTokens),
+        _StatCard(label: 'Input', value: lifetime.inputTokens),
+        _StatCard(label: 'Output', value: lifetime.outputTokens),
+        _StatCard(label: 'Cached', value: lifetime.cachedInputTokens),
+        _StatCard(label: 'Turns', value: lifetime.turns, format: (v) => '$v'),
       ],
     );
   }
 }
 
 class _StatCard extends StatelessWidget {
-  const _StatCard({required this.label, required this.value});
+  const _StatCard({required this.label, required this.value, this.format});
 
   final String label;
-  final String value;
+  final int value;
+
+  /// Formats the (animated) value; defaults to the compact token format.
+  final String Function(int value)? format;
 
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
-    return Container(
+    final formatValue = format ?? formatTokenCount;
+
+    Widget card(String text) => Container(
       width: 132,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -239,9 +232,20 @@ class _StatCard extends StatelessWidget {
         children: [
           Text(label).muted.xSmall,
           const Gap(2),
-          Text(value).semiBold.large,
+          Text(text).semiBold.large,
         ],
       ),
+    );
+
+    if (reduceMotion(context)) return card(formatValue(value));
+
+    // Count up to the value once, so the dashboard feels alive without a
+    // per-frame rebuild cost beyond the first moment.
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: value.toDouble()),
+      duration: Motion.slow,
+      curve: Motion.curve,
+      builder: (context, animated, _) => card(formatValue(animated.round())),
     );
   }
 }
@@ -431,6 +435,9 @@ class _UsageChart extends StatelessWidget {
               ),
           ],
         ),
+        // Bars animate between metric/range switches instead of snapping.
+        duration: motionDuration(context, Motion.medium),
+        curve: Motion.curve,
       ),
     );
   }
