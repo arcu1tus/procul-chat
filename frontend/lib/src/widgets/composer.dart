@@ -241,22 +241,27 @@ class _Capsule extends StatelessWidget {
                   bindings: {
                     const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
                   },
-                  child: TextField(
-                    controller: controller,
-                    focusNode: focusNode,
-                    minLines: 1,
-                    maxLines: 6,
-                    textInputAction: TextInputAction.send,
-                    filled: false,
-                    border: const Border(),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 8,
+                  // The capsule already draws the accent focus ring, so clear
+                  // the field's own `FocusOutline` to avoid a double outline.
+                  child: ComponentTheme<FocusOutlineTheme>(
+                    data: const FocusOutlineTheme(border: Border()),
+                    child: TextField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      minLines: 1,
+                      maxLines: 6,
+                      textInputAction: TextInputAction.send,
+                      filled: false,
+                      border: const Border(),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 8,
+                      ),
+                      placeholder: Text(
+                        isEditing ? 'Edit your message…' : 'Message Procul…',
+                      ),
+                      onSubmitted: (_) => onSubmit(),
                     ),
-                    placeholder: Text(
-                      isEditing ? 'Edit your message…' : 'Message Procul…',
-                    ),
-                    onSubmitted: (_) => onSubmit(),
                   ),
                 ),
               ),

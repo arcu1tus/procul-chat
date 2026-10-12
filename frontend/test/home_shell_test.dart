@@ -303,55 +303,61 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('the sidebar sections render as a tab row above the chats', (
-    tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 800));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+  testWidgets(
+    'the sidebar sections render as chat-like pills above the chats',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1200, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
 
-    final client = MockClient(
-      (request) async => http.Response('{"conversations":[]}', 200),
-    );
-    final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
-      store: FakeConversationStore(),
-    );
+      final client = MockClient(
+        (request) async => http.Response('{"conversations":[]}', 200),
+      );
+      final chat = ChatController(
+        api: ChatApi(
+          baseUrl: 'http://test',
+          token: 'test-token',
+          client: client,
+        ),
+        store: FakeConversationStore(),
+      );
 
-    await tester.pumpWidget(
-      _app(chat: chat, settings: SettingsController(), auth: _auth()),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        _app(chat: chat, settings: SettingsController(), auth: _auth()),
+      );
+      await tester.pumpAndSettle();
 
-    // The three actions live in a tab row above the list.
-    expect(find.text('Usage'), findsOneWidget);
-    expect(find.text('Models'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
-    expect(
-      tester.getTopLeft(find.text('Usage')).dy,
-      lessThan(
-        tester
-            .getTopLeft(
-              find.descendant(
-                of: find.byType(ConversationSidebar),
-                matching: find.text('New chat'),
-              ),
-            )
-            .dy,
-      ),
-    );
+      // The three entries stack vertically above the list, like conversations.
+      expect(find.text('Usage'), findsOneWidget);
+      expect(find.text('Models'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
+      final usageY = tester.getTopLeft(find.text('Usage')).dy;
+      final modelsY = tester.getTopLeft(find.text('Models')).dy;
+      final settingsY = tester.getTopLeft(find.text('Settings')).dy;
+      final newChatY = tester
+          .getTopLeft(
+            find.descendant(
+              of: find.byType(ConversationSidebar),
+              matching: find.text('New chat'),
+            ),
+          )
+          .dy;
+      expect(usageY, lessThan(modelsY));
+      expect(modelsY, lessThan(settingsY));
+      expect(settingsY, lessThan(newChatY));
 
-    // A divider separates the tab row from the chats.
-    expect(
-      find.descendant(
-        of: find.byType(ConversationSidebar),
-        matching: find.byType(Divider),
-      ),
-      findsOneWidget,
-    );
+      // A divider separates the section entries from the chats.
+      expect(
+        find.descendant(
+          of: find.byType(ConversationSidebar),
+          matching: find.byType(Divider),
+        ),
+        findsOneWidget,
+      );
 
-    // The active section reads as selected after opening it.
-    await tester.tap(find.text('Models'));
-    await tester.pumpAndSettle();
-    expect(find.text('Models configured on this server'), findsOneWidget);
-  });
+      // The active section reads as selected after opening it.
+      await tester.tap(find.text('Models'));
+      await tester.pumpAndSettle();
+      expect(find.text('Models configured on this server'), findsOneWidget);
+    },
+  );
 }
