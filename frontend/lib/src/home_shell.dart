@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'attachments.dart';
@@ -36,6 +37,13 @@ class HomeShell extends StatefulWidget {
   static const _sidebarWidth = 300.0;
   static const _slideDuration = Duration(milliseconds: 200);
 
+  /// How far in from the left edge a horizontal drag starts opening the drawer.
+  static const _edgeDragWidth = 28.0;
+
+  /// Finger speed (logical px/s) past which a drag flings the drawer open or
+  /// closed rather than settling on the halfway point.
+  static const _drawerFlingVelocity = 365.0;
+
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
@@ -53,7 +61,12 @@ class _HomeShellState extends State<HomeShell>
     curve: Curves.easeOut,
   );
 
+  /// Whether the drawer is mounted. It is kept mounted while the slide is
+  /// playing (both in and out) and unmounted once fully closed.
   bool _sidebarOpen = false;
+
+  /// Whether a horizontal drag is currently moving the drawer with the finger.
+  bool _dragging = false;
 
   /// Which destination the main pane shows. The chat is always mounted
   /// underneath, so its scroll position and buffer survive a switch to Usage,
@@ -77,6 +90,7 @@ class _HomeShellState extends State<HomeShell>
     // and a brand-new chat can fall back to it.
     _catalog.addListener(_syncDefaultModel);
     _catalog.load();
+    _controller.addStatusListener(_handleSlideStatus);
     _syncTimer = Timer.periodic(_syncInterval, (_) => _sync());
   }
 
@@ -86,8 +100,16 @@ class _HomeShellState extends State<HomeShell>
     _syncTimer?.cancel();
     _catalog.removeListener(_syncDefaultModel);
     _catalog.dispose();
+    _controller.removeStatusListener(_handleSlideStatus);
     _controller.dispose();
     super.dispose();
+  }
+
+  /// Unmounts the drawer once the close animation has fully played out.
+  void _handleSlideStatus(AnimationStatus status) {
+    if (status == AnimationStatus.dismissed && _sidebarOpen && !_dragging) {
+      setState(() => _sidebarOpen = false);
+    }
   }
 
   @override
@@ -113,14 +135,50 @@ class _HomeShellState extends State<HomeShell>
       widget.chat.setDefaultModel(_catalog.defaultModel);
 
   void _openSidebar() {
-    setState(() => _sidebarOpen = true);
+    if (!_sidebarOpen) setState(() => _sidebarOpen = true);
     _controller.forward();
   }
 
   void _closeSidebar() {
-    _controller.reverse().whenComplete(() {
-      if (mounted) setState(() => _sidebarOpen = false);
+    // Already fully closed: `reverse()` would be a no-op, so unmount directly.
+    if (_controller.value == 0) {
+      if (_sidebarOpen && !_dragging) setState(() => _sidebarOpen = false);
+      return;
+    }
+    _controller.reverse();
+  }
+
+  /// A horizontal drag begins: stop any running slide so the finger wins and
+  /// make sure the drawer is mounted so it can follow the drag.
+  void _onDrawerDragStart(DragStartDetails details) {
+    _controller.stop();
+    setState(() {
+      _dragging = true;
+      _sidebarOpen = true;
     });
+  }
+
+  /// Moves the drawer with the finger. Dragging right opens it, dragging left
+  /// closes it.
+  void _onDrawerDragUpdate(DragUpdateDetails details) {
+    final delta = details.primaryDelta ?? 0;
+    _controller.value = (_controller.value + delta / HomeShell._sidebarWidth)
+        .clamp(0.0, 1.0);
+  }
+
+  /// Settles the drawer on release: a fling wins, otherwise the halfway point.
+  void _onDrawerDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    setState(() => _dragging = false);
+    if (velocity <= -HomeShell._drawerFlingVelocity) {
+      _closeSidebar();
+    } else if (velocity >= HomeShell._drawerFlingVelocity) {
+      _openSidebar();
+    } else if (_controller.value >= 0.5) {
+      _openSidebar();
+    } else {
+      _closeSidebar();
+    }
   }
 
   void _openUsage() => _select(SidebarSection.usage);
@@ -257,42 +315,68 @@ class _HomeShellState extends State<HomeShell>
           return Stack(
             children: [
               Positioned.fill(child: _mainPane(narrow: true)),
+              // A thin strip along the left edge that starts an opening drag.
+              // It stays mounted while a drag is in flight (even after the
+              // drawer appears) so removing it can't cancel the gesture.
+              if (!_sidebarOpen || _dragging)
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: HomeShell._edgeDragWidth,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    dragStartBehavior: DragStartBehavior.down,
+                    onHorizontalDragStart: _onDrawerDragStart,
+                    onHorizontalDragUpdate: _onDrawerDragUpdate,
+                    onHorizontalDragEnd: _onDrawerDragEnd,
+                  ),
+                ),
               if (_sidebarOpen)
                 Positioned.fill(
-                  child: AnimatedBuilder(
-                    animation: _eased,
-                    builder: (context, child) => Stack(
-                      children: [
-                        Positioned.fill(
-                          child: GestureDetector(
-                            onTap: _closeSidebar,
-                            behavior: HitTestBehavior.opaque,
-                            child: ColoredBox(
-                              color: const Color(0xFF000000)
-                                  .withValues(alpha: 0.5 * _eased.value),
+                  // Dragging anywhere over the open drawer (panel or scrim)
+                  // slides it closed with the finger; the scrim still closes
+                  // it on tap.
+                  child: GestureDetector(
+                    dragStartBehavior: DragStartBehavior.down,
+                    onHorizontalDragStart: _onDrawerDragStart,
+                    onHorizontalDragUpdate: _onDrawerDragUpdate,
+                    onHorizontalDragEnd: _onDrawerDragEnd,
+                    child: AnimatedBuilder(
+                      animation: _eased,
+                      builder: (context, child) => Stack(
+                        children: [
+                          Positioned.fill(
+                            child: GestureDetector(
+                              onTap: _closeSidebar,
+                              behavior: HitTestBehavior.opaque,
+                              child: ColoredBox(
+                                color: const Color(0xFF000000)
+                                    .withValues(alpha: 0.5 * _eased.value),
+                              ),
                             ),
                           ),
-                        ),
-                        Positioned(
-                          left: 0,
-                          top: 0,
-                          bottom: 0,
-                          width: HomeShell._sidebarWidth,
-                          child: FractionalTranslation(
-                            translation: Offset(_eased.value - 1, 0),
-                            child: child,
+                          Positioned(
+                            left: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: HomeShell._sidebarWidth,
+                            child: FractionalTranslation(
+                              translation: Offset(_eased.value - 1, 0),
+                              child: child,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    child: ConversationSidebar(
-                      chat: widget.chat,
-                      section: _section,
-                      onOpenUsage: _openUsage,
-                      onOpenModels: _openModels,
-                      onOpenSettings: _openSettings,
-                      onOpenChat: _openChat,
-                      onClose: _closeSidebar,
+                        ],
+                      ),
+                      child: ConversationSidebar(
+                        chat: widget.chat,
+                        section: _section,
+                        onOpenUsage: _openUsage,
+                        onOpenModels: _openModels,
+                        onOpenSettings: _openSettings,
+                        onOpenChat: _openChat,
+                        onClose: _closeSidebar,
+                      ),
                     ),
                   ),
                 ),

@@ -197,6 +197,7 @@ class _Capsule extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
+    final theme = Theme.of(context);
 
     return ListenableBuilder(
       listenable: focusNode,
@@ -241,10 +242,18 @@ class _Capsule extends StatelessWidget {
                   bindings: {
                     const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
                   },
-                  // The capsule already draws the accent focus ring, so clear
-                  // the field's own `FocusOutline` to avoid a double outline.
-                  child: ComponentTheme<FocusOutlineTheme>(
-                    data: const FocusOutlineTheme(border: Border()),
+                  // The capsule already draws the accent focus ring. shadcn's
+                  // `TextField` *always* wraps itself in its own `FocusOutline`
+                  // (passing its own `FocusOutlineTheme`, so an ambient
+                  // `ComponentTheme` is ignored) and that outline's default
+                  // border is the scheme's `ring`. Blank the ring for the field
+                  // only, so just the capsule's outer ring shows.
+                  child: Theme(
+                    data: theme.copyWith(
+                      colorScheme: () => theme.colorScheme.copyWith(
+                        ring: () => const Color(0x00000000),
+                      ),
+                    ),
                     child: TextField(
                       controller: controller,
                       focusNode: focusNode,
