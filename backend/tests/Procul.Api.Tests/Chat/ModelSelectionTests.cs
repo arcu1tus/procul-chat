@@ -45,6 +45,7 @@ public class ModelSelectionTests
     private static ChatStreamServiceV1 NewService(ProculDbContext db, ChatModelRegistry registry) =>
         new(db, registry, new ModelUsageTracker(), new ProculConfig(),
             McpTestHelpers.DisabledManager(), new FakeAttachmentStore(), TestAttachmentOptions.Create(),
+            Procul.Api.Chat.Tools.TurnToolFactory.CreateForTests(),
             NullLogger<ChatStreamServiceV1>.Instance);
 
     private static async Task<string> RunTurnAsync(ChatStreamServiceV1 service, Guid conversationId)
@@ -112,5 +113,23 @@ public class ModelSelectionTests
 
         Assert.Equal("from-a", reply);
         Assert.Equal("a", (await db.TurnUsages.SingleAsync()).Model);
+    }
+
+    [Fact]
+    public async Task The_reply_usage_row_points_at_the_assistant_message_and_bumps_the_revision()
+    {
+        await using var db = NewDb();
+        var conversation = new Conversation { Title = "t" };
+        db.Conversations.Add(conversation);
+        await db.SaveChangesAsync();
+
+        var registry = ChatModelTestHelpers.Registry((ChatModelTestHelpers.Definition("a"), Streaming("hi")));
+        await RunTurnAsync(NewService(db, registry), conversation.Id);
+
+        var assistant = await db.ConversationMessages.SingleAsync(m => m.MessageRole == MessageRole.Assistant);
+        var usage = await db.TurnUsages.SingleAsync();
+
+        Assert.Equal(assistant.Id, usage.MessageId);
+        Assert.Equal(1, (await db.Conversations.SingleAsync()).Revision);
     }
 }

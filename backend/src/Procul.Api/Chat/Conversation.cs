@@ -11,4 +11,11 @@ public class Conversation
 
     /// <summary>The model slug this conversation uses, or null for the configured default.</summary>
     public string? Model { get; set; }
+
+    /// <summary>
+    /// Optimistic-concurrency revision. Incremented on every mutating save (send, edit, rename,
+    /// set-model). Clients echo the revision they last saw as <c>expectedRevision</c>; a mismatch
+    /// is a <c>409 Conflict</c> so two devices cannot silently clobber each other.
+    /// </summary>
+    public int Revision { get; set; }
 }

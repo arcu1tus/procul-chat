@@ -18,6 +18,9 @@ public sealed class ProculConfig
     /// <summary>Attachment upload settings (consumed in a later plan).</summary>
     public AttachmentConfig Attachments { get; set; } = new();
 
+    /// <summary>Image-generation tool settings (the <c>generate_image</c> tool).</summary>
+    public ImageGenerationConfig ImageGeneration { get; set; } = new();
+
     /// <summary>The configured chat models. At least one is required.</summary>
     public List<ChatModelConfig> Models { get; set; } = [];
 
@@ -77,6 +80,13 @@ public sealed class AttachmentConfig
     /// <summary>Cap, in bytes, on how much of a <c>text/*</c> file is inlined into the prompt.</summary>
     public long TextInlineMaxBytes { get; set; } = 256 * 1024;
 
+    /// <summary>
+    /// Media age limit: after this window, orphaned attachments (never attached to a message) are
+    /// deleted outright and referenced attachments keep their metadata but lose their bytes.
+    /// <c>"0"</c> keeps media forever. Defaults to <c>14d</c>.
+    /// </summary>
+    public string? Retention { get; set; }
+
     /// <summary>S3-compatible storage settings; required when <see cref="Storage"/> is <c>s3</c>.</summary>
     public S3AttachmentConfig? S3 { get; set; }
 }
@@ -93,6 +103,43 @@ public sealed class S3AttachmentConfig
     public bool ForcePathStyle { get; set; }
     public string? AccessKey { get; set; }
     public string? SecretKey { get; set; }
+}
+
+/// <summary>Image-generation settings for the <c>generate_image</c> tool.</summary>
+public sealed class ImageGenerationConfig
+{
+    /// <summary>Master switch. When false the tool is not offered to the model.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary><c>openrouter</c> (dedicated Image API) or <c>openai-compatible</c>.</summary>
+    public string Provider { get; set; } = "openrouter";
+
+    /// <summary>The provider base URL, e.g. <c>https://openrouter.ai/api/v1</c>.</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>API key. Supports <c>${ENV_VAR}</c>. Never returned by the API.</summary>
+    public string? ApiKey { get; set; }
+
+    /// <summary>The image-output model id.</summary>
+    public string? Model { get; set; }
+
+    /// <summary>Default image size when the model omits one, e.g. <c>1024x1024</c> or a tier like <c>2K</c>.</summary>
+    public string? DefaultSize { get; set; }
+
+    /// <summary>Default aspect ratio when the model omits one, e.g. <c>1:1</c>.</summary>
+    public string? DefaultAspectRatio { get; set; }
+
+    /// <summary>Upper bound on the reference images a single generation may send.</summary>
+    public int MaxReferenceImages { get; set; } = 4;
+
+    /// <summary>Per-request budget. Defaults to <c>120s</c>.</summary>
+    public string? Timeout { get; set; }
+
+    /// <summary>
+    /// Media age limit for generated/shown images (same semantics as <c>attachments.retention</c>).
+    /// Omit to inherit <c>attachments.retention</c>. <c>"0"</c> keeps them forever.
+    /// </summary>
+    public string? Retention { get; set; }
 }
 
 /// <summary>One entry under <c>models</c>.</summary>

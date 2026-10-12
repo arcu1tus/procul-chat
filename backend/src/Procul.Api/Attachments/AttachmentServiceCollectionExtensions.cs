@@ -27,6 +27,11 @@ public static class AttachmentServiceCollectionExtensions
             services.AddScoped<IAttachmentStore, PostgresAttachmentStore>();
         }
 
+        // Background media retention (orphans deleted, referenced bytes purged) over both
+        // categories. Registered here so it shares the configured store.
+        services.AddSingleton(MediaRetentionOptions.FromConfig(config));
+        services.AddHostedService<MediaRetentionService>();
+
         return services;
     }
 }

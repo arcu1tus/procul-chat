@@ -1,5 +1,7 @@
 namespace Procul.Api.Chat.V1;
 
+using System.Text.Json.Serialization;
+
 // SSE events streamed by the conversation endpoints. The event kind is carried by a `type`
 // discriminator inside the JSON payload (the response never emits an SSE `event:` name); the
 // `Type` default on each payload supplies it. The hierarchy is serialized polymorphically
@@ -33,7 +35,18 @@ public sealed record ChatStreamUsageV1(
     long? OutputTokens,
     long? CachedInputTokens,
     long? TotalTokens,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Model = null,
     string Type = "usage");
+
+/// <summary>
+/// An image the assistant produced or showed during the turn. Fetch the bytes from the normal
+/// attachment route (<c>GET /v1/attachments/{AttachmentId}</c>).
+/// </summary>
+public sealed record ChatStreamImageV1(
+    Guid AttachmentId,
+    string? FileName,
+    string? ContentType,
+    string Type = "image");
 
 /// <summary>The assistant's reply is complete and persisted.</summary>
 public sealed record ChatStreamDoneV1(string Type = "done");
@@ -49,5 +62,6 @@ public abstract record ChatStreamEventV1
     public sealed record ToolResult(ChatStreamToolResultV1 Value) : ChatStreamEventV1;
     public sealed record Failed(ChatStreamFailedV1 Value) : ChatStreamEventV1;
     public sealed record Usage(ChatStreamUsageV1 Value) : ChatStreamEventV1;
+    public sealed record Image(ChatStreamImageV1 Value) : ChatStreamEventV1;
     public sealed record Done(ChatStreamDoneV1 Value) : ChatStreamEventV1;
 }

@@ -12,7 +12,16 @@ public sealed record ConversationV1(
     string Title,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    string? Model
+    string? Model,
+    int Revision
+);
+
+/// <summary>Per-response token usage for one assistant message.</summary>
+public sealed record ConversationMessageUsageV1(
+    long InputTokens,
+    long OutputTokens,
+    long CachedInputTokens,
+    long TotalTokens
 );
 
 /// <summary>A single persisted message of a conversation.</summary>
@@ -22,7 +31,9 @@ public sealed record ConversationMessageV1(
     string Text,
     MessageRole MessageRole,
     DateTimeOffset CreatedAt,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<AttachmentV1>? Attachments = null
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<AttachmentV1>? Attachments = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Model = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ConversationMessageUsageV1? Usage = null
 );
 
 // POST /conversations
@@ -38,10 +49,14 @@ public sealed record GetConversationsResponseV1(List<ConversationV1> Conversatio
 public sealed record GetConversationResponseV1(ConversationV1 Conversation);
 
 // PATCH /conversations/{conversationId}
-public sealed record RenameConversationRequestV1(string? Title);
+public sealed record RenameConversationRequestV1(
+    string? Title,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ExpectedRevision = null);
 
 // PUT /conversations/{conversationId}/model
-public sealed record SetConversationModelRequestV1(string Model);
+public sealed record SetConversationModelRequestV1(
+    string Model,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ExpectedRevision = null);
 
 // GET /conversations/{conversationId}/messages
 public sealed record GetConversationMessagesResponseV1(List<ConversationMessageV1> Messages);
@@ -49,14 +64,16 @@ public sealed record GetConversationMessagesResponseV1(List<ConversationMessageV
 // POST /conversations/{conversationId}/messages
 public sealed record SendMessageRequestV1(
     string Text,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ExpectedRevision = null);
 
 // POST /conversations/{conversationId}/messages/{messageId}/edit
 // Absent `attachmentIds` keeps the message's current attachments; an empty list removes them all;
 // a list replaces them with exactly those.
 public sealed record EditMessageRequestV1(
     string Text,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<Guid>? AttachmentIds = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ExpectedRevision = null);
 
 // GET /models
 public sealed record GetModelsResponseV1(string DefaultModel, List<ModelV1> Models);

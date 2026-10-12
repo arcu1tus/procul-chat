@@ -35,6 +35,19 @@ public class Attachment
     /// <summary>The message this attachment is part of, once attached.</summary>
     public Guid? MessageId { get; set; }
 
+    /// <summary>
+    /// Where the attachment came from: <see cref="SourceUpload"/> for a user upload,
+    /// <see cref="SourceGenerated"/> for media produced/shown by a tool. Drives which retention
+    /// window applies.
+    /// </summary>
+    public string Source { get; set; } = SourceUpload;
+
+    /// <summary>The source value for a user-uploaded file.</summary>
+    public const string SourceUpload = "upload";
+
+    /// <summary>The source value for a generated or shown image.</summary>
+    public const string SourceGenerated = "generated";
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 

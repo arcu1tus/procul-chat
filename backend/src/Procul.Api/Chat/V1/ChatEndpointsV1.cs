@@ -46,6 +46,17 @@ internal static class ChatEndpointsV1
         return null;
     }
 
+    /// <summary>
+    /// The <c>409 Conflict</c> returned when a client's <c>expectedRevision</c> is stale. The detail
+    /// names the current revision so the client can refresh and retry.
+    /// </summary>
+    private static ProblemHttpResult RevisionConflict(int currentRevision) =>
+        TypedResults.Problem(
+            statusCode: StatusCodes.Status409Conflict,
+            title: "Revision conflict",
+            detail: $"The conversation was modified by another client (current revision {currentRevision}). " +
+                    "Refresh and retry.");
+
     private static async Task<Ok<GetConversationsResponseV1>> GetConversationsAsync(
         ProculDbContext db,
         CancellationToken ct
@@ -54,7 +65,7 @@ internal static class ChatEndpointsV1
         var conversations = await db.Conversations
             .OrderByDescending(c => c.UpdatedAt)
             .ThenByDescending(c => c.Id)
-            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt, c.Model))
+            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt, c.Model, c.Revision))
             .ToListAsync(ct);
 
         return TypedResults.Ok(new GetConversationsResponseV1(conversations));
@@ -112,7 +123,7 @@ internal static class ChatEndpointsV1
     {
         var conversation = await db.Conversations
             .Where(c => c.Id == conversationId)
-            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt, c.Model))
+            .Select(c => new ConversationV1(c.Id, c.Title, c.CreatedAt, c.UpdatedAt, c.Model, c.Revision))
             .FirstOrDefaultAsync(ct);
 
         if (conversation is null)
@@ -145,11 +156,17 @@ internal static class ChatEndpointsV1
             return TypedResults.NotFound();
         }
 
+        if (body.ExpectedRevision is { } expected && expected != conversation.Revision)
+        {
+            return RevisionConflict(conversation.Revision);
+        }
+
         conversation.Title = title;
+        conversation.Revision++;
         await db.SaveChangesAsync(ct);
 
         return TypedResults.Ok(new GetConversationResponseV1(
-            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model)
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model, conversation.Revision)
         ));
     }
 
@@ -175,11 +192,17 @@ internal static class ChatEndpointsV1
             return TypedResults.NotFound();
         }
 
+        if (body.ExpectedRevision is { } expected && expected != conversation.Revision)
+        {
+            return RevisionConflict(conversation.Revision);
+        }
+
         conversation.Model = model;
+        conversation.Revision++;
         await db.SaveChangesAsync(ct);
 
         return TypedResults.Ok(new GetConversationResponseV1(
-            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model)
+            new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model, conversation.Revision)
         ));
     }
 
@@ -259,20 +282,51 @@ internal static class ChatEndpointsV1
             );
         }
 
-        var messages = await query
+        var messageRows = await query
             .OrderByDescending(m => m.CreatedAt)
             .ThenByDescending(m => m.Id)
             .Take(limit)
-            .Select(m => new ConversationMessageV1(
-                Id: m.Id,
-                ConversationId: conversationId,
-                Text: m.Text,
-                MessageRole: m.MessageRole,
-                CreatedAt: m.CreatedAt,
-                Attachments: m.Attachments
+            .Select(m => new
+            {
+                m.Id,
+                m.Text,
+                m.MessageRole,
+                m.CreatedAt,
+                Attachments = m.Attachments
                     .Select(a => new AttachmentV1(a.Id, a.FileName, a.ContentType, a.SizeBytes, a.CreatedAt))
-                    .ToList()))
+                    .ToList(),
+            })
             .ToListAsync(ct);
+
+        // Per-response metadata: attach each assistant message's model + token usage.
+        var messageIds = messageRows.Select(m => m.Id).ToList();
+        var usageByMessage = (await db.TurnUsages
+                .Where(u => u.MessageId != null && messageIds.Contains(u.MessageId.Value))
+                .ToListAsync(ct))
+            .GroupBy(u => u.MessageId!.Value)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        var messages = messageRows
+            .Select(m =>
+            {
+                usageByMessage.TryGetValue(m.Id, out var usage);
+                return new ConversationMessageV1(
+                    Id: m.Id,
+                    ConversationId: conversationId,
+                    Text: m.Text,
+                    MessageRole: m.MessageRole,
+                    CreatedAt: m.CreatedAt,
+                    Attachments: m.Attachments,
+                    Model: usage?.Model,
+                    Usage: usage is null
+                        ? null
+                        : new ConversationMessageUsageV1(
+                            usage.InputTokens,
+                            usage.OutputTokens,
+                            usage.CachedInputTokens,
+                            usage.TotalTokens));
+            })
+            .ToList();
 
         return TypedResults.Ok(new GetConversationMessagesResponseV1(messages));
     }
@@ -291,6 +345,11 @@ internal static class ChatEndpointsV1
         if (conversation is null)
         {
             return TypedResults.NotFound();
+        }
+
+        if (body.ExpectedRevision is { } expected && expected != conversation.Revision)
+        {
+            return RevisionConflict(conversation.Revision);
         }
 
         if (ValidateMessageText(body.Text, "text") is { } textProblem)
@@ -326,6 +385,11 @@ internal static class ChatEndpointsV1
         if (conversation is null)
         {
             return TypedResults.NotFound();
+        }
+
+        if (body.ExpectedRevision is { } expected && expected != conversation.Revision)
+        {
+            return RevisionConflict(conversation.Revision);
         }
 
         if (ValidateMessageText(body.Text, "text") is { } textProblem)

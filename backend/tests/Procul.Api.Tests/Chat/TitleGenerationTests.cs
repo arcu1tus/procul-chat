@@ -25,6 +25,7 @@ public class TitleGenerationTests
             McpTestHelpers.DisabledManager(),
             new FakeAttachmentStore(),
             TestAttachmentOptions.Create(),
+            Procul.Api.Chat.Tools.TurnToolFactory.CreateForTests(),
             NullLogger<ChatStreamServiceV1>.Instance);
 
     // The title call never touches the context, so an unconfigured one is enough: no provider

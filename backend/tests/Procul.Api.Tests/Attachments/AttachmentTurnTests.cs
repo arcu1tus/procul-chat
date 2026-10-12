@@ -40,6 +40,7 @@ public class AttachmentTurnTests
             McpTestHelpers.DisabledManager(),
             store,
             TestAttachmentOptions.Create(resendHistory: resendHistory),
+            Procul.Api.Chat.Tools.TurnToolFactory.CreateForTests(),
             NullLogger<ChatStreamServiceV1>.Instance);
 
     private static FakeChatClient Capturing(List<ChatMessage> captured) => new(
@@ -84,11 +85,12 @@ public class AttachmentTurnTests
         List<ChatMessage> captured,
         Guid conversationId,
         string text,
-        IReadOnlyList<Attachment> attachments)
+        IReadOnlyList<Attachment> attachments,
+        IReadOnlySet<ModelInputModality>? capabilities = null)
     {
         captured.Clear();
         await foreach (var _ in service.StreamAssistantReplyAsync(
-            conversationId, text, attachments, Caps, CancellationToken.None))
+            conversationId, text, attachments, capabilities ?? Caps, CancellationToken.None))
         {
         }
 
@@ -209,5 +211,34 @@ public class AttachmentTurnTests
         Assert.Contains(
             user.Contents.OfType<TextContent>(),
             text => text.Text.Contains("movie.mp4") && text.Text.Contains("not sent"));
+    }
+
+    [Fact]
+    public async Task A_later_turn_on_an_incapable_model_receives_a_note_not_the_bytes()
+    {
+        await using var db = NewDb();
+        var conversation = new Conversation { Title = "t" };
+        db.Conversations.Add(conversation);
+        await db.SaveChangesAsync();
+
+        var store = new FakeAttachmentStore();
+        var attachment = await SeedAsync(db, store, conversation.Id, "cat.png", "image/png");
+
+        var captured = new List<ChatMessage>();
+        var service = NewService(db, Capturing(captured), store, resendHistory: true);
+
+        // First turn on a capable model: the bytes are sent.
+        await RunTurnAsync(service, captured, conversation.Id, "first", [attachment]);
+        Assert.Contains(captured.Last().Contents, content => content is DataContent);
+
+        // A later turn on a text-only model: only a note, no bytes.
+        var textOnly = new HashSet<ModelInputModality> { ModelInputModality.Text };
+        await RunTurnAsync(service, captured, conversation.Id, "second", [], textOnly);
+
+        var historyUser = captured[1];
+        Assert.DoesNotContain(historyUser.Contents, content => content is DataContent);
+        Assert.Contains(
+            historyUser.Contents.OfType<TextContent>(),
+            text => text.Text.Contains("cat.png") && text.Text.Contains("not sent"));
     }
 }

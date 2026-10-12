@@ -224,4 +224,87 @@ public class ProculConfigLoaderTests
         Assert.True(config.Models[0].Default);
         Assert.Equal("openrouter/free", config.TitleModel);
     }
+
+    [Fact]
+    public void The_image_generation_section_is_parsed()
+    {
+        var config = Load($$"""
+            {
+              "models": [ {{MinimalModel}} ],
+              "imageGeneration": {
+                "enabled": true,
+                "provider": "openai-compatible",
+                "baseUrl": "https://images.example/v1",
+                "apiKey": "${IMG_KEY}",
+                "model": "some/image-model",
+                "defaultSize": "1024x1024",
+                "defaultAspectRatio": "1:1",
+                "maxReferenceImages": 3,
+                "timeout": "90s",
+                "retention": "7d"
+              }
+            }
+            """,
+            name => name == "IMG_KEY" ? "sk-img" : null);
+
+        Assert.True(config.ImageGeneration.Enabled);
+        Assert.Equal("openai-compatible", config.ImageGeneration.Provider);
+        Assert.Equal("some/image-model", config.ImageGeneration.Model);
+
+        var options = ImageGenerationOptions.FromConfig(config);
+        Assert.True(options.Enabled);
+        Assert.Equal("https://images.example/v1", options.BaseUrl);
+        Assert.Equal("sk-img", options.ApiKey);
+        Assert.Equal(3, options.MaxReferenceImages);
+        Assert.Equal(TimeSpan.FromSeconds(90), options.Timeout);
+        Assert.Equal(TimeSpan.FromDays(7), options.Retention);
+    }
+
+    [Fact]
+    public void Generated_media_inherits_the_upload_retention_when_unset()
+    {
+        var config = Load($$"""
+            { "attachments": { "retention": "10d" }, "models": [ {{MinimalModel}} ] }
+            """);
+
+        Assert.Equal(TimeSpan.FromDays(10), AttachmentOptions.FromConfig(config).Retention);
+        Assert.Equal(TimeSpan.FromDays(10), ImageGenerationOptions.FromConfig(config).Retention);
+    }
+
+    [Fact]
+    public void A_zero_retention_keeps_media_forever()
+    {
+        var config = Load($$"""
+            { "attachments": { "retention": "0" }, "models": [ {{MinimalModel}} ] }
+            """);
+
+        Assert.Equal(TimeSpan.Zero, AttachmentOptions.FromConfig(config).Retention);
+        Assert.Equal(TimeSpan.Zero, DurationParser.ParseRetention("0", TimeSpan.FromDays(14), "x"));
+    }
+
+    [Fact]
+    public void A_malformed_retention_is_fatal()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => Load($$"""
+            { "attachments": { "retention": "soon" }, "models": [ {{MinimalModel}} ] }
+            """));
+
+        Assert.Contains("retention", ex.Message);
+    }
+
+    [Fact]
+    public void An_unknown_image_provider_is_fatal() =>
+        Assert.Throws<InvalidOperationException>(() => Load($$"""
+            { "imageGeneration": { "provider": "weird" }, "models": [ {{MinimalModel}} ] }
+            """));
+
+    [Fact]
+    public void Enabling_image_generation_without_a_model_is_fatal()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => Load($$"""
+            { "imageGeneration": { "enabled": true }, "models": [ {{MinimalModel}} ] }
+            """));
+
+        Assert.Contains("model", ex.Message);
+    }
 }

@@ -51,6 +51,9 @@ internal static class ProculConfigLoader
     private static readonly HashSet<string> AllowedStorage =
         new(StringComparer.OrdinalIgnoreCase) { "postgres", "s3" };
 
+    private static readonly HashSet<string> AllowedImageProviders =
+        new(StringComparer.OrdinalIgnoreCase) { "openrouter", "openai-compatible" };
+
     private static readonly object SchemaLock = new();
     private static JsonSchema? _schema;
 
@@ -268,6 +271,7 @@ internal static class ProculConfigLoader
     {
         ValidateModels(config, logger);
         ValidateAttachments(config);
+        ValidateImageGeneration(config);
         ValidateDurations(config);
     }
 
@@ -377,5 +381,47 @@ internal static class ProculConfigLoader
             config.Mcp.ConnectTimeout, TimeSpan.FromSeconds(15), "mcp.connectTimeout");
         _ = DurationParser.Parse(
             config.Mcp.HealthInterval, TimeSpan.FromSeconds(60), "mcp.healthInterval");
+        _ = DurationParser.ParseRetention(
+            config.Attachments.Retention, TimeSpan.FromDays(14), "attachments.retention");
+        _ = DurationParser.ParseRetention(
+            config.ImageGeneration.Retention, TimeSpan.FromDays(14), "imageGeneration.retention");
+        _ = DurationParser.Parse(
+            config.ImageGeneration.Timeout, TimeSpan.FromSeconds(120), "imageGeneration.timeout");
+    }
+
+    private static void ValidateImageGeneration(ProculConfig config)
+    {
+        var image = config.ImageGeneration;
+
+        if (image.Provider is { Length: > 0 } provider && !AllowedImageProviders.Contains(provider.Trim()))
+        {
+            throw new InvalidOperationException(
+                $"imageGeneration.provider must be \"openrouter\" or \"openai-compatible\", not '{provider}'.");
+        }
+
+        if (image.MaxReferenceImages < 0)
+        {
+            throw new InvalidOperationException(
+                $"imageGeneration.maxReferenceImages must not be negative (was {image.MaxReferenceImages}).");
+        }
+
+        if (!image.Enabled)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(image.Model))
+        {
+            throw new InvalidOperationException(
+                "imageGeneration.enabled is true but no 'imageGeneration.model' is configured.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(image.BaseUrl)
+            && (!Uri.TryCreate(image.BaseUrl.Trim(), UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
+        {
+            throw new InvalidOperationException(
+                $"imageGeneration.baseUrl ('{image.BaseUrl}') must be an absolute http(s) URL.");
+        }
     }
 }

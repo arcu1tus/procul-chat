@@ -64,6 +64,26 @@ internal static class DurationParser
         return total;
     }
 
+    /// <summary>
+    /// Parses a retention window. Like <see cref="Parse"/> but <c>"0"</c> is a valid value meaning
+    /// "disabled" (keep media forever) and is returned as <see cref="TimeSpan.Zero"/>. A blank
+    /// value yields <paramref name="defaultValue"/>.
+    /// </summary>
+    public static TimeSpan ParseRetention(string? raw, TimeSpan defaultValue, string settingName)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return defaultValue;
+        }
+
+        if (raw.Trim() == "0")
+        {
+            return TimeSpan.Zero;
+        }
+
+        return Parse(raw, defaultValue, settingName);
+    }
+
     private static InvalidOperationException Malformed(string? raw, string settingName) =>
         new(
             $"{settingName} value '{raw}' is not a valid duration. Use a number followed " +
