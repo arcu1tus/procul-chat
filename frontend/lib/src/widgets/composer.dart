@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
-import 'package:flutter/services.dart'
-    show LogicalKeyboardKey, TextInputAction;
+import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import '../chat_controller.dart';
@@ -262,7 +261,11 @@ class _Capsule extends StatelessWidget {
                 ),
               ),
               const Gap(6),
-              _SendButton(enabled: enabled, isEditing: isEditing, onSubmit: onSubmit),
+              _SendButton(
+                enabled: enabled,
+                isEditing: isEditing,
+                onSubmit: onSubmit,
+              ),
             ],
           ),
         );

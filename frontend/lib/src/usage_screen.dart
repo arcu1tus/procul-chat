@@ -5,11 +5,13 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'chat_api.dart';
 import 'models.dart';
+import 'motion.dart';
 import 'usage.dart';
 import 'usage_controller.dart';
 import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/skeleton.dart';
+import 'widgets/stagger.dart';
 
 /// The token-usage dashboard: lifetime totals, a browsable per-day chart over a
 /// selectable window, and a per-model breakdown. Reached from the sidebar.
@@ -107,28 +109,44 @@ class _UsageScreenState extends State<UsageScreen> {
               _ErrorNote(message: _controller.error!),
               const Gap(16),
             ],
-            if (_controller.summary == null)
-              // Only shimmer while the first load is genuinely in flight; after a
-              // failed first load there is nothing to skeleton and the error note
-              // above is the whole state.
-              _controller.isLoading
-                  ? const _UsageSkeleton()
-                  : const SizedBox.shrink()
-            else if (_controller.isEmpty)
-              const _EmptyUsage()
-            else
-              ..._content(),
+            // Skeleton → content cross-fades rather than snapping.
+            AnimatedSwitcher(
+              duration: motionDuration(context, Motion.medium),
+              switchInCurve: Motion.curve,
+              switchOutCurve: Motion.curve,
+              child: _branch(),
+            ),
           ],
         );
       },
     );
   }
 
+  Widget _branch() {
+    if (_controller.summary == null) {
+      // Only shimmer while the first load is genuinely in flight; after a failed
+      // first load there is nothing to skeleton and the error note above is the
+      // whole state.
+      return _controller.isLoading
+          ? const _UsageSkeleton(key: ValueKey('usage-loading'))
+          : const SizedBox.shrink(key: ValueKey('usage-none'));
+    }
+    if (_controller.isEmpty) {
+      return const _EmptyUsage(key: ValueKey('usage-empty'));
+    }
+    return Column(
+      key: const ValueKey('usage-content'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: _content(),
+    );
+  }
+
   List<Widget> _content() {
     return [
-      const Text('Lifetime').semiBold(),
+      Stagger(index: 0, child: const Text('Lifetime').semiBold()),
       const Gap(10),
-      _LifetimeCards(lifetime: _controller.lifetime),
+      Stagger(index: 1, child: _LifetimeCards(lifetime: _controller.lifetime)),
       const Gap(24),
       const Divider(),
       const Gap(16),
@@ -154,7 +172,11 @@ class _UsageScreenState extends State<UsageScreen> {
         const Gap(16),
         const Text('By model').semiBold(),
         const Gap(10),
-        for (final model in _controller.models) _ModelRow(model: model),
+        for (final (index, model) in _controller.models.indexed)
+          Stagger(
+            index: index + 2,
+            child: _ModelRow(model: model),
+          ),
       ],
     ];
   }
@@ -470,7 +492,7 @@ class _ErrorNote extends StatelessWidget {
 
 /// Centred, scrollable empty state so pull-to-refresh still works.
 class _EmptyUsage extends StatelessWidget {
-  const _EmptyUsage();
+  const _EmptyUsage({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -496,7 +518,7 @@ class _EmptyUsage extends StatelessWidget {
 
 /// Shimmer placeholders shaped like the real dashboard.
 class _UsageSkeleton extends StatelessWidget {
-  const _UsageSkeleton();
+  const _UsageSkeleton({super.key});
 
   @override
   Widget build(BuildContext context) {

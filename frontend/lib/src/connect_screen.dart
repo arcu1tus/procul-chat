@@ -3,6 +3,8 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'auth_controller.dart';
 import 'config.dart';
+import 'motion.dart';
+import 'widgets/stagger.dart';
 import 'server_form.dart';
 import 'server_profile.dart';
 
@@ -45,16 +47,19 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _Brand(colors: colors),
+                    Stagger(index: 0, child: _Brand(colors: colors)),
                     const Gap(28),
                     if (profiles.isNotEmpty) ...[
                       const Text('Saved servers').semiBold,
                       const Gap(8),
-                      for (final profile in profiles)
-                        _ServerTile(
-                          profile: profile,
-                          selected: profile.id == _selected?.id,
-                          onTap: () => _select(profile),
+                      for (final (index, profile) in profiles.indexed)
+                        Stagger(
+                          index: index + 1,
+                          child: _ServerTile(
+                            profile: profile,
+                            selected: profile.id == _selected?.id,
+                            onTap: () => _select(profile),
+                          ),
                         ),
                       const Gap(22),
                       const Text('Or add another server').semiBold,
@@ -146,8 +151,8 @@ class _ServerTileState extends State<_ServerTile> {
         onHover: (value) => setState(() => _hovered = value),
         disableHoverEffect: true,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          curve: Curves.easeOut,
+          duration: motionDuration(context, Motion.fast),
+          curve: Motion.curve,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: widget.selected

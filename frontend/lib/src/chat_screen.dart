@@ -811,11 +811,7 @@ class _EmptyStateState extends State<_EmptyState>
     if (reduce) return child;
     final animation = CurvedAnimation(
       parent: _controller,
-      curve: Interval(
-        (0.08 * index).clamp(0.0, 0.6),
-        1,
-        curve: Motion.curve,
-      ),
+      curve: Interval((0.08 * index).clamp(0.0, 0.6), 1, curve: Motion.curve),
     );
     return AnimatedBuilder(
       animation: animation,
@@ -892,8 +888,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
       isUser: isUser,
       canAct: canAct,
       onEdit: isUser ? () => widget.onEdit(widget.message) : null,
-      onCopy: () =>
-          Clipboard.setData(ClipboardData(text: widget.message.text)),
+      onCopy: () => Clipboard.setData(ClipboardData(text: widget.message.text)),
       onMenu: isUser ? () => _showMessageMenu(context) : null,
     );
 

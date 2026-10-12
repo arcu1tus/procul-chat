@@ -87,9 +87,7 @@ class _StreamingTextState extends State<StreamingText>
     final target = widget.text.length.toDouble();
     final advanced =
         _revealed +
-        dt.inMicroseconds /
-            Duration.microsecondsPerSecond *
-            _charsPerSecond;
+        dt.inMicroseconds / Duration.microsecondsPerSecond * _charsPerSecond;
     final next = math.min(target, advanced);
     final caughtUp = next >= target;
     final due = elapsed - _lastBuild >= _minRebuildInterval;

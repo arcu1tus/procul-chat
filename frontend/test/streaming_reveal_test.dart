@@ -69,7 +69,9 @@ void main() {
     );
     await tester.pump();
     const reply = 'Hello world, this is a reply.';
-    stream.add(utf8.encode('data: {"value":{"content":"$reply","type":"token"}}\n\n'));
+    stream.add(
+      utf8.encode('data: {"value":{"content":"$reply","type":"token"}}\n\n'),
+    );
     await tester.pump();
 
     // While streaming the newest text is under a bloom and a caret trails it.
@@ -135,7 +137,9 @@ void main() {
     );
     await tester.pump();
     const reply = 'Hello world';
-    stream.add(utf8.encode('data: {"value":{"content":"$reply","type":"token"}}\n\n'));
+    stream.add(
+      utf8.encode('data: {"value":{"content":"$reply","type":"token"}}\n\n'),
+    );
     await tester.pump();
 
     // No bloom, no caret, and the full text appears at once.

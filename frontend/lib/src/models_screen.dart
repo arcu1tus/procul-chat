@@ -2,11 +2,13 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'model_catalog_controller.dart';
 import 'models.dart';
+import 'motion.dart';
 import 'time_format.dart';
 import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/model_badges.dart';
 import 'widgets/skeleton.dart';
+import 'widgets/stagger.dart';
 
 /// The model catalog: every model the server is configured with, its
 /// capabilities, and a live health snapshot. Reached from the sidebar.
@@ -99,27 +101,49 @@ class _ModelsScreenState extends State<ModelsScreen> {
               _ErrorNote(message: catalog.error!),
               const Gap(16),
             ],
-            if (catalog.models.isEmpty)
-              // Only shimmer while the first load is genuinely in flight; after a
-              // failed first load the error note above is the whole state.
-              catalog.isLoading
-                  ? const _ModelsSkeleton()
-                  : catalog.error == null
-                  ? const _EmptyModels()
-                  : const SizedBox.shrink()
-            else ...[
-              for (final model in catalog.models)
-                _ModelCard(model: model, catalog: catalog),
-              const Gap(8),
-              const Text(
-                'Unhealthy models are re-checked periodically, and a model with '
-                'recent traffic is considered live.',
-              ).muted.small,
-            ],
+            // Skeleton → content cross-fades rather than snapping.
+            AnimatedSwitcher(
+              duration: motionDuration(context, Motion.medium),
+              switchInCurve: Motion.curve,
+              switchOutCurve: Motion.curve,
+              child: _branch(catalog),
+            ),
           ],
         );
       },
     );
+  }
+
+  Widget _branch(ModelCatalogController catalog) {
+    if (catalog.models.isNotEmpty) {
+      return Column(
+        key: const ValueKey('models-content'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (index, model) in catalog.models.indexed)
+            Stagger(
+              index: index,
+              child: _ModelCard(model: model, catalog: catalog),
+            ),
+          const Gap(8),
+          const Text(
+            'Unhealthy models are re-checked periodically, and a model with '
+            'recent traffic is considered live.',
+          ).muted.small,
+        ],
+      );
+    }
+    // Only shimmer while the first load is genuinely in flight; after a failed
+    // first load there is nothing to skeleton and the error note above is the
+    // whole state.
+    if (catalog.isLoading) {
+      return const _ModelsSkeleton(key: ValueKey('models-loading'));
+    }
+    if (catalog.error == null) {
+      return const _EmptyModels(key: ValueKey('models-empty'));
+    }
+    return const SizedBox.shrink(key: ValueKey('models-none'));
   }
 }
 
@@ -271,7 +295,7 @@ class _ErrorNote extends StatelessWidget {
 
 /// Centred, scrollable empty state so pull-to-refresh still works.
 class _EmptyModels extends StatelessWidget {
-  const _EmptyModels();
+  const _EmptyModels({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -295,7 +319,7 @@ class _EmptyModels extends StatelessWidget {
 
 /// Shimmer placeholders shaped like model cards.
 class _ModelsSkeleton extends StatelessWidget {
-  const _ModelsSkeleton();
+  const _ModelsSkeleton({super.key});
 
   @override
   Widget build(BuildContext context) {

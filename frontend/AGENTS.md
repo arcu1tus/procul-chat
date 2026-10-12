@@ -12,7 +12,7 @@ The Flutter chat client ("Procul") for the Procul backend. It supports **multipl
 conversations** (list, switch, rename, delete), streams assistant replies over SSE, shows
 tool activity, renders assistant Markdown, attaches **files** (a paperclip picker with removable
 preview chips; images render inline, other files as tap-to-save chips), and has a persisted
-**settings** dialog (theme:
+**settings** pane (theme:
 light / dark / system, dark default). It also tracks **token usage**: a per-conversation
 counter chip in the chat app bar and a **Usage** dashboard reachable from the sidebar. The
 backend can serve **multiple models**, so the chat app bar carries a per-conversation **model
@@ -91,24 +91,32 @@ frontend/
       usage_screen.dart           # Usage dashboard: lifetime cards, fl_chart bars, per-model list
       models_screen.dart          # Models catalog: name/description/capability badges/health,
                                   #   per-model + check-all probes, refresh
+      settings_screen.dart        # settings pane (theme selector + server management + MCP)
+      motion.dart                 # Motion tokens (fast/medium/slow, curves) + reduceMotion gate
+      responsive.dart             # Breakpoint enum + expanded/app-bar thresholds
       app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData,
                                   #   magenta accent #a832a0 + Inter)
                                   #   + ShadcnMaterialBridge (flutter/material theme for markdown)
       home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow);
-                                  #   owns the ModelCatalogController; overlays UsageScreen/ModelsScreen;
-                                  #   lifecycle/periodic sync (WidgetsBindingObserver)
+                                  #   owns the ModelCatalogController; cross-fades Chat/Usage/
+                                  #   Models/Settings panes; lifecycle/periodic sync
       conversation_sidebar.dart   # conversation list, new chat, usage/models/settings tab row
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
-      settings_dialog.dart        # settings dialog (theme selector + server management)
       chat_screen.dart            # chat pane: header (+ model picker + usage chip, or a single
                                   #   overflow on narrow bars), reversed message list with
                                   #   infinite scroll + bottom pull-to-refresh, per-response
-                                  #   popover, composer; streaming shimmer over assistant Markdown
+                                  #   popover, composer; streaming reveal over assistant Markdown
       widgets/
         skeleton.dart             # Shimmer + Skeleton loading placeholders
         icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label + busy spinner
         model_badges.dart         # CapabilityBadge(s) + ModelHealthDot (shared by picker & Models)
         content_width.dart        # kContentMaxWidth + centeredSidePadding (wide-screen measure)
+        composer.dart             # Composer: the rounded capsule (attach / field / send)
+        attachment_views.dart     # AttachmentList / AttachmentChip / AttachmentImage / ... views
+        streaming_text.dart       # StreamingText: pacer + frontier bloom + caret reveal
+        pressable.dart            # PressableScale: press feedback for buttons
+        stagger.dart              # Stagger: one shared list/card entrance
+        app_dialog.dart           # showAppDialog / showAppMenu (consistent modal/menu motion)
   test/                           # controller, API, auth, settings, and widget tests
   test/support/                   # shared test doubles (FakeConversationStore, FakeCredentialStore,
                                   #   FakeServerStore, FakeAttachmentPicker) + model_fixtures.dart
@@ -309,10 +317,32 @@ are editable. A hard failure triggers a resync (see below).
   `RefreshTrigger` + `IconAction`; loading shimmer / empty / error match `UsageScreen`. Health is
   advisory — an unhealthy model stays selectable. It is overlaid on the still-mounted chat like
   Usage, from the sidebar's **Models** tab.
-- **Assistant text shimmers while streaming.** `_ShimmerText` (in `chat_screen.dart`) wraps the
-  `GptMarkdown` in a `ShaderMask` (`BlendMode.srcIn`) with a sliding `LinearGradient`, active
-  only while the reply streams. It owns its own `AnimationController`, so per-token rebuilds do
-  not restart the sweep, and it removes the overlay once the reply completes.
+- **Assistant text streams through a pacer, not the raw SSE cadence.** `StreamingText`
+  (`widgets/streaming_text.dart`) decouples network streaming from visual streaming: it buffers
+  the full target text and reveals it at ~220 chars/s on its own `Ticker`, so bursty SSE chunks
+  read as a smooth flow. While streaming it wraps the `GptMarkdown` in a paint-only `ShaderMask`
+  (the "frontier bloom", key `streaming-bloom`) that tints the newest text with the brand accent,
+  and trails a pulsing caret (`streaming-caret`). It stops the ticker the moment it catches up
+  (so `pumpAndSettle` always settles) and is fully inert under reduced motion — full text, no
+  bloom, no caret. The Markdown still renders through `GptMarkdown`, so `find.byType(GptMarkdown)`
+  and the existing `ShaderMask`-ancestor assertions keep working. (The plan's Option A package
+  `flutter_streaming_text_markdown` is **not** a dependency: it cannot be fetched offline, so the
+  reveal is hand-rolled — Option B — plus the bespoke accent bloom — Option C.)
+- **The message surface is ChatGPT-like.** The **user** bubble is right-aligned, filled on
+  `secondary` (not the saturated `primary`), has a tighter bottom-right corner, and **no avatar**.
+  The **assistant** reply renders directly on the background — no fill, no `Border.all` — at the
+  reading measure, with a smaller, subtler brand mark at the top. That mark stays **tappable** and
+  keeps the `response-details` key/semantics/tooltip: pressing it opens the
+  Model/Time/Input/Output/Cached/Total popover. Actions live in a fade+slide row under each message
+  (user: a `…` menu with Edit/Copy, key `message-options`; assistant: Copy, key `message-copy`),
+  revealed on hover on pointer platforms and always available on touch. The row is always in the
+  tree and hit-testable, so `tester.tap` reaches it however it is revealed.
+- **The composer is a capsule.** `Composer` (`widgets/composer.dart`) is one rounded surface
+  (attach · text field · circular primary send) with a subtle border/shadow and an accent focus
+  ring that animates in while focused; the edit banner and the pending-attachment strip animate in
+  above it (`_AnimatedSlot`). The a11y labels (`Send message` / `Attach file`) and the single
+  `TextField`/`PrimaryButton` are preserved (tests rely on them). Composer keyboard semantics are
+  unchanged (see the keyboard bullet below).
 - **Errors are user-facing strings** on `ChatController.error`; `ChatScreen` shows them as a
   shadcn toast. Streaming failures still leave the partial reply in the bubble.
 - **Settings are a `ChangeNotifier` + `shared_preferences`.** `SettingsController.themeMode`
@@ -375,13 +405,16 @@ are editable. A hard failure triggers a resync (see below).
   `Shimmer` (one `AnimationController` sweeping a gradient over its children) and `Skeleton`
   blocks. The conversation list and message history show shaped placeholders; an assistant
   bubble awaiting its first token shows pulsing dots (`_ThinkingDots`).
-- **Motion is subtle and one-shot** (120–220 ms, `easeOut`): new messages fade + rise once
-  (tracked per `ChatMessage` in `ChatScreen`, and suppressed for a whole history load), the
-  narrow-screen scrim + panel are driven by one `AnimationController`, and conversation
-  tiles/tool rows use `AnimatedContainer` / `AnimatedSwitcher`. Non-essential motion is skipped
-  when the platform asks for reduced motion (`MediaQuery.disableAnimationsOf` /
-  `accessibleNavigationOf`) — the entrance fade, the streaming shimmer, the thinking dots, the
-  send-button scale, and the sidebar slide all respect it.
+- **One motion language, centrally gated.** `motion.dart` holds the tokens
+  (`Motion.fast` ~150 ms, `Motion.medium` ~240 ms, `Motion.slow` ~400 ms, plus
+  `curve`/`emphasized`/`pop` and `stagger`) and the single `reduceMotion(context)` gate. Every
+  animation draws its duration/curve from here, and every non-essential one is skipped (or
+  collapsed to `Duration.zero` via `motionDuration`) under reduced motion. `PressableScale`
+  (`widgets/pressable.dart`) gives buttons a consistent press dip — `IconAction` applies it
+  centrally; `Stagger` (`widgets/stagger.dart`) is the one shared list/card entrance used by the
+  sidebar, Usage, Models and Connect. `HomeShell` cross-fades the main pane between
+  Chat/Usage/Models/Settings with a shared-axis fade+slide, and menus/dialogs go through
+  `showAppMenu`/`showAppDialog` (`widgets/app_dialog.dart`) so their open/close cadence matches.
 - **Icon-only buttons go through `IconAction`** (`widgets/icon_action.dart`) so every one has
   a tooltip and an accessible label. `IconAction(busy: true)` swaps the icon for a small spinner
   (used by the refresh buttons).
@@ -394,7 +427,7 @@ are editable. A hard failure triggers a resync (see below).
   conversation sidebar, the Models health rows, and the per-response popover.
 - **Pull-to-refresh uses `RefreshTrigger` plus an explicit button.** The conversation list
   (`conversation_sidebar.dart`), the chat pane (`chat_screen.dart`) and the MCP section
-  (`settings_dialog.dart`) each wrap their scrollable in `RefreshTrigger`; every one also has a
+  (`settings_screen.dart`) each wrap their scrollable in `RefreshTrigger`; every one also has a
   refresh `IconAction`, because mouse-overscroll on desktop is less discoverable than a drag.
   Empty states are scrollable (`AlwaysScrollableScrollPhysics`) so the gesture still works with
   no content. The chat pane is `RefreshTrigger(reverse: true)` (pull at the **bottom**, matching
@@ -405,16 +438,21 @@ are editable. A hard failure triggers a resync (see below).
   backs infinite scroll up, and `syncActiveConversation()` (a merge) backs the shell's background
   sync.
 - **MCP status is read-only and secret-free.** `McpStatusController` (owned by the Settings
-  dialog's `_McpSection`) fetches `GET /v1/mcp/servers` through `ChatApi`, so it inherits the
-  bearer header and the `401 → logout` path. `showSettingsDialog` takes the `ChatApi`
-  (`chat.api` from the sidebar). The section renders name, transport badge, online dot, tool
-  count and `lastError` only — never headers or tokens. The dialog is created fresh per open and
-  the shell is keyed by profile id, so it always reflects the active backend.
+  pane's `_McpSection`) fetches `GET /v1/mcp/servers` through `ChatApi`, so it inherits the
+  bearer header and the `401 → logout` path. `SettingsScreen` takes the `ChatApi`
+  (`chat.api` from the shell). The section renders name, transport badge, online dot, tool
+  count and `lastError` only — never headers or tokens. The pane is created fresh when selected
+  and the shell is keyed by profile id, so it always reflects the active backend.
+- **Settings is a full pane, not a dialog.** `settings_screen.dart`'s `SettingsScreen` uses the
+  same `Scaffold` + `AppBar` treatment as Usage/Models (a menu button on narrow screens) and is
+  selected from the sidebar's tab row; `HomeShell` cross-fades it in over the still-mounted chat
+  (so the chat's scroll/buffer survive). Only the genuinely-modal flows stay modals: add-server,
+  rename, delete/remove confirmations, toasts.
 - **All UI is shadcn_flutter.** Use shadcn components (`Scaffold` + `headers: [AppBar(...)]`,
   `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `SelectedButton` (used
-  for the segmented theme selector), `TextField`, `AlertDialog` via `showOverlay`,
-  `DropdownMenu` via `showDropdown`, `showToast`, `Clickable`) and `LucideIcons`. There is no
-  Material `ScaffoldMessenger`/`SnackBar` usage.
+  for the segmented theme selector), `TextField`, `AlertDialog` via `showAppDialog`/
+  `showOverlay`, `DropdownMenu` via `showAppMenu`/`showDropdown`, `showToast`, `Clickable`) and
+  `LucideIcons`. There is no Material `ScaffoldMessenger`/`SnackBar` usage.
 - **Text styles are extension getters**, e.g. `Text('x').muted.small`, `.semiBold.large`.
 
 ## Secure storage & platforms
@@ -472,7 +510,8 @@ surfaces the error rather than downgrading the token to plaintext.
 - **The sidebar's section tabs are tight.** Usage / Models / Settings are
   `SelectedButton`s (compact-density, small) inside `Expanded`s in a 300 px row
   above the chat list, with a `Divider` below them. A widget test asserts
-  `takeException()` is null so an overflow fails CI.
+  `takeException()` is null so an overflow fails CI. The selected tab follows
+  `HomeShell`'s single `SidebarSection` field (which now includes `settings`).
 - **A `showDropdown` menu needs a `DrawerOverlay` ancestor.** On mobile
   platforms shadcn presents a menu as a bottom sheet, which routes through
   `openRawDrawer` and asserts a `DrawerOverlay` in the tree. The chat pane gets
@@ -594,9 +633,15 @@ surfaces the error rather than downgrading the token to plaintext.
   empty state must use `AlwaysScrollableScrollPhysics` or it won't scroll at all). Its `refresh()`
   method is public, which is how the pull-to-refresh tests drive it deterministically — a
   synthetic `tester.drag` does not reliably cross the threshold.
-- **`showSettingsDialog` needs the `ChatApi`.** Its signature is
-  `(context, settings, auth, api)`; the sidebar passes `chat.api`. Don't build a separate client
+- **`SettingsScreen` needs the `ChatApi`.** Its constructor takes
+  `(settings, auth, api)`; `HomeShell` passes `widget.chat.api`. Don't build a separate client
   for the MCP status section — that would skip the `401 → logout` path.
+- **`setSurfaceSize` does not change `MediaQuery.sizeOf`.** In widget tests,
+  `tester.binding.setSurfaceSize(size)` constrains the render tree but leaves the `FlutterView`
+  size (and therefore `MediaQuery.sizeOf`) at the 800×600 default. When a widget's behaviour
+  depends on `MediaQuery.sizeOf` (e.g. the user-bubble width cap in `chat_screen.dart`), set
+  `tester.view.physicalSize` / `devicePixelRatio` (and `addTearDown(tester.view.reset)`) instead,
+  as `responsive_layout_test.dart` does.
 - **MCP status JSON never contains secrets.** `McpServerStatus.fromJson` reads only
   name/type/url/connected/toolCount/tools/lastError/lastConnectedAt and ignores anything else,
   so even a hypothetical `headers` field in the payload is never rendered.
