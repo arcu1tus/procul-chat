@@ -752,3 +752,8 @@ image is ASP.NET-only (no node/npx for stdio).
 - **`show_image`'s URL policy is a seam.** In production `SsrfRemoteUrlPolicy` resolves the host and
   blocks private/loopback/link-local addresses; tests inject `PermissiveRemoteUrlPolicy` so they
   never touch DNS.
+- **A runaway `run_python` loop is stopped by *whichever* guard fires first.** The sandbox bounds a
+  script with `MaxExecutionSteps` (5M) *and* a 5s wall-clock deadline. A fast machine exhausts the
+  step budget (`maximum execution step count exceeded`) while a slower CI box reaches the deadline
+  (`execution canceled`), so `PythonSandboxTests.A_runaway_loop_is_stopped_by_a_limit` accepts either
+  — do not re-narrow it to a single message or the test goes flaky again.

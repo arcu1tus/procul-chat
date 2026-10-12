@@ -56,11 +56,21 @@ public class PythonSandboxTests
     }
 
     [Fact]
-    public async Task A_runaway_loop_hits_the_step_cap()
+    public async Task A_runaway_loop_is_stopped_by_a_limit()
     {
         var result = await RunAsync("while True:\n    pass");
 
-        Assert.Contains("step", result, StringComparison.OrdinalIgnoreCase);
+        // A runaway loop is contained by whichever guard fires first: the execution-step
+        // budget (5M steps) or the 5s wall-clock deadline. Which one wins is timing-dependent
+        // — a fast machine exhausts the step budget ("maximum execution step count exceeded")
+        // while a slower CI box reaches the deadline ("execution canceled") — so assert the
+        // loop was stopped by a limit, not which limit. The timeout catch is also accepted in
+        // case the runtime surfaces cancellation as an exception instead of a runtime failure.
+        Assert.True(
+            result.Contains("step", StringComparison.OrdinalIgnoreCase)
+                || result.Contains("cancel", StringComparison.OrdinalIgnoreCase)
+                || result.Contains("timed out", StringComparison.OrdinalIgnoreCase),
+            $"Expected the runaway loop to be stopped by a limit, got: {result}");
     }
 
     [Fact]
