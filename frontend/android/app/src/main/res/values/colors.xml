@@ -3,4 +3,5 @@
     <!-- The app's dark surface; the launch screen matches it so there is no
          white flash before Flutter draws (dark is the default theme). -->
     <color name="procul_splash">#09090B</color>
+	<color name="ic_launcher_background">#a832a0</color>
 </resources>

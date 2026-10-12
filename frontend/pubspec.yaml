@@ -28,17 +28,25 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
 
-# App icon generation. Drop a 1024×1024 opaque PNG at assets/icon/icon.png and
+# App icon generation. Drop a 1024×1024 PNG at assets/icon/icon.png and
 # run `dart run flutter_launcher_icons` to (re)generate every platform target.
 # See docs/flutter-builds.md for where each target's files land.
 flutter_launcher_icons:
   image_path: assets/icon/icon.png
   android: true
   ios: true
+  # The source has a transparent background; flatten it (App Store rejects alpha).
+  # The mark's strokes are black, so the white default keeps the glyph visible.
+  remove_alpha_ios: true
+  background_color_ios: "#ffffff"
   macos:
+    generate: true
     image_path: assets/icon/icon.png
   windows:
+    generate: true
     image_path: assets/icon/icon.png
+    # The tool writes a single-frame .ico (default 48 px); 256 downsizes cleanly.
+    icon_size: 256
   web:
     generate: true
     image_path: assets/icon/icon.png
