@@ -125,6 +125,82 @@ void main() {
     expect(ids.toSet(), hasLength(ids.length));
   });
 
+  test('syncActiveConversation merges new messages without dropping loaded history', () async {
+    var firstPageCalls = 0;
+    final client = MockClient((request) async {
+      final path = request.url.path;
+      if (path == '/v1/conversations' && request.method == 'GET') {
+        return http.Response(
+          jsonEncode({
+            'conversations': [_conversation],
+          }),
+          200,
+        );
+      }
+      if (path == '/v1/conversations/c1/messages') {
+        final cursor = request.url.queryParameters['afterMessageId'];
+        if (cursor == null) {
+          final base = _page('m', 100, 1);
+          // The initial load sees 100; a later background sync sees one more.
+          if (firstPageCalls++ == 0) {
+            return http.Response(jsonEncode({'messages': base}), 200);
+          }
+          return http.Response(
+            jsonEncode({
+              'messages': [
+                {
+                  'id': 'm101',
+                  'text': 'm101',
+                  'messageRole': 2,
+                  'createdAt': '2026-10-11T11:00:00Z',
+                },
+                ...base,
+              ],
+            }),
+            200,
+          );
+        }
+        return http.Response(
+          jsonEncode({
+            'messages': [
+              {
+                'id': 'old2',
+                'text': 'old2',
+                'messageRole': 1,
+                'createdAt': '2026-10-10T10:00:00Z',
+              },
+              {
+                'id': 'old1',
+                'text': 'old1',
+                'messageRole': 2,
+                'createdAt': '2026-10-09T10:00:00Z',
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (path.startsWith('/v1/usage/')) return http.Response('{}', 200);
+      return http.Response('{}', 200);
+    });
+    final chat = _chat(client);
+    await chat.init();
+    await chat.loadOlderMessages();
+    expect(chat.messages.first.id, 'old1');
+    final before = chat.messages.length;
+
+    await chat.syncActiveConversation();
+
+    // The new message is appended; the older page is preserved (not cleared).
+    expect(chat.messages.length, before + 1);
+    expect(chat.messages.first.id, 'old1');
+    expect(chat.messages.last.id, 'm101');
+
+    // A second sync with nothing new is a no-op.
+    await chat.syncActiveConversation();
+    expect(chat.messages.length, before + 1);
+  });
+
   testWidgets('a "Loading older messages…" row shows while a page loads', (
     tester,
   ) async {

@@ -85,8 +85,10 @@ internal sealed class ImageGenerationTool(
         }
 
         var ids = referenceAttachmentIds.Distinct().ToList();
+        // Scope to this conversation: a model must not be able to read (and forward to the image
+        // provider) another conversation's attachments.
         var found = await context.Db.Attachments
-            .Where(a => ids.Contains(a.Id))
+            .Where(a => a.ConversationId == context.ConversationId && ids.Contains(a.Id))
             .ToListAsync(ct);
 
         var missing = ids.Except(found.Select(a => a.Id)).ToList();

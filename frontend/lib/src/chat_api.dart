@@ -85,11 +85,18 @@ class ChatApi {
 
   /// `PATCH /v1/conversations/{id}` — renames a conversation, returning the
   /// updated record.
-  Future<Conversation> renameConversation(String id, String title) async {
+  ///
+  /// [expectedRevision] is the revision the client last saw; a stale value makes
+  /// the backend answer `409` so two devices cannot silently clobber each other.
+  Future<Conversation> renameConversation(
+    String id,
+    String title, {
+    int? expectedRevision,
+  }) async {
     final response = await _client.patch(
       _uri('/v1/conversations/$id'),
       headers: {..._authHeaders, 'Content-Type': 'application/json'},
-      body: jsonEncode({'title': title}),
+      body: jsonEncode({'title': title, 'expectedRevision': ?expectedRevision}),
     );
 
     if (response.statusCode != 200) {
@@ -323,11 +330,17 @@ class ChatApi {
   }
 
   /// `PUT /v1/conversations/{id}/model` — sets the conversation's model.
-  Future<Conversation> setConversationModel(String id, String slug) async {
+  ///
+  /// [expectedRevision] follows the same rule as [renameConversation].
+  Future<Conversation> setConversationModel(
+    String id,
+    String slug, {
+    int? expectedRevision,
+  }) async {
     final response = await _client.put(
       _uri('/v1/conversations/$id/model'),
       headers: {..._authHeaders, 'Content-Type': 'application/json'},
-      body: jsonEncode({'model': slug}),
+      body: jsonEncode({'model': slug, 'expectedRevision': ?expectedRevision}),
     );
 
     if (response.statusCode != 200) {
@@ -359,15 +372,20 @@ class ChatApi {
   );
 
   /// `POST /v1/conversations/{id}/messages` — streams the assistant's reply.
+  ///
+  /// [expectedRevision] is the conversation's last-seen revision; a stale value
+  /// makes the backend answer `409` before the stream starts.
   Stream<ChatStreamEvent> sendMessage(
     String conversationId,
     String text, {
     List<String>? attachmentIds,
+    int? expectedRevision,
   }) => _stream(
     _postSse('/v1/conversations/$conversationId/messages', {
       'text': text,
       if (attachmentIds != null && attachmentIds.isNotEmpty)
         'attachmentIds': attachmentIds,
+      'expectedRevision': ?expectedRevision,
     }),
   );
 
@@ -382,10 +400,12 @@ class ChatApi {
     String messageId,
     String text, {
     List<String>? attachmentIds,
+    int? expectedRevision,
   }) => _stream(
     _postSse('/v1/conversations/$conversationId/messages/$messageId/edit', {
       'text': text,
       'attachmentIds': ?attachmentIds,
+      'expectedRevision': ?expectedRevision,
     }),
   );
 
@@ -505,7 +525,7 @@ class ChatApi {
         ),
         model: value['model'] as String?,
       ),
-      'done' => const DoneEvent(),
+      'done' => DoneEvent(revision: (value['revision'] as num?)?.toInt()),
       _ => null,
     };
   }

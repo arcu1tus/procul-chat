@@ -38,12 +38,21 @@ public sealed class SsrfRemoteUrlPolicy : IRemoteUrlPolicy
             return UrlPolicyResult.Blocked("Refusing to fetch a loopback address.");
         }
 
+        // An IP literal needs no DNS, and Dns.GetHostAddresses throws for the unspecified
+        // addresses (0.0.0.0 / ::) — handle literals directly so the result is a clean "blocked".
+        if (System.Net.IPAddress.TryParse(uri.Host, out var literal))
+        {
+            return IsBlocked(literal)
+                ? UrlPolicyResult.Blocked("Refusing to fetch a private or loopback address.")
+                : UrlPolicyResult.Ok;
+        }
+
         System.Net.IPAddress[] addresses;
         try
         {
             addresses = await System.Net.Dns.GetHostAddressesAsync(uri.Host, ct);
         }
-        catch (System.Net.Sockets.SocketException)
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException)
         {
             return UrlPolicyResult.Blocked($"Could not resolve the host '{uri.Host}'.");
         }
@@ -66,6 +75,14 @@ public sealed class SsrfRemoteUrlPolicy : IRemoteUrlPolicy
 
     private static bool IsBlocked(System.Net.IPAddress address)
     {
+        // An IPv4-mapped IPv6 address (::ffff:a.b.c.d) reaches the same host as its IPv4 form.
+        // Normalize it first: otherwise it looks like an ordinary (public) IPv6 address and both
+        // the loopback check and the v4 range checks are skipped — an SSRF bypass.
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
         if (System.Net.IPAddress.IsLoopback(address))
         {
             return true;
@@ -77,20 +94,28 @@ public sealed class SsrfRemoteUrlPolicy : IRemoteUrlPolicy
         {
             return bytes[0] switch
             {
+                0 => true,                      // 0.0.0.0/8 "this network"
                 10 => true,                     // 10.0.0.0/8
+                100 when bytes[1] is >= 64 and <= 127 => true, // 100.64.0.0/10 CGNAT
                 127 => true,                    // loopback
-                169 when bytes[1] == 254 => true, // link-local
+                169 when bytes[1] == 254 => true, // 169.254.0.0/16 link-local (incl. cloud metadata)
                 172 when bytes[1] is >= 16 and <= 31 => true, // 172.16.0.0/12
+                192 when bytes[1] == 0 && bytes[2] == 0 => true, // 192.0.0.0/24
                 192 when bytes[1] == 168 => true, // 192.168.0.0/16
-                0 => true,                      // "this network"
+                198 when bytes[1] is >= 18 and <= 19 => true, // 198.18.0.0/15 benchmarking
+                >= 224 => true,                 // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
                 _ => false,
             };
         }
 
         if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 && bytes.Length == 16)
         {
-            // Unique-local (fc00::/7) and link-local (fe80::/10); loopback handled above.
-            return (bytes[0] & 0xFE) == 0xFC || (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80);
+            // Unspecified (::), unique-local (fc00::/7), link-local (fe80::/10), multicast (ff00::/8);
+            // loopback handled above, and IPv4-mapped addresses are normalized before this point.
+            return address.Equals(System.Net.IPAddress.IPv6Any)
+                || (bytes[0] & 0xFE) == 0xFC
+                || (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80)
+                || bytes[0] == 0xFF;
         }
 
         return false;

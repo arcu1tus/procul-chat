@@ -400,7 +400,9 @@ internal sealed class ChatStreamServiceV1(
         await db.SaveChangesAsync(ct);
         usageTracker.RecordUse(definition.Slug);
 
-        yield return new ChatStreamEventV1.Done(new());
+        // Surface the post-save revision so the client can echo it as `expectedRevision` on its
+        // next mutation (send/edit bump it server-side; the client cannot otherwise learn it).
+        yield return new ChatStreamEventV1.Done(new(Revision: conversation?.Revision));
     }
 
     /// <summary>

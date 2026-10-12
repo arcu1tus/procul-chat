@@ -47,6 +47,7 @@ public class ImageGenerationToolTests
     private static async Task<Attachment> SeedImageAsync(
         ProculDbContext db,
         FakeAttachmentStore store,
+        Guid conversationId,
         string fileName = "ref.png",
         byte[]? bytes = null)
     {
@@ -56,6 +57,7 @@ public class ImageGenerationToolTests
             ContentType = "image/png",
             SizeBytes = 8,
             Sha256 = "x",
+            ConversationId = conversationId,
         };
         db.Attachments.Add(attachment);
         await db.SaveChangesAsync();
@@ -108,10 +110,11 @@ public class ImageGenerationToolTests
     {
         await using var db = NewDb();
         var store = new FakeAttachmentStore();
-        var reference = await SeedImageAsync(db, store);
+        var conversationId = Guid.NewGuid();
+        var reference = await SeedImageAsync(db, store, conversationId);
         var client = new FakeImageGenerationClient();
 
-        var context = Context(db, store, Guid.NewGuid());
+        var context = Context(db, store, conversationId);
         var tool = new ImageGenerationTool(client, EnabledOptions(), context, NullLogger.Instance).Create();
         await tool.InvokeAsync(new AIFunctionArguments
         {
@@ -126,16 +129,45 @@ public class ImageGenerationToolTests
     }
 
     [Fact]
+    public async Task A_reference_from_another_conversation_is_rejected()
+    {
+        await using var db = NewDb();
+        var store = new FakeAttachmentStore();
+        // The image belongs to a different conversation than the turn's context.
+        var reference = await SeedImageAsync(db, store, Guid.NewGuid());
+        var client = new FakeImageGenerationClient();
+
+        var context = Context(db, store, Guid.NewGuid());
+        var tool = new ImageGenerationTool(client, EnabledOptions(), context, NullLogger.Instance).Create();
+        var result = await tool.InvokeAsync(new AIFunctionArguments
+        {
+            ["prompt"] = "a cat",
+            ["referenceAttachmentIds"] = new[] { reference.Id },
+        });
+
+        Assert.Contains("Unknown reference attachment id", AsText(result));
+        Assert.Equal(0, client.CallCount);
+    }
+
+    [Fact]
     public async Task A_non_image_reference_is_rejected_before_calling_the_provider()
     {
         await using var db = NewDb();
         var store = new FakeAttachmentStore();
-        var reference = new Attachment { FileName = "notes.txt", ContentType = "text/plain", SizeBytes = 1, Sha256 = "x" };
+        var conversationId = Guid.NewGuid();
+        var reference = new Attachment
+        {
+            FileName = "notes.txt",
+            ContentType = "text/plain",
+            SizeBytes = 1,
+            Sha256 = "x",
+            ConversationId = conversationId,
+        };
         db.Attachments.Add(reference);
         await db.SaveChangesAsync();
 
         var client = new FakeImageGenerationClient();
-        var context = Context(db, store, Guid.NewGuid());
+        var context = Context(db, store, conversationId);
         var tool = new ImageGenerationTool(client, EnabledOptions(), context, NullLogger.Instance).Create();
 
         var result = await tool.InvokeAsync(new AIFunctionArguments

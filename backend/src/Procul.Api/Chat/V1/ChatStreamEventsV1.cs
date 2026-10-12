@@ -49,7 +49,9 @@ public sealed record ChatStreamImageV1(
     string Type = "image");
 
 /// <summary>The assistant's reply is complete and persisted.</summary>
-public sealed record ChatStreamDoneV1(string Type = "done");
+public sealed record ChatStreamDoneV1(
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Revision = null,
+    string Type = "done");
 
 /// <summary>Envelope carried on the wire as <c>{"value": {...}}</c>.</summary>
 public abstract record ChatStreamEventV1

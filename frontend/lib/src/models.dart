@@ -32,6 +32,7 @@ class Conversation {
     this.model,
     this.createdAt,
     this.updatedAt,
+    this.revision,
   });
 
   final String id;
@@ -47,22 +48,33 @@ class Conversation {
   /// when the user sends a message so the sidebar re-sorts without a refetch.
   final DateTime? updatedAt;
 
+  /// Optimistic-concurrency revision from the backend, echoed back as
+  /// `expectedRevision` on every mutation. Null on older backends that do not
+  /// send it (in which case no conflict check is possible).
+  final int? revision;
+
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
     id: json['id'] as String,
     title: (json['title'] as String?) ?? 'Untitled',
     model: json['model'] as String?,
     createdAt: DateTime.tryParse('${json['createdAt']}'),
     updatedAt: DateTime.tryParse('${json['updatedAt']}'),
+    revision: (json['revision'] as num?)?.toInt(),
   );
 
-  Conversation copyWith({String? title, String? model, DateTime? updatedAt}) =>
-      Conversation(
-        id: id,
-        title: title ?? this.title,
-        model: model ?? this.model,
-        createdAt: createdAt,
-        updatedAt: updatedAt ?? this.updatedAt,
-      );
+  Conversation copyWith({
+    String? title,
+    String? model,
+    DateTime? updatedAt,
+    int? revision,
+  }) => Conversation(
+    id: id,
+    title: title ?? this.title,
+    model: model ?? this.model,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    revision: revision ?? this.revision,
+  );
 }
 
 /// A single tool invocation made by the model during an assistant turn.
