@@ -223,4 +223,56 @@ void main() {
     expect(listCalls, greaterThan(1));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('a resume does not sync while a reply streams', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    var listCalls = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/v1/conversations') {
+        listCalls++;
+        return http.Response(jsonEncode({'conversations': <dynamic>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+      store: FakeConversationStore(),
+    );
+    await chat.init();
+    expect(listCalls, 1);
+
+    await tester.pumpWidget(
+      MaterialShadcnApp(
+        theme: proculLightTheme,
+        darkTheme: proculDarkTheme,
+        themeMode: ThemeMode.light,
+        home: HomeShell(
+          chat: chat,
+          settings: SettingsController(),
+          auth: _auth(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // While a reply streams the shell must not resync (it could clobber it).
+    chat.isStreaming = true;
+    chat.setDefaultModel(
+      'busy/model',
+    ); // notify listeners so the shell rebuilds
+    await tester.pump();
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    // Bounded pumps: while "streaming" a widget keeps an animation alive, so
+    // `pumpAndSettle` would never settle. The assertion is synchronous anyway.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(listCalls, 1);
+    expect(tester.takeException(), isNull);
+  });
 }

@@ -629,10 +629,11 @@ image is ASP.NET-only (no node/npx for stdio).
   `MediaRetentionService` once it is older than its retention window (default 14d). An operator who
   sets `"0"` keeps unreferenced media forever. The sweep is periodic (hourly), so an orphan can
   linger up to a window plus one interval.
-- **History paging is shallow.** `GET /{id}/messages` caps a page at 100, and the client fetches
-  exactly one page of 100 — a longer conversation loses its oldest messages until cursor paging
-  is implemented in the UI. The composite `(ConversationId, CreatedAt, Id)` index already backs
-  the keyset cursor.
+- **History paging is client-driven.** `GET /{id}/messages` caps a page at 100 and the client
+  requests one page at a time, loading older pages on demand with the `afterMessageId` keyset
+  cursor as the user scrolls toward the top (PLAN 1 §P7). The composite
+  `(ConversationId, CreatedAt, Id)` index backs the cursor. There is no server-side "jump to a
+  date"; paging only walks backwards from the newest message.
 - **Usage aggregation is in memory.** `GET /v1/usage` loads the `TurnUsage` rows and aggregates
   in C# (`UsageAggregator`); fine for a demo, but it could be pushed to SQL.
 

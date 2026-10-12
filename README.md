@@ -74,9 +74,11 @@ against [OpenRouter](https://openrouter.ai/).
 - **File attachments**: attach images, text, PDFs, and (where the model supports it) audio to a
   message. Bytes land in PostgreSQL or S3-compatible storage (config choice); the backend maps
   each file to the content the selected model can read and **refuses** types it cannot — at
-  upload *and* at send. The Flutter client restricts its picker to the active model's readable
-  types, has removable preview chips, and renders images and files inline; reloaded conversations
-  show their attachments (and, by default, re-sends them to the model on later turns).
+  upload *and* at send. The Flutter client picks from the native **Camera**, photo **Gallery**,
+  or **Files** (Camera only where the OS provides one), multi-selects, restricts the picker to
+  the active model's readable types, has removable preview chips, and renders images and files
+  inline; reloaded conversations show their attachments (and, by default, re-sends them to the
+  model on later turns).
 - **AI-generated conversation titles** produced concurrently with the first reply.
 - **Message editing** (destructive in v1): rewrite an earlier user message, optionally swap its
   attachments, and re-prompt the model. Every later message — and its attachments — is discarded,
@@ -84,7 +86,9 @@ against [OpenRouter](https://openrouter.ai/).
 - **Multi-device consistency**: each conversation carries a revision number, and mutating requests
   may echo the `expectedRevision` they last saw — a stale one is a `409 Conflict` instead of
   silently overwriting another device's change.
-- **Multi-conversation UI** with rename, delete, and keyset-paginated history.
+- **Multi-conversation UI** with rename, delete, and keyset-paginated history — **infinite scroll
+  up** loads older messages, a **bottom pull-to-refresh** re-syncs without scrolling to the top,
+  and a jump-to-latest pill returns to the newest message.
 - **Responsive shadcn UI** with dark mode by default, hand-rolled skeletons, and subtle
   motion (including a shimmer sweep over assistant text while it streams).
 - **Password-protected API** with expiring HS256 session tokens stored in the device's secure

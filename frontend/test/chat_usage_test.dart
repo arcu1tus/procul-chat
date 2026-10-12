@@ -192,4 +192,73 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets('a historical response with no metadata degrades to "—"', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient((request) async {
+      final path = request.url.path;
+      if (path == '/v1/conversations' && request.method == 'GET') {
+        return http.Response(
+          jsonEncode({
+            'conversations': [
+              {
+                'id': 'c1',
+                'title': 'Old chat',
+                'createdAt': '2026-10-11T10:00:00Z',
+                'updatedAt': '2026-10-11T10:00:00Z',
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (path == '/v1/conversations/c1/messages') {
+        return http.Response(
+          jsonEncode({
+            'messages': [
+              {
+                'id': 'm1',
+                'conversationId': 'c1',
+                'text': 'What is 2+2?',
+                'messageRole': 1,
+                'createdAt': '2026-10-11T10:00:00Z',
+              },
+              {
+                'id': 'm2',
+                'conversationId': 'c1',
+                'text': 'Four.',
+                'messageRole': 2,
+                'createdAt': '2026-10-11T10:00:01Z',
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (path.startsWith('/v1/usage/')) return http.Response('{}', 200);
+      return http.Response('{}', 200);
+    });
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+      store: FakeConversationStore('c1'),
+    );
+    await chat.init();
+
+    await tester.pumpWidget(_app(chat));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('response-details')).first);
+    await tester.pumpAndSettle();
+
+    // Model and time are unknown for this stored response.
+    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('Time'), findsOneWidget);
+    // The model is unknown, so it degrades to an em dash.
+    expect(find.text('—'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
 }

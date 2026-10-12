@@ -91,7 +91,8 @@ frontend/
       usage_screen.dart           # Usage dashboard: lifetime cards, fl_chart bars, per-model list
       models_screen.dart          # Models catalog: name/description/capability badges/health,
                                   #   per-model + check-all probes, refresh
-      app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData, teal + Inter)
+      app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData,
+                                  #   magenta accent #a832a0 + Inter)
                                   #   + ShadcnMaterialBridge (flutter/material theme for markdown)
       home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow);
                                   #   owns the ModelCatalogController; overlays UsageScreen/ModelsScreen;
@@ -318,6 +319,14 @@ are editable. A hard failure triggers a resync (see below).
   `isDark` is a derived getter. `main.dart` rebuilds `MaterialShadcnApp` from it, and
   **awaits `settings.init()` (plus `GoogleFonts.pendingFonts`) before `runApp`** so the
   stored theme and fonts are in place on the first frame (no startup flash).
+- **Branding is one accent and one display name.** Both themes seed `primary`/`ring` from
+  `_accent` (`#a832a0`) so the UI, markdown, the web PWA colors and the Android splash agree;
+  the **display name is "Procul Chat"** everywhere (Android `android:label`, iOS
+  `CFBundleDisplayName`/`CFBundleName`, the Linux `.desktop`, the web manifest, and
+  `MaterialShadcnApp(title:)`), while the pubspec package stays `procul_chat_flutter`. Icons are
+  generated from `assets/icon/icon.png` by `flutter_launcher_icons` (see
+  [`../docs/flutter-builds.md`](../docs/flutter-builds.md)); `test/branding_test.dart` guards this
+  static wiring.
 - **Auth is a `ChangeNotifier` + two stores.** `AuthController` owns the saved `ServerProfile`
   list and the active session. Profiles (and the active id) persist in `shared_preferences`
   via `ServerStore`; **session tokens persist only in secure storage** via `CredentialStore`.
