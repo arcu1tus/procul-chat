@@ -508,14 +508,16 @@ Two model-facing tools produce media that is stored like an upload and rendered 
 - **`generate_image`** (only when `imageGeneration.enabled`) — `IImageGenerationClient` resolves to
   `OpenRouterImageClient` (`POST {baseUrl}/images`, `input_references` as base64 data URLs) or
   `OpenAiCompatibleImageClient` (`POST {baseUrl}/images/generations`, `response_format: "b64_json"`,
-  `image` array). Reference images are loaded from the conversation's attachments (image types
-  only, capped at `maxReferenceImages`); the decoded `data[0].b64_json` is size-checked against
-  `attachments.maxFileSizeBytes` and stored. Provider errors are returned to the model as text —
-  they never fail the turn.
+  `image` array). Reference images are loaded from **this conversation's** attachments (image types
+  only, capped at `maxReferenceImages`; a reference id from another conversation is rejected as
+  unknown); the decoded `data[0].b64_json` is size-checked against `attachments.maxFileSizeBytes`
+  and stored. Provider errors are returned to the model as text — they never fail the turn.
 - **`show_image`** — fetches a public URL (bounded timeout, size cap, `Content-Type: image/*` or
-  magic-byte sniff) or decodes base64, then stores the bytes. `IRemoteUrlPolicy`
+  magic-byte sniff) or decodes base64 (the payload is length-capped before decoding and a non-image
+  result is rejected), then stores the bytes. `IRemoteUrlPolicy`
   (`SsrfRemoteUrlPolicy`) blocks non-http(s) schemes and loopback/private/link-local addresses
-  (hostnames are resolved first). Stored rows are marked `Source = "generated"`; the filename is
+  (hostnames are resolved first; IP literals are checked directly, including IPv4-mapped IPv6 such
+  as `::ffff:127.0.0.1`). Stored rows are marked `Source = "generated"`; the filename is
   `generated-<timestamp>.<ext>` / `shown-<timestamp>.<ext>`.
 
 Stored media is emitted to the client as an `image` SSE event (`{"attachmentId","fileName",
@@ -545,8 +547,10 @@ Each conversation has an integer `Revision` bumped on every mutating save (send,
 set-model). The mutating endpoints accept an optional `expectedRevision`; a mismatch returns
 **`409 Conflict`** naming the current revision, so two clients cannot silently clobber each other.
 Send/edit are SSE, so the check runs *before* the stream starts and a conflict is a normal JSON
-problem response. `ConversationV1.Revision` exposes the value so the client can echo it back. (An
-Npgsql `xmin` token was rejected: unsupported by the in-memory provider used in tests.)
+problem response. `ConversationV1.Revision` exposes the value, and the SSE `done` event also carries
+the post-turn `revision`, so the client can echo it back on its next mutation (a send/edit bumps the
+revision server-side, which the client otherwise could not learn). (An Npgsql `xmin` token was
+rejected: unsupported by the in-memory provider used in tests.)
 
 ## Multi-model registry
 
@@ -749,9 +753,12 @@ image is ASP.NET-only (no node/npx for stdio).
   all on the request's scoped `ProculDbContext`, which is safe because the tool runs before the
   reply is persisted. `StreamReplyAsync` then sets `MessageId = assistantMessage.Id` and saves
   again. If the turn fails, the rows stay orphaned and retention removes them.
-- **`show_image`'s URL policy is a seam.** In production `SsrfRemoteUrlPolicy` resolves the host and
-  blocks private/loopback/link-local addresses; tests inject `PermissiveRemoteUrlPolicy` so they
-  never touch DNS.
+- **`show_image`'s URL policy is a seam.** In production `SsrfRemoteUrlPolicy` checks IP literals
+  directly (so the unspecified `0.0.0.0`/`::` and IPv4-mapped IPv6 forms like `::ffff:127.0.0.1`
+  are blocked, not thrown or misread as public) and resolves hostnames, then blocks
+  private/loopback/link-local/CGNAT addresses; tests inject `PermissiveRemoteUrlPolicy` so they
+  never touch DNS. (DNS is still re-resolved by `HttpClient` at fetch time, so a rebinding attack
+  is only mitigated, not eliminated.)
 - **A runaway `run_python` loop is stopped by *whichever* guard fires first.** The sandbox bounds a
   script with `MaxExecutionSteps` (5M) *and* a 5s wall-clock deadline. A fast machine exhausts the
   step budget (`maximum execution step count exceeded`) while a slower CI box reaches the deadline

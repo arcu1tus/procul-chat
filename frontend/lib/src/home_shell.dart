@@ -97,10 +97,16 @@ class _HomeShellState extends State<HomeShell>
 
   /// Refreshes from the server when it is safe to do so: never while a reply
   /// streams, the user is editing, or a refresh is already running.
+  ///
+  /// The active conversation is *merged* (see
+  /// [ChatController.syncActiveConversation]) rather than reloaded, so a
+  /// background tick never discards history loaded by infinite scroll or yanks
+  /// the viewport to the newest message.
   void _sync() {
     final chat = widget.chat;
     if (chat.isStreaming || chat.isEditing || chat.isRefreshing) return;
-    chat.refreshAll();
+    chat.refreshConversations();
+    chat.syncActiveConversation();
   }
 
   void _syncDefaultModel() =>

@@ -168,8 +168,12 @@ public class ConcurrencyPipelineTests : IClassFixture<WebApplicationFactory<Prog
         using var ok = await client.PostAsJsonAsync(
             $"/v1/conversations/{conversation.Id}/messages",
             new SendMessageRequestV1("hi", ExpectedRevision: conversation.Revision));
-        await ok.Content.ReadAsStringAsync();
+        var body = await ok.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+
+        // The `done` event carries the post-turn revision so the client can echo it back.
+        Assert.Contains("\"type\":\"done\"", body);
+        Assert.Contains("\"revision\":", body);
     }
 
     [Fact]

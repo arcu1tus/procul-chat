@@ -41,7 +41,7 @@ internal sealed class ShowImageTool(
         {
             var (bytes, contentType) = hasUrl
                 ? await FetchUrlAsync(url!, ct)
-                : DecodeBase64(base64!);
+                : DecodeBase64(base64!, context.AttachmentOptions.MaxFileSizeBytes);
 
             if (bytes.Length > context.AttachmentOptions.MaxFileSizeBytes)
             {
@@ -120,9 +120,17 @@ internal sealed class ShowImageTool(
         return (bytes, contentType);
     }
 
-    private static (byte[] Bytes, string ContentType) DecodeBase64(string raw)
+    private static (byte[] Bytes, string ContentType) DecodeBase64(string raw, long maxBytes)
     {
         var value = raw.Trim();
+
+        // Bound the payload before decoding: base64 inflates by 4/3, so reject anything that
+        // could not possibly fit the configured size cap rather than allocating it first.
+        if (value.Length > maxBytes / 3 * 4 + 16)
+        {
+            throw new InvalidOperationException("The base64 payload exceeds the configured size limit.");
+        }
+
         string? declared = null;
 
         if (value.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
@@ -157,7 +165,14 @@ internal sealed class ShowImageTool(
             throw new InvalidOperationException("The base64 payload decoded to zero bytes.");
         }
 
-        return (bytes, ImageTypeDetector.Detect(bytes, declared));
+        var contentType = ImageTypeDetector.Detect(bytes, declared);
+        if (!contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"The payload is not an image (content type '{contentType}').");
+        }
+
+        return (bytes, contentType);
     }
 
     /// <summary>Reads at most <paramref name="maxBytes"/> + 1 bytes so an oversized stream is caught.</summary>

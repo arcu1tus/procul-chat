@@ -81,6 +81,11 @@ class UsageEvent extends ChatStreamEvent {
 }
 
 /// `type: "done"` — the assistant's reply is complete and persisted.
+///
+/// [revision] is the conversation's revision after the turn, when the backend
+/// sends it; the client echoes it back as `expectedRevision` on the next
+/// mutation. Null on older backends.
 class DoneEvent extends ChatStreamEvent {
-  const DoneEvent();
+  const DoneEvent({this.revision});
+  final int? revision;
 }

@@ -175,14 +175,14 @@ Base: `{baseUrl}/v1/conversations`, where `baseUrl` is the active profile's save
 | --- | --- | --- |
 | List chats | `GET /` | JSON `{"conversations":[...]}`, newest activity first |
 | Start chat | `POST /` body `{"initialMessage":"...","model":"<slug>"?,"attachmentIds":["<guid>"]?}` | SSE |
-| Send message | `POST /{id}/messages` body `{"text":"...","attachmentIds":["<guid>"]?}` | SSE |
-| Edit message | `POST /{id}/messages/{messageId}/edit` body `{"text":"...","attachmentIds":["<guid>"]?}` | SSE (destructive — see below) |
+| Send message | `POST /{id}/messages` body `{"text":"...","attachmentIds":["<guid>"]?,"expectedRevision":<int>?}` | SSE |
+| Edit message | `POST /{id}/messages/{messageId}/edit` body `{"text":"...","attachmentIds":["<guid>"]?,"expectedRevision":<int>?}` | SSE (destructive — see below) |
 | Upload | `POST /v1/attachments?model=<slug>` multipart (`file` field) | JSON `AttachmentV1` (`201`); `400` (type/model can't read it)/`413` |
 | Download | `GET /v1/attachments/{id}` (authenticated) | raw bytes + `Content-Disposition` |
 | Delete | `DELETE /v1/attachments/{id}` | `204` (404 treated as success) |
 | History | `GET /{id}/messages?limit=1..100&afterMessageId=<guid>` | JSON (user messages carry an `attachments` array of `AttachmentV1`) |
-| Rename | `PATCH /{id}` body `{"title":"..."}` | JSON `{"conversation":{...}}` |
-| Set model | `PUT /{id}/model` body `{"model":"<slug>"}` | JSON `{"conversation":{...}}` |
+| Rename | `PATCH /{id}` body `{"title":"...","expectedRevision":<int>?}` | JSON `{"conversation":{...}}` (or `409`) |
+| Set model | `PUT /{id}/model` body `{"model":"<slug>","expectedRevision":<int>?}` | JSON `{"conversation":{...}}` (or `409`) |
 | Delete | `DELETE /{id}` | `204` (404 treated as success) |
 | Models | `GET /v1/models` | JSON `{defaultModel, models:[{slug,name,description,provider,isDefault,capabilities:{input[],output[]},health:{status,lastCheckedAt,latencyMs,lastError,lastUsedAt,source}}]}` |
 | Check models | `POST /v1/models/check` · `POST /v1/models/{slug}/check` | JSON (catalog / one model); slugs may contain `/` |
@@ -202,14 +202,15 @@ data: {"value":{"callId":"…","result":"2026-10-11T15:38:44+02:00","error":null
 data: {"value":{"content":"Hello","type":"token"}}
 data: {"value":{"inputTokens":10,"outputTokens":5,"cachedInputTokens":2,"totalTokens":17,"model":"openai/gpt-4o-mini","type":"usage"}}
 data: {"value":{"error":"…","type":"error"}}
-data: {"value":{"type":"done"}}
+data: {"value":{"revision":3,"type":"done"}}
 data: {"value":{"conversationId":"…","title":"France's capital","type":"title"}}
 ```
 
 `created` is only emitted by `POST /`; `POST /{id}/messages` emits
 `acknowledge` → (`toolCall` → `toolResult`)* → `token`* → `usage`? → (`error` | `done`).
 `usage` (the reply's summed token counts) is emitted just before `done` **only when usage was
-seen**; `title` is only
+seen**; `done` may carry `revision` (the conversation's post-turn revision, echoed back as
+`expectedRevision` on the next mutation); `title` is only
 emitted by `POST /`, **after** `done` — the model-generated title arrives a moment after the
 reply, so the client must treat `done` (not stream close) as the end of a turn. Tool events
 only appear when the model actually calls a tool, and correlate via `callId` (`arguments` is a
@@ -398,10 +399,11 @@ are editable. A hard failure triggers a resync (see below).
   Empty states are scrollable (`AlwaysScrollableScrollPhysics`) so the gesture still works with
   no content. The chat pane is `RefreshTrigger(reverse: true)` (pull at the **bottom**, matching
   its reversed list) and its `onRefresh` is **null while `chat.isStreaming`** so a pull cannot
-  clobber a live stream. `ChatController.refreshAll()` (list + active history) backs the chat
-  app-bar button; `reloadActiveConversation()` is a no-op when none is active or a reply is
-  streaming. `ChatController.loadOlderMessages()` (keyset `afterMessageId`, prepended) backs
-  infinite scroll up.
+  clobber a live stream. `ChatController.refreshAll()` (list + a full active-history reload)
+  backs the chat app-bar button; `reloadActiveConversation()` is a no-op when none is active or a
+  reply is streaming. `ChatController.loadOlderMessages()` (keyset `afterMessageId`, prepended)
+  backs infinite scroll up, and `syncActiveConversation()` (a merge) backs the shell's background
+  sync.
 - **MCP status is read-only and secret-free.** `McpStatusController` (owned by the Settings
   dialog's `_McpSection`) fetches `GET /v1/mcp/servers` through `ChatApi`, so it inherits the
   bearer header and the `401 → logout` path. `showSettingsDialog` takes the `ChatApi`
@@ -516,8 +518,15 @@ surfaces the error rather than downgrading the token to plaintext.
   per-message metadata (PLAN 2 §B4). The `usage` SSE event may also carry `model`.
 - **The shell syncs across devices.** `HomeShell` is a `WidgetsBindingObserver`:
   a `resumed` lifecycle event (and a 25 s periodic timer) calls
-  `ChatController.refreshAll()`, skipped while a reply streams or an edit is in
-  progress. A `409` from rename / set-model / edit resyncs and surfaces
+  `ChatController.refreshConversations()` plus `ChatController.syncActiveConversation()`,
+  skipped while a reply streams or an edit is in progress. `syncActiveConversation` **merges**
+  only messages the buffer lacks — it never clears loaded history or moves the viewport, so a
+  background tick cannot drop pages loaded by infinite scroll or yank the user to the newest
+  message. The explicit chat app-bar/pull-to-refresh uses `refreshAll()` (a full reload) instead.
+- **Concurrency is end-to-end.** `Conversation.revision` (parsed from the API and updated by the
+  `done` event) is echoed as `expectedRevision` on send / edit / rename / set-model. A `409`
+  resyncs — `_resyncAfterConflict` refreshes the **list** (so the revision is current, otherwise
+  the next attempt would conflict again) and the active history — then surfaces
   "This chat changed on another device — refreshed." (`ChatApiException.statusCode`).
 - **Backend input modalities include `pdf`, which maps to the `file` badge.** `ModelInputModality`
   has `text/image/file/audio/video`; `modelInputModalityFromValue` folds `pdf`/`file` into `file`

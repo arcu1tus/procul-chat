@@ -188,6 +188,34 @@ class ChatController extends ChangeNotifier {
     await _openConversation(id);
   }
 
+  /// Merges any messages the server has that the buffer lacks, **without**
+  /// clearing already-loaded history or moving the viewport. This is what the
+  /// shell's background sync uses: a full [reloadActiveConversation] would drop
+  /// pages loaded by infinite scroll and yank the user back to the newest
+  /// message every time it ran. Best-effort — a failure is never surfaced.
+  Future<void> syncActiveConversation() async {
+    final id = _conversationId;
+    if (id == null || isStreaming || isLoadingMessages) return;
+
+    try {
+      final latest = await api.fetchMessages(id, limit: _pageSize);
+      if (_conversationId != id) return; // Switched away mid-fetch.
+      final known = {
+        for (final message in messages)
+          if (message.id != null) message.id,
+      };
+      final additions = [
+        for (final message in latest)
+          if (message.id == null || !known.contains(message.id)) message,
+      ];
+      if (additions.isEmpty) return;
+      messages.addAll(additions);
+      notifyListeners();
+    } catch (_) {
+      // Background sync is best-effort; keep the current buffer.
+    }
+  }
+
   /// The "refresh the whole app" action: the conversation list plus the active history.
   Future<void> refreshAll() async {
     await refreshConversations();
@@ -338,6 +366,11 @@ class ChatController extends ChangeNotifier {
     future.then(
       (_) {},
       onError: (Object error, StackTrace stackTrace) {
+        // A 404 means retention purged the bytes (metadata is kept). Keep the
+        // failed future cached so a rebuild shows the "no longer stored" chip
+        // without re-hitting the network; any other failure is dropped so a
+        // later attempt can retry.
+        if (error is ChatApiException && error.statusCode == 404) return;
         _attachmentBytes.remove(id);
       },
     );
@@ -385,6 +418,7 @@ class ChatController extends ChangeNotifier {
               _conversationId!,
               trimmed,
               attachmentIds: attachmentIds,
+              expectedRevision: activeConversation?.revision,
             );
 
       await _consumeReply(
@@ -485,6 +519,7 @@ class ChatController extends ChangeNotifier {
           messageId,
           trimmed,
           attachmentIds: attachmentIds,
+          expectedRevision: activeConversation?.revision,
         ),
         assistant: assistant,
         reply: reply,
@@ -503,12 +538,10 @@ class ChatController extends ChangeNotifier {
 
     // A hard failure means the server may hold a different branch; resync.
     if (hardFailure) {
-      await reloadActiveConversation();
       if (conflict) {
-        // The resync cleared `error`; re-surface the conflict so the user sees
-        // why the chat was refreshed.
-        error = _conflictMessage;
-        notifyListeners();
+        await _resyncAfterConflict();
+      } else {
+        await reloadActiveConversation();
       }
     }
   }
@@ -551,10 +584,12 @@ class ChatController extends ChangeNotifier {
           notifyListeners();
         case ErrorEvent(:final error):
           this.error = error;
-        case DoneEvent():
+        case DoneEvent(:final revision):
           // The reply is complete. Stop treating the turn as streaming now, so
           // the composer is usable even if the `title` event is still in
-          // flight (it is emitted after the reply).
+          // flight (it is emitted after the reply). Record the new revision so
+          // the next send/edit can echo it as `expectedRevision`.
+          if (revision != null) _applyRevision(revision);
           isStreaming = false;
           notifyListeners();
         case UsageEvent(:final usage, :final model):
@@ -594,16 +629,18 @@ class ChatController extends ChangeNotifier {
     }
 
     try {
-      final updated = await api.setConversationModel(conversation.id, slug);
+      final updated = await api.setConversationModel(
+        conversation.id,
+        slug,
+        expectedRevision: conversation.revision,
+      );
       _replaceConversation(updated);
     } catch (e) {
       if (previous != null) {
         _replaceConversation(previous);
       }
       if (_isConflict(e)) {
-        await reloadActiveConversation();
-        error = _conflictMessage;
-        notifyListeners();
+        await _resyncAfterConflict();
         return;
       }
       error = 'Could not change the model: $e';
@@ -624,16 +661,18 @@ class ChatController extends ChangeNotifier {
     }
 
     try {
-      final updated = await api.renameConversation(id, trimmed);
+      final updated = await api.renameConversation(
+        id,
+        trimmed,
+        expectedRevision: previous?.revision,
+      );
       _replaceConversation(updated);
     } catch (e) {
       if (previous != null) {
         _replaceConversation(previous);
       }
       if (_isConflict(e)) {
-        await reloadActiveConversation();
-        error = _conflictMessage;
-        notifyListeners();
+        await _resyncAfterConflict();
         return;
       }
       error = 'Could not rename the chat: $e';
@@ -736,6 +775,27 @@ class ChatController extends ChangeNotifier {
     final index = conversations.indexWhere((c) => c.id == conversationId);
     if (index == -1) return;
     conversations[index] = conversations[index].copyWith(title: title.trim());
+    notifyListeners();
+  }
+
+  /// Records the active conversation's post-turn revision (from the `done`
+  /// event) so the next mutation can echo it as `expectedRevision`.
+  void _applyRevision(int revision) {
+    final id = _conversationId;
+    if (id == null) return;
+    final index = conversations.indexWhere((c) => c.id == id);
+    if (index == -1) return;
+    conversations[index] = conversations[index].copyWith(revision: revision);
+  }
+
+  /// Resyncs after a `409 Conflict`: refresh the conversation list (so the
+  /// revision is current) and the active history, then surface a friendly
+  /// message. Refreshing the list matters — without it the client would keep
+  /// echoing the stale revision and conflict again on the next attempt.
+  Future<void> _resyncAfterConflict() async {
+    await refreshConversations();
+    await reloadActiveConversation();
+    error = _conflictMessage;
     notifyListeners();
   }
 

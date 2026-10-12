@@ -32,8 +32,19 @@ internal static class ToolMedia
         // Add the metadata first so the Postgres store's blob FK is satisfied; PutAsync returns the
         // storage key for both implementations.
         context.Db.Attachments.Add(attachment);
-        attachment.StorageKey = await context.Store.PutAsync(attachment, new MemoryStream(bytes), ct);
-        await context.Db.SaveChangesAsync(ct);
+        try
+        {
+            attachment.StorageKey = await context.Store.PutAsync(attachment, new MemoryStream(bytes), ct);
+            await context.Db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // Don't leave a half-persisted (keyless) row tracked for the reply's later save to
+            // insert. The tool turns the exception into a message; the caller rethrows only a
+            // cancellation.
+            context.Db.Entry(attachment).State = Microsoft.EntityFrameworkCore.EntityState.Detached;
+            throw;
+        }
 
         context.Media.AddImage(
             attachment,
