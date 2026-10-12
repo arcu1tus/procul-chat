@@ -151,6 +151,49 @@ void main() {
     expect(chat.reloadCalls, greaterThanOrEqualTo(1));
   });
 
+  testWidgets('the chat pane pull is disabled while a reply streams', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient(
+      (_) async => http.Response('{"conversations":[]}', 200),
+    );
+    final chat = SpyChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+      store: FakeConversationStore(),
+    );
+
+    await tester.pumpWidget(
+      MaterialShadcnApp(
+        theme: proculLightTheme,
+        darkTheme: proculDarkTheme,
+        themeMode: ThemeMode.light,
+        home: HomeShell(
+          chat: chat,
+          settings: SettingsController(),
+          auth: _auth(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final chatTrigger = find.ancestor(
+      of: find.text('Send a message to start a new chat.'),
+      matching: find.byType(RefreshTrigger),
+    );
+    expect(tester.widget<RefreshTrigger>(chatTrigger).onRefresh, isNotNull);
+
+    // Mid-turn the pane must not offer a pull that could clobber the stream.
+    chat.isStreaming = true;
+    chat.setDefaultModel('busy/model'); // notify listeners so the pane rebuilds
+    await tester.pump();
+
+    expect(tester.widget<RefreshTrigger>(chatTrigger).onRefresh, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('the chat app-bar refresh button runs refreshAll', (
     tester,
   ) async {
