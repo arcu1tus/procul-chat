@@ -340,8 +340,12 @@ are editable. A hard failure triggers a resync (see below).
 - **The composer is a capsule.** `Composer` (`widgets/composer.dart`) is one rounded surface
   (attach · text field · circular primary send) with a subtle border/shadow and an accent focus
   ring that animates in while focused; the edit banner and the pending-attachment strip animate in
-  above it (`_AnimatedSlot`). The field's **own** `FocusOutline` is cleared with a
-  `ComponentTheme<FocusOutlineTheme>` so only the capsule's outer ring shows (no double outline).
+  above it (`_AnimatedSlot`). The field's **own** `FocusOutline` must not draw, or the focused
+  composer shows a double outline. shadcn's `TextField` *always* wraps itself in its own
+  `FocusOutline` and passes its own `FocusOutlineTheme`, so an ambient
+  `ComponentTheme<FocusOutlineTheme>` is **ignored** — instead the field is wrapped in a `Theme`
+  whose `colorScheme.ring` is transparent (the `FocusOutline` default border is the scheme's
+  `ring`), leaving only the capsule's outer ring.
   The a11y labels (`Send message` / `Attach file`) and the single
   `TextField`/`PrimaryButton` are preserved (tests rely on them). Composer keyboard semantics are
   unchanged (see the keyboard bullet below).
@@ -452,6 +456,16 @@ are editable. A hard failure triggers a resync (see below).
   selected from the sidebar's section pills; `HomeShell` cross-fades it in over the still-mounted
   chat (so the chat's scroll/buffer survive). Only the genuinely-modal flows stay modals:
   add-server, rename, delete/remove confirmations, toasts.
+- **The narrow-screen drawer slides and swipes.** `HomeShell`'s hand-rolled drawer is driven by
+  one `AnimationController` (`_eased`, 0 hidden → 1 open) that positions the panel
+  (`FractionalTranslation`) and fades the scrim together. It opens on the app-bar menu tap, on a
+  **rightward drag from a 28 px left-edge strip**, and closes on a leftward drag anywhere over
+  the open drawer (panel or scrim) or a scrim tap. `DragStartBehavior.down` makes the panel follow
+  the finger from the first pixel; a fling (> 365 px/s) wins on release, else the halfway point.
+  The panel is mounted while the slide plays (in *and* out) and unmounted when the controller
+  reports `dismissed` — never by `whenComplete`, which a mid-gesture `stop()` would strand. The
+  edge strip stays mounted while `_dragging` so removing it can't cancel the gesture, and the
+  slide is still skipped under reduced motion (see the `Motion` bullet).
 - **All UI is shadcn_flutter.** Use shadcn components (`Scaffold` + `headers: [AppBar(...)]`,
   `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `SelectedButton` (used
   for the segmented theme selector), `TextField`, `AlertDialog` via `showAppDialog`/
