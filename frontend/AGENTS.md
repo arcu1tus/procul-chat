@@ -458,14 +458,21 @@ are editable. A hard failure triggers a resync (see below).
   add-server, rename, delete/remove confirmations, toasts.
 - **The narrow-screen drawer slides and swipes.** `HomeShell`'s hand-rolled drawer is driven by
   one `AnimationController` (`_eased`, 0 hidden → 1 open) that positions the panel
-  (`FractionalTranslation`) and fades the scrim together. It opens on the app-bar menu tap, on a
-  **rightward drag from a 28 px left-edge strip**, and closes on a leftward drag anywhere over
-  the open drawer (panel or scrim) or a scrim tap. `DragStartBehavior.down` makes the panel follow
-  the finger from the first pixel; a fling (> 365 px/s) wins on release, else the halfway point.
-  The panel is mounted while the slide plays (in *and* out) and unmounted when the controller
-  reports `dismissed` — never by `whenComplete`, which a mid-gesture `stop()` would strand. The
-  edge strip stays mounted while `_dragging` so removing it can't cancel the gesture, and the
-  slide is still skipped under reduced motion (see the `Motion` bullet).
+  (`FractionalTranslation`) and fades the scrim together. It opens on the app-bar menu tap and on
+  a **rightward drag from anywhere on the chat surface** — *not* an edge strip, because Android's
+  system back gesture owns the screen edge (an inward swipe from either edge), so an edge-only
+  drag fights it; starting mid-screen sidesteps that. This is the same idea as Flutter's
+  `DrawerController`, whose `dragAreaWidth` can be widened to the whole surface
+  (`Scaffold.drawerEdgeDragWidth`). The whole main pane is wrapped in one horizontal-drag
+  `GestureDetector` (the open scrim covers it while the drawer is open, so it only fires when
+  closed), and a leftward drag anywhere over the open drawer (panel or scrim) closes it, as does a
+  scrim tap. `DragStartBehavior.down` makes the panel follow the finger from the first pixel; a
+  fling (> 365 px/s) wins on release, else the halfway point. The panel is mounted while the slide
+  plays (in *and* out) and unmounted when the controller reports `dismissed` — never by
+  `whenComplete`, which a mid-gesture `stop()` would strand (`_dragging` guards the unmount). The
+  slide is still skipped under reduced motion (see the `Motion` bullet). A vertical drag is
+  unaffected: the arena hands it to the scrollable, and inner recognizers (e.g. the composer
+  field) win over the surface drag.
 - **All UI is shadcn_flutter.** Use shadcn components (`Scaffold` + `headers: [AppBar(...)]`,
   `PrimaryButton`/`OutlineButton`/`DestructiveButton`/`GhostButton`, `SelectedButton` (used
   for the segmented theme selector), `TextField`, `AlertDialog` via `showAppDialog`/
