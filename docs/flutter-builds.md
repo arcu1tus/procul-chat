@@ -345,7 +345,8 @@ Icons are generated from one source image with
 [`flutter_launcher_icons`](https://pub.dev/packages/flutter_launcher_icons) (a dev dependency,
 configured under `flutter_launcher_icons:` in `frontend/pubspec.yaml`).
 
-1. Drop a **1024×1024 px, opaque PNG** at **`frontend/assets/icon/icon.png`**.
+1. Drop a **1024×1024 px PNG** at **`frontend/assets/icon/icon.png`**. A transparent
+   background is fine — Android, macOS and web keep it, and iOS is flattened (see below).
 2. From `frontend/`:
 
    ```bash
@@ -354,13 +355,25 @@ configured under `flutter_launcher_icons:` in `frontend/pubspec.yaml`).
 
 3. Commit the regenerated icons.
 
+> **iOS needs an opaque icon.** The App Store rejects icons with an alpha channel. The config
+> sets `remove_alpha_ios: true`, which alpha-blends the source onto `background_color_ios`
+> (`#ffffff` by default — the logo's strokes are black, so keep a light background). Without it
+> the generator prints an "Icons with alpha channel are not allowed" warning and the generated
+> `AppIcon` PNGs stay RGBA.
+>
+> **macOS and Windows need `generate: true`.** Unlike `android: true` / `ios: true`, a
+> per-platform map is only honoured when it sets `generate: true`; otherwise the run logs
+> "config is not provided … Skipped" and leaves the platform's stock Flutter icon in place.
+> Windows also writes a **single-frame** `.ico` (one size, `icon_size`, default 48 px), so the
+> config raises it to 256 px.
+
 | Platform | Path(s) | Size(s) |
 | -------- | ------- | ------- |
 | Android (legacy) | `android/app/src/main/res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png` | 48, 72, 96, 144, 192 |
 | Android (adaptive) | `mipmap-anydpi-v26/ic_launcher.xml` + foreground/background drawables | `108dp` |
 | iOS | `ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-*.png` + `Contents.json` | 20/29/40/60/76/83.5 pt @1x–3x + 1024 |
 | macOS | `macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_{16,32,64,128,256,512,1024}.png` | 16…1024 |
-| Windows | `windows/runner/resources/app_icon.ico` | multi-size ICO (16…256) |
+| Windows | `windows/runner/resources/app_icon.ico` | single-frame ICO (`windows.icon_size`, 256) |
 | Web | `web/icons/Icon-192.png`, `Icon-512.png`, `Icon-maskable-192.png`, `Icon-maskable-512.png`, `web/favicon.png` | 192/512 |
 | Linux | no icon file by convention; ship `linux/procul-chat.desktop` + a themed icon (`hicolor/<size>/apps/procul-chat.png`) | 16…512 |
 
