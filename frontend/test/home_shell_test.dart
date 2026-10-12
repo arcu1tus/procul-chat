@@ -138,47 +138,53 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('an edge swipe opens the drawer and a swipe back closes it', (
-    tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(500, 800));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+  testWidgets(
+    'a swipe from anywhere opens the drawer and a swipe back closes it',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(500, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
 
-    final client = MockClient(
-      (request) async => http.Response('{"conversations":[]}', 200),
-    );
-    final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
-      store: FakeConversationStore(),
-    );
+      final client = MockClient(
+        (request) async => http.Response('{"conversations":[]}', 200),
+      );
+      final chat = ChatController(
+        api: ChatApi(
+          baseUrl: 'http://test',
+          token: 'test-token',
+          client: client,
+        ),
+        store: FakeConversationStore(),
+      );
 
-    await tester.pumpWidget(
-      _app(chat: chat, settings: SettingsController(), auth: _auth()),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('Procul'), findsNothing);
+      await tester.pumpWidget(
+        _app(chat: chat, settings: SettingsController(), auth: _auth()),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Procul'), findsNothing);
 
-    // A rightward drag from the left edge opens the drawer.
-    final open = await tester.startGesture(const Offset(6, 400));
-    for (var i = 0; i < 4; i++) {
-      await open.moveBy(const Offset(60, 0));
-      await tester.pump();
-    }
-    await open.up();
-    await tester.pumpAndSettle();
-    expect(find.text('Procul'), findsOneWidget);
+      // A rightward drag from the *middle* of the surface opens the drawer (not
+      // just the left edge — Android's back gesture owns that).
+      final open = await tester.startGesture(const Offset(250, 400));
+      for (var i = 0; i < 4; i++) {
+        await open.moveBy(const Offset(60, 0));
+        await tester.pump();
+      }
+      await open.up();
+      await tester.pumpAndSettle();
+      expect(find.text('Procul'), findsOneWidget);
 
-    // A leftward drag over the open drawer closes it again.
-    final close = await tester.startGesture(const Offset(200, 400));
-    for (var i = 0; i < 4; i++) {
-      await close.moveBy(const Offset(-60, 0));
-      await tester.pump();
-    }
-    await close.up();
-    await tester.pumpAndSettle();
-    expect(find.text('Procul'), findsNothing);
-    expect(tester.takeException(), isNull);
-  });
+      // A leftward drag over the open drawer closes it again.
+      final close = await tester.startGesture(const Offset(250, 400));
+      for (var i = 0; i < 4; i++) {
+        await close.moveBy(const Offset(-60, 0));
+        await tester.pump();
+      }
+      await close.up();
+      await tester.pumpAndSettle();
+      expect(find.text('Procul'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('settings opens as a pane and switches the theme mode', (
     tester,

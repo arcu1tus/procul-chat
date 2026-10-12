@@ -37,9 +37,6 @@ class HomeShell extends StatefulWidget {
   static const _sidebarWidth = 300.0;
   static const _slideDuration = Duration(milliseconds: 200);
 
-  /// How far in from the left edge a horizontal drag starts opening the drawer.
-  static const _edgeDragWidth = 28.0;
-
   /// Finger speed (logical px/s) past which a drag flings the drawer open or
   /// closed rather than settling on the halfway point.
   static const _drawerFlingVelocity = 365.0;
@@ -150,6 +147,13 @@ class _HomeShellState extends State<HomeShell>
 
   /// A horizontal drag begins: stop any running slide so the finger wins and
   /// make sure the drawer is mounted so it can follow the drag.
+  ///
+  /// The open-drag listens across the **whole** chat surface, not just a left
+  /// edge strip. Android's system back gesture owns the screen edge (an inward
+  /// swipe from either edge), so an edge-only drag fights it; starting the
+  /// swipe from the middle of the screen sidesteps that. This mirrors Flutter's
+  /// own `DrawerController`, whose `dragAreaWidth` can be widened to the full
+  /// surface (`Scaffold.drawerEdgeDragWidth`).
   void _onDrawerDragStart(DragStartDetails details) {
     _controller.stop();
     setState(() {
@@ -314,24 +318,19 @@ class _HomeShellState extends State<HomeShell>
 
           return Stack(
             children: [
-              Positioned.fill(child: _mainPane(narrow: true)),
-              // A thin strip along the left edge that starts an opening drag.
-              // It stays mounted while a drag is in flight (even after the
-              // drawer appears) so removing it can't cancel the gesture.
-              if (!_sidebarOpen || _dragging)
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: HomeShell._edgeDragWidth,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    dragStartBehavior: DragStartBehavior.down,
-                    onHorizontalDragStart: _onDrawerDragStart,
-                    onHorizontalDragUpdate: _onDrawerDragUpdate,
-                    onHorizontalDragEnd: _onDrawerDragEnd,
-                  ),
+              // The whole chat surface is a drag target: a rightward swipe from
+              // anywhere (not just the edge) opens the drawer. While the drawer
+              // is open the scrim sits on top, so this only fires when closed.
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  dragStartBehavior: DragStartBehavior.down,
+                  onHorizontalDragStart: _onDrawerDragStart,
+                  onHorizontalDragUpdate: _onDrawerDragUpdate,
+                  onHorizontalDragEnd: _onDrawerDragEnd,
+                  child: _mainPane(narrow: true),
                 ),
+              ),
               if (_sidebarOpen)
                 Positioned.fill(
                   // Dragging anywhere over the open drawer (panel or scrim)
