@@ -13,6 +13,7 @@ import 'package:procul_chat_flutter/src/chat_controller.dart';
 import 'package:procul_chat_flutter/src/conversation_sidebar.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
 import 'package:procul_chat_flutter/src/settings_controller.dart';
+import 'package:procul_chat_flutter/src/settings_screen.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -137,7 +138,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('settings dialog switches the theme mode', (tester) async {
+  testWidgets('settings opens as a pane and switches the theme mode', (
+    tester,
+  ) async {
     await tester.binding.setSurfaceSize(const Size(1200, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -156,9 +159,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(settings.isDark, isTrue);
+    expect(find.byType(SettingsScreen), findsNothing);
 
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
+
+    // Settings is a full pane, not a popup.
+    expect(find.byType(SettingsScreen), findsOneWidget);
     expect(find.text('Appearance'), findsOneWidget);
     expect(find.text('Light'), findsOneWidget);
     expect(find.text('Dark'), findsOneWidget);
