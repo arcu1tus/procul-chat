@@ -72,10 +72,12 @@ class ErrorEvent extends ChatStreamEvent {
 /// `type: "usage"` — token usage for the reply, emitted once just before `done`.
 ///
 /// The counts are summed across every underlying model call on the turn (the
-/// tool-invocation loop can make several).
+/// tool-invocation loop can make several). [model] is the slug that produced the
+/// reply, when the backend sends it (PLAN 2 §B4); older backends omit it.
 class UsageEvent extends ChatStreamEvent {
-  const UsageEvent(this.usage);
+  const UsageEvent(this.usage, {this.model});
   final TokenUsage usage;
+  final String? model;
 }
 
 /// `type: "done"` — the assistant's reply is complete and persisted.

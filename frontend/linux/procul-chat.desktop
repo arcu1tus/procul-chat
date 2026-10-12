@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Procul Chat
+Comment=Chat with Procul
+Exec=procul_chat_flutter
+Icon=procul-chat
+Terminal=false
+Categories=Network;Chat;

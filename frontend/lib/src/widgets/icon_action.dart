@@ -4,6 +4,10 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 ///
 /// Icon-only buttons carry no text, so screen readers would otherwise announce
 /// them as just "button". Every icon-only control in the app uses this.
+///
+/// When [busy] is true the icon is swapped for a small spinner, so an action
+/// with no immediate visible effect (a refresh) can still show that it is
+/// working.
 class IconAction extends StatelessWidget {
   const IconAction({
     super.key,
@@ -11,12 +15,16 @@ class IconAction extends StatelessWidget {
     required this.label,
     this.onPressed,
     this.size,
+    this.busy = false,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback? onPressed;
   final double? size;
+
+  /// Replaces the icon with a spinner while an action is in flight.
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -26,7 +34,13 @@ class IconAction extends StatelessWidget {
       child: Tooltip(
         tooltip: (context) => TooltipContainer(child: Text(label)),
         child: IconButton.ghost(
-          icon: Icon(icon, size: size),
+          icon: busy
+              ? SizedBox(
+                  width: size ?? 16,
+                  height: size ?? 16,
+                  child: const CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(icon, size: size),
           onPressed: onPressed,
         ),
       ),

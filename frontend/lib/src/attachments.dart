@@ -1,6 +1,12 @@
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, visibleForTesting;
+import 'package:image_picker/image_picker.dart'
+    show ImagePicker, ImageSource, XFile;
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart'
+    show ImagePickerPlatform;
 
 import 'models.dart';
 
@@ -194,6 +200,45 @@ String attachmentMimeType(String fileName) {
       'application/octet-stream';
 }
 
+/// Where an attachment comes from.
+enum AttachmentSource { camera, gallery, files }
+
+/// Which attachment sources this platform offers, and which the active model
+/// can actually read.
+///
+/// Camera is offered only where the OS has a native camera control
+/// (`image_picker`'s `supportsImageSource`); Gallery and Files are always
+/// available. The UI additionally hides Camera/Gallery when the active model
+/// cannot read images.
+class AttachmentSources {
+  /// The available sources in menu order (camera, gallery, files).
+  static List<AttachmentSource> available() {
+    return [
+      if (_cameraSupported()) AttachmentSource.camera,
+      AttachmentSource.gallery,
+      AttachmentSource.files,
+    ];
+  }
+
+  /// Test override for [available]: the `image_picker` platform channel is not
+  /// registered under `flutter_test`.
+  @visibleForTesting
+  static bool? debugCameraSupported;
+
+  static bool _cameraSupported() {
+    if (debugCameraSupported != null) return debugCameraSupported!;
+    try {
+      return ImagePickerPlatform.instance.supportsImageSource(
+        ImageSource.camera,
+      );
+    } catch (_) {
+      // Fall back to the platforms that have a native camera UI.
+      return defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS;
+    }
+  }
+}
+
 /// A file the user picked, before it has been uploaded.
 class PickedAttachment {
   const PickedAttachment({
@@ -208,35 +253,66 @@ class PickedAttachment {
 }
 
 /// Picking and saving files, abstracted so widget tests never touch the
-/// `file_picker` platform channel.
+/// `file_picker` / `image_picker` platform channels.
 abstract interface class AttachmentPicker {
-  /// Opens the native picker, offering only [allowedExtensions] when given (the
-  /// active model's readable file types). Returns null when the user cancels.
-  Future<PickedAttachment?> pick({List<String>? allowedExtensions});
+  /// Captures a photo through the OS camera UI. Returns null when cancelled.
+  Future<PickedAttachment?> pickFromCamera();
+
+  /// Picks one or more images from the photo library / gallery.
+  Future<List<PickedAttachment>> pickFromGallery({bool allowMultiple = true});
+
+  /// Opens the file picker, offering only [allowedExtensions] when given (the
+  /// active model's readable file types). Always multi-select.
+  Future<List<PickedAttachment>> pickFiles({List<String>? allowedExtensions});
 
   /// Saves [bytes] under [fileName], opening the platform's save dialog (web
   /// downloads directly).
   Future<void> save(String fileName, Uint8List bytes);
 }
 
-/// The real [AttachmentPicker], backed by `package:file_picker`.
+/// The real [AttachmentPicker]: `image_picker` for camera + gallery, and
+/// `package:file_picker` for files.
 class FilePickerAttachmentPicker implements AttachmentPicker {
   const FilePickerAttachmentPicker();
 
   @override
-  Future<PickedAttachment?> pick({List<String>? allowedExtensions}) async {
+  Future<PickedAttachment?> pickFromCamera() async {
+    final file = await ImagePicker().pickImage(source: ImageSource.camera);
+    if (file == null) return null;
+    return _fromXFile(file);
+  }
+
+  @override
+  Future<List<PickedAttachment>> pickFromGallery({
+    bool allowMultiple = true,
+  }) async {
+    final picker = ImagePicker();
+    final List<XFile> files;
+    if (allowMultiple) {
+      files = await picker.pickMultiImage();
+    } else {
+      final single = await picker.pickImage(source: ImageSource.gallery);
+      files = [?single];
+    }
+    return [for (final file in files) await _fromXFile(file)];
+  }
+
+  @override
+  Future<List<PickedAttachment>> pickFiles({
+    List<String>? allowedExtensions,
+  }) async {
     final files = await FilePicker.pickFiles(
       type: allowedExtensions == null ? FileType.any : FileType.custom,
       allowedExtensions: allowedExtensions,
     );
-    if (files.isEmpty) return null;
-    final file = files.first;
-    final bytes = await file.readAsBytes();
-    return PickedAttachment(
-      bytes: bytes,
-      fileName: file.name,
-      contentType: attachmentMimeType(file.name),
-    );
+    return [
+      for (final file in files)
+        PickedAttachment(
+          bytes: await file.readAsBytes(),
+          fileName: file.name,
+          contentType: attachmentMimeType(file.name),
+        ),
+    ];
   }
 
   @override
@@ -245,6 +321,16 @@ class FilePickerAttachmentPicker implements AttachmentPicker {
       fileName: fileName,
       bytes: bytes,
       mimeType: attachmentMimeType(fileName),
+    );
+  }
+
+  Future<PickedAttachment> _fromXFile(XFile file) async {
+    final bytes = await file.readAsBytes();
+    final name = file.name.isEmpty ? 'image' : file.name;
+    return PickedAttachment(
+      bytes: bytes,
+      fileName: name,
+      contentType: file.mimeType ?? attachmentMimeType(name),
     );
   }
 }

@@ -324,6 +324,50 @@ browser before a request reaches the server. See [`configuration.md`](configurat
 
 ---
 
+## App name & icon
+
+The display name is **"Procul Chat"** on every platform (the pubspec package name stays
+`procul_chat_flutter`). The strings live in:
+
+| Platform | Where |
+| -------- | ----- |
+| Android | `android/app/src/main/AndroidManifest.xml` → `android:label` |
+| iOS | `ios/Runner/Info.plist` → `CFBundleDisplayName` + `CFBundleName` |
+| macOS | `macos/Runner/Info.plist` → `CFBundleDisplayName` |
+| Windows | `windows/runner/main.cpp` window title + `windows/runner/Runner.rc` product strings |
+| Linux | `linux/runner/my_application.cc` window/header title; `linux/procul-chat.desktop` |
+| Web | `web/manifest.json` (`name`/`short_name`) + `web/index.html` (`<title>`, `apple-mobile-web-app-title`) |
+| Dart | `main.dart` → `MaterialShadcnApp(title: 'Procul Chat')` |
+
+### Generating the icons
+
+Icons are generated from one source image with
+[`flutter_launcher_icons`](https://pub.dev/packages/flutter_launcher_icons) (a dev dependency,
+configured under `flutter_launcher_icons:` in `frontend/pubspec.yaml`).
+
+1. Drop a **1024×1024 px, opaque PNG** at **`frontend/assets/icon/icon.png`**.
+2. From `frontend/`:
+
+   ```bash
+   dart run flutter_launcher_icons
+   ```
+
+3. Commit the regenerated icons.
+
+| Platform | Path(s) | Size(s) |
+| -------- | ------- | ------- |
+| Android (legacy) | `android/app/src/main/res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png` | 48, 72, 96, 144, 192 |
+| Android (adaptive) | `mipmap-anydpi-v26/ic_launcher.xml` + foreground/background drawables | `108dp` |
+| iOS | `ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-*.png` + `Contents.json` | 20/29/40/60/76/83.5 pt @1x–3x + 1024 |
+| macOS | `macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_{16,32,64,128,256,512,1024}.png` | 16…1024 |
+| Windows | `windows/runner/resources/app_icon.ico` | multi-size ICO (16…256) |
+| Web | `web/icons/Icon-192.png`, `Icon-512.png`, `Icon-maskable-192.png`, `Icon-maskable-512.png`, `web/favicon.png` | 192/512 |
+| Linux | no icon file by convention; ship `linux/procul-chat.desktop` + a themed icon (`hicolor/<size>/apps/procul-chat.png`) | 16…512 |
+
+The accent color is **`#a832a0`** (`lib/src/app_theme.dart`; also the web `theme_color`).
+
+---
+
 ## The `PROCUL_API_BASE` pattern
 
 `frontend/lib/src/config.dart` reads the value at compile time:

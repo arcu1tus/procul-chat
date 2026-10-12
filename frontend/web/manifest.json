@@ -1,11 +1,11 @@
 {
-    "name": "procul_chat_flutter",
-    "short_name": "procul_chat_flutter",
+    "name": "Procul Chat",
+    "short_name": "Procul Chat",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#09090B",
+    "theme_color": "#a832a0",
+    "description": "Procul — a ChatGPT-style chat client for the Procul backend.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

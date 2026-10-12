@@ -19,11 +19,34 @@ dependencies:
   fl_chart: ^1.2.0
   file_picker: ^13.1.0
   http_parser: ^4.1.0
+  image_picker: ^1.2.4
+  image_picker_platform_interface: ^2.11.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+# App icon generation. Drop a 1024×1024 opaque PNG at assets/icon/icon.png and
+# run `dart run flutter_launcher_icons` to (re)generate every platform target.
+# See docs/flutter-builds.md for where each target's files land.
+flutter_launcher_icons:
+  image_path: assets/icon/icon.png
+  android: true
+  ios: true
+  macos:
+    image_path: assets/icon/icon.png
+  windows:
+    image_path: assets/icon/icon.png
+  web:
+    generate: true
+    image_path: assets/icon/icon.png
+    background_color: "#09090B"
+    theme_color: "#a832a0"
+  # Android adaptive icon: a magenta background with the source as foreground.
+  adaptive_icon_background: "#a832a0"
+  adaptive_icon_foreground: assets/icon/icon.png
 
 flutter:
   uses-material-design: true

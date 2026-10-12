@@ -144,4 +144,49 @@ void main() {
     await controller.deleteConversation('c1');
     expect(controller.conversations, isEmpty);
   });
+
+  test('a 409 conflict resyncs and reports the clash', () async {
+    var messageGets = 0;
+    final client = MockClient((request) async {
+      final path = request.url.path;
+      if (request.method == 'GET' && path == '/v1/conversations') {
+        return http.Response(
+          jsonEncode({
+            'conversations': [
+              {
+                'id': 'c1',
+                'title': 'First',
+                'createdAt': '2026-10-11T10:00:00Z',
+                'updatedAt': '2026-10-11T10:00:00Z',
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (path == '/v1/conversations/c1/messages') {
+        messageGets++;
+        return http.Response('{"messages":[]}', 200);
+      }
+      if (request.method == 'PATCH') {
+        return http.Response('stale revision', 409);
+      }
+      if (path.startsWith('/v1/usage/')) return http.Response('{}', 200);
+      return http.Response('', 404);
+    });
+    final controller = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      store: FakeConversationStore('c1'),
+    );
+
+    await controller.init();
+    final before = messageGets;
+
+    await controller.renameConversation('c1', 'Renamed');
+
+    // The stale write is rejected, the buffer is resynced, and the user is
+    // told why.
+    expect(controller.error, contains('another device'));
+    expect(messageGets, greaterThan(before));
+  });
 }

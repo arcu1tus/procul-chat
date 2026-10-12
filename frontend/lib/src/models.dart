@@ -100,6 +100,8 @@ class ChatMessage {
     required this.role,
     this.id,
     this.createdAt,
+    this.model,
+    this.usage,
     List<Attachment> attachments = const [],
   }) : attachments = List.of(attachments);
 
@@ -107,6 +109,16 @@ class ChatMessage {
   String text;
   final MessageRole role;
   final DateTime? createdAt;
+
+  /// The model that produced this (assistant) message, when known.
+  ///
+  /// Set live from [ChatController.activeModel] when the turn's `usage` event
+  /// arrives; populated from history once the backend stores per-message
+  /// metadata (PLAN 2 §B4). Null for user messages and unknown history.
+  String? model;
+
+  /// This response's token usage, when known (live turn, or history after §B4).
+  TokenUsage? usage;
 
   /// Files attached to this (user) message; empty for every other role.
   ///
@@ -126,6 +138,10 @@ class ChatMessage {
     text: (json['text'] as String?) ?? '',
     role: messageRoleFromValue(json['messageRole']),
     createdAt: DateTime.tryParse('${json['createdAt']}'),
+    model: json['model'] as String?,
+    usage: json['usage'] is Map
+        ? TokenUsage.fromJson((json['usage'] as Map).cast<String, dynamic>())
+        : null,
     attachments: (json['attachments'] as List<dynamic>? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(Attachment.fromJson)

@@ -76,6 +76,51 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('tapping an assistant response shows its model/time/tokens', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient.streaming((request, body) async {
+      if (request.method == 'GET') {
+        return http.StreamedResponse(
+          Stream.value(utf8.encode('{"conversations":[]}')),
+          200,
+        );
+      }
+      return http.StreamedResponse(
+        Stream.value(utf8.encode(_sse)),
+        200,
+        headers: {'content-type': 'text/event-stream'},
+      );
+    });
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+      store: FakeConversationStore(),
+    )..setDefaultModel('local/llama');
+
+    await tester.pumpWidget(_app(chat));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'Hi');
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pumpAndSettle();
+
+    // The response's own model / time / tokens are reachable from its avatar.
+    await tester.tap(find.byKey(const Key('response-details')).first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('local/llama'), findsOneWidget);
+    expect(find.text('Time'), findsOneWidget);
+    expect(find.text('Input'), findsOneWidget);
+    expect(find.text('Output'), findsOneWidget);
+    expect(find.text('Cached'), findsOneWidget);
+    expect(find.text('Total'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('assistant text shimmers while streaming and settles when done', (
     tester,
   ) async {

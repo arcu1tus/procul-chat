@@ -2,16 +2,19 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
-import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, LogicalKeyboardKey, TextInputAction;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'attachments.dart';
+import 'chat_api.dart';
 import 'chat_controller.dart';
 import 'conversation_actions.dart';
 import 'model_catalog_controller.dart';
 import 'models.dart';
+import 'time_format.dart';
 import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/model_badges.dart';
@@ -90,7 +93,16 @@ class _ChatScreenState extends State<ChatScreen> {
   void _trackPin() {
     if (!_scrollController.hasClients) return;
     final position = _scrollController.position;
-    _pinnedToBottom = position.maxScrollExtent - position.pixels < 140;
+    // The list is reversed, so offset 0 is the newest message (the bottom of the
+    // screen). "Pinned" means the user is near it; "near the top" (older
+    // messages) is near `maxScrollExtent`.
+    final pinned = position.pixels < 140;
+    if (pinned != _pinnedToBottom) {
+      setState(() => _pinnedToBottom = pinned);
+    }
+    if (position.pixels > position.maxScrollExtent - 300) {
+      widget.chat.loadOlderMessages();
+    }
   }
 
   void _onChanged() {
@@ -115,9 +127,20 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_pinnedToBottom) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_scrollController.hasClients) return;
-        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        // Reversed list: the newest message lives at offset 0.
+        _scrollController.jumpTo(0);
       });
     }
+  }
+
+  /// Scrolls back to the newest message (the jump-to-latest pill).
+  void _jumpToLatest() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+    );
   }
 
   void _showError(String error) {
@@ -168,22 +191,133 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputController.clear();
   }
 
-  /// The overflow menu shown on narrow app bars (rename/delete collapse here).
-  void _showChatMenu(Conversation conversation) {
+  /// The app-bar trailing actions. On a narrow bar every action collapses into
+  /// a single overflow `…` so the title keeps room and nothing paints over
+  /// anything (the shadcn `AppBar` lays the trailing out at its intrinsic width
+  /// and does not wrap).
+  List<Widget> _trailing(ChatController chat, Conversation? active) {
+    final compact =
+        widget.compactActions || MediaQuery.sizeOf(context).width < 720;
+    if (compact) {
+      return [
+        Builder(
+          builder: (context) => IconAction(
+            key: const Key('chat-options'),
+            icon: LucideIcons.ellipsis,
+            label: 'Chat options',
+            onPressed: () => _showChatMenu(context, chat, active),
+          ),
+        ),
+      ];
+    }
+    return [
+      if (widget.catalog != null)
+        _ModelPicker(
+          key: const Key('model-picker'),
+          chat: chat,
+          catalog: widget.catalog!,
+          compact: widget.compactModelPicker,
+        ),
+      if (active != null && chat.activeUsage.hasTokens)
+        _UsageChip(usage: chat.activeUsage),
+      IconAction(
+        icon: LucideIcons.refreshCw,
+        label: 'Refresh',
+        busy: chat.isRefreshing,
+        onPressed: chat.refreshAll,
+      ),
+      if (active != null) ...[
+        IconAction(
+          icon: LucideIcons.squarePen,
+          label: 'Rename chat',
+          onPressed: () => renameConversationDialog(context, chat, active),
+        ),
+        IconAction(
+          icon: LucideIcons.trash2,
+          label: 'Delete chat',
+          onPressed: () => confirmDeleteConversation(context, chat, active),
+        ),
+      ],
+    ];
+  }
+
+  /// The overflow menu shown on narrow app bars: every chat action lives here.
+  /// The model list is a submenu so a phone-width menu stays short.
+  ///
+  /// [context] must be a descendant of a `DrawerOverlay` (shadcn presents a
+  /// `showDropdown` as a bottom sheet on mobile, which needs one); callers wrap
+  /// the trigger in a `Builder` so this is the trigger's own context.
+  void _showChatMenu(
+    BuildContext context,
+    ChatController chat,
+    Conversation? active,
+  ) {
+    final catalog = widget.catalog;
+    final models = catalog?.models ?? const <ChatModel>[];
+    final showModels = catalog != null && catalog.hasChoice;
+    final usage = chat.activeUsage;
+
     showDropdown(
       context: context,
       builder: (context) => DropdownMenu(
         children: [
           MenuButton(
-            onPressed: (context) =>
-                renameConversationDialog(context, widget.chat, conversation),
-            child: const Text('Rename'),
+            leading: const Icon(LucideIcons.refreshCw, size: 16),
+            onPressed: (context) => chat.refreshAll(),
+            child: const Text('Refresh'),
           ),
-          MenuButton(
-            onPressed: (context) =>
-                confirmDeleteConversation(context, widget.chat, conversation),
-            child: const Text('Delete'),
-          ),
+          if (showModels)
+            MenuButton(
+              leading: const Icon(LucideIcons.cpu, size: 16),
+              subMenu: [
+                for (final model in models)
+                  MenuButton(
+                    enabled: !chat.isStreaming,
+                    leading: ModelHealthDot(status: model.health.status),
+                    trailing: model.slug == chat.activeModel
+                        ? const Icon(LucideIcons.check, size: 16)
+                        : null,
+                    onPressed: (context) => chat.setModel(model.slug),
+                    child: Text(
+                      model.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+              child: const Text('Model'),
+            ),
+          if (active != null && usage.hasTokens)
+            MenuButton(
+              leading: const Icon(LucideIcons.coins, size: 16),
+              subMenu: [
+                _UsageChip.usageLabel('Input', usage.inputTokens),
+                _UsageChip.usageLabel('Output', usage.outputTokens),
+                _UsageChip.usageLabel('Cached', usage.cachedInputTokens),
+                const MenuDivider(),
+                _UsageChip.usageLabel(
+                  'Total',
+                  usage.totalTokens,
+                  emphasized: true,
+                ),
+              ],
+              child: const Text('Token usage'),
+            ),
+          if (active != null) ...[
+            const MenuDivider(),
+            MenuButton(
+              leading: const Icon(LucideIcons.squarePen, size: 16),
+              onPressed: (context) =>
+                  renameConversationDialog(context, chat, active),
+              child: const Text('Rename'),
+            ),
+            MenuButton(
+              leading: const Icon(LucideIcons.trash2, size: 16),
+              onPressed: (context) =>
+                  confirmDeleteConversation(context, chat, active),
+              child: const Text('Delete'),
+            ),
+          ],
         ],
       ),
     );
@@ -208,28 +342,86 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  /// Picks a file, restricted to what the active model can read, validates it,
-  /// and uploads it. The backend re-checks both (see [ChatApi.uploadAttachment]).
-  Future<void> _attach() async {
+  /// Opens the attachment source menu (Camera / Gallery / Files), filtered by
+  /// the platform and the active model's readable types, then uploads whatever
+  /// was picked. With a single available source (e.g. desktop Files only) the
+  /// picker opens directly.
+  Future<void> _attach(BuildContext context) async {
     final chat = widget.chat;
     if (chat.isStreaming || chat.isUploadingAttachment) return;
 
     final capabilities = _activeCapabilities();
-
-    final PickedAttachment? picked;
-    try {
-      picked = await widget.picker.pick(
-        allowedExtensions: capabilities == null
-            ? null
-            : allowedExtensionsForCapabilities(capabilities),
-      );
-    } catch (e) {
-      chat.reportError('Could not open the file picker: $e');
+    final sources = _availableSources(capabilities);
+    if (sources.isEmpty) return;
+    if (sources.length == 1) {
+      await _pickFrom(sources.single, capabilities);
       return;
     }
-    if (picked == null || !mounted) return;
 
-    await chat.uploadAttachment(picked, capabilities: capabilities);
+    showDropdown(
+      context: context,
+      builder: (context) => DropdownMenu(
+        children: [
+          for (final source in sources)
+            MenuButton(
+              leading: Icon(_sourceIcon(source), size: 16),
+              onPressed: (context) => _pickFrom(source, capabilities),
+              child: Text(_sourceLabel(source)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// The attachment sources to offer: the platform's sources minus any the
+  /// active model cannot read. Camera/Gallery produce images, so they are
+  /// hidden for a model without the image modality; Files always remains.
+  List<AttachmentSource> _availableSources(
+    Set<ModelInputModality>? capabilities,
+  ) {
+    final canReadImages =
+        capabilities == null || capabilities.contains(ModelInputModality.image);
+    return [
+      for (final source in AttachmentSources.available())
+        if (source == AttachmentSource.files || canReadImages) source,
+    ];
+  }
+
+  static IconData _sourceIcon(AttachmentSource source) => switch (source) {
+    AttachmentSource.camera => LucideIcons.camera,
+    AttachmentSource.gallery => LucideIcons.image,
+    AttachmentSource.files => LucideIcons.paperclip,
+  };
+
+  static String _sourceLabel(AttachmentSource source) => switch (source) {
+    AttachmentSource.camera => 'Camera',
+    AttachmentSource.gallery => 'Gallery',
+    AttachmentSource.files => 'Files',
+  };
+
+  Future<void> _pickFrom(
+    AttachmentSource source,
+    Set<ModelInputModality>? capabilities,
+  ) async {
+    final chat = widget.chat;
+    final List<PickedAttachment> picked;
+    try {
+      picked = switch (source) {
+        AttachmentSource.camera => [?await widget.picker.pickFromCamera()],
+        AttachmentSource.gallery => await widget.picker.pickFromGallery(),
+        AttachmentSource.files => await widget.picker.pickFiles(
+          allowedExtensions: capabilities == null
+              ? null
+              : allowedExtensionsForCapabilities(capabilities),
+        ),
+      };
+    } catch (e) {
+      chat.reportError('Could not open the picker: $e');
+      return;
+    }
+    if (picked.isEmpty || !mounted) return;
+
+    await chat.uploadAttachments(picked, capabilities: capabilities);
   }
 
   /// Fetches an attachment's bytes (authenticated) and hands them to the
@@ -255,7 +447,15 @@ class _ChatScreenState extends State<ChatScreen> {
           loadingProgressIndeterminate: chat.isStreaming,
           headers: [
             AppBar(
-              title: Text(active?.title ?? 'New chat'),
+              // A long title must never wrap: shadcn's AppBar uses
+              // `IntrinsicHeight`, so an N-line title stretches the whole bar to
+              // N lines tall (and, at ~0 remaining width, wraps one character
+              // per line). One ellipsized line keeps the bar a single row.
+              title: Text(
+                active?.title ?? 'New chat',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
               subtitle: active == null
                   ? const Text('Ask Procul anything').muted.small
                   : null,
@@ -268,44 +468,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ]
                   : const [],
-              trailing: [
-                if (widget.catalog != null)
-                  _ModelPicker(
-                    key: const Key('model-picker'),
-                    chat: chat,
-                    catalog: widget.catalog!,
-                    compact: widget.compactModelPicker,
-                  ),
-                if (active != null && chat.activeUsage.hasTokens)
-                  _UsageChip(usage: chat.activeUsage),
-                IconAction(
-                  icon: LucideIcons.refreshCw,
-                  label: 'Refresh',
-                  onPressed: chat.refreshAll,
-                ),
-                if (active != null)
-                  if (widget.compactActions)
-                    IconAction(
-                      key: const Key('chat-options'),
-                      icon: LucideIcons.ellipsis,
-                      label: 'Chat options',
-                      onPressed: () => _showChatMenu(active),
-                    )
-                  else ...[
-                    IconAction(
-                      icon: LucideIcons.squarePen,
-                      label: 'Rename chat',
-                      onPressed: () =>
-                          renameConversationDialog(context, chat, active),
-                    ),
-                    IconAction(
-                      icon: LucideIcons.trash2,
-                      label: 'Delete chat',
-                      onPressed: () =>
-                          confirmDeleteConversation(context, chat, active),
-                    ),
-                  ],
-              ],
+              trailing: _trailing(chat, active),
             ),
             const Divider(),
           ],
@@ -313,6 +476,9 @@ class _ChatScreenState extends State<ChatScreen> {
             children: [
               Expanded(
                 child: RefreshTrigger(
+                  // The list is reversed, so the pull happens at the *bottom*
+                  // (the newest end) — refreshing without scrolling to the top.
+                  reverse: true,
                   // A pull must not clobber a live stream, so disable it mid-turn.
                   onRefresh: chat.isStreaming
                       ? null
@@ -352,31 +518,124 @@ class _ChatScreenState extends State<ChatScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final side = centeredSidePadding(constraints.maxWidth);
-        return ListView.builder(
-          controller: _scrollController,
-          padding: EdgeInsets.fromLTRB(16 + side, 20, 16 + side, 12),
-          itemCount: chat.messages.length,
-          itemBuilder: (context, index) {
-            final message = chat.messages[index];
-            final animate = !_seenMessages.contains(message);
-            if (animate) _seenMessages.add(message);
-            return _MessageEntrance(
-              animate: animate,
-              child: _MessageBubble(
-                message: message,
-                chat: chat,
-                isStreaming:
-                    chat.isStreaming && index == chat.messages.length - 1,
-                onSaveAttachment: _saveAttachment,
-                onEdit: _beginEdit,
+        final count = chat.messages.length;
+        // In a reversed list the "older" end is the visual top, so the
+        // loading-older row is the *last* item.
+        final showOlder = chat.isLoadingOlder;
+        return Stack(
+          children: [
+            ListView.builder(
+              controller: _scrollController,
+              reverse: true,
+              padding: EdgeInsets.fromLTRB(16 + side, 20, 16 + side, 12),
+              itemCount: count + (showOlder ? 1 : 0),
+              itemBuilder: (context, index) {
+                if (showOlder && index == count) {
+                  return const _LoadingOlderRow();
+                }
+                final message = chat.messages[count - 1 - index];
+                final animate = !_seenMessages.contains(message);
+                if (animate) _seenMessages.add(message);
+                return _MessageEntrance(
+                  animate: animate,
+                  child: _MessageBubble(
+                    message: message,
+                    chat: chat,
+                    // Reversed: index 0 is the newest message.
+                    isStreaming: chat.isStreaming && index == 0,
+                    onSaveAttachment: _saveAttachment,
+                    onEdit: _beginEdit,
+                  ),
+                );
+              },
+            ),
+            if (!_pinnedToBottom)
+              Positioned(
+                right: 16,
+                bottom: 12,
+                child: _JumpToLatest(onPressed: _jumpToLatest),
               ),
-            );
-          },
+          ],
         );
       },
     );
   }
 }
+
+/// A small pill shown while the user has scrolled away from the newest message;
+/// tapping it animates back down to the latest.
+class _JumpToLatest extends StatelessWidget {
+  const _JumpToLatest({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+    return Semantics(
+      button: true,
+      label: 'Jump to latest',
+      child: Tooltip(
+        tooltip: (context) =>
+            const TooltipContainer(child: Text('Jump to latest')),
+        child: Clickable(
+          onPressed: onPressed,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: colors.secondary,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: colors.border),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  LucideIcons.arrowDown,
+                  size: 15,
+                  color: colors.secondaryForeground,
+                ),
+                const Gap(6),
+                Text('Latest').small,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A small row shown at the top of the (reversed) list while an older page of
+/// history loads.
+class _LoadingOlderRow extends StatelessWidget {
+  const _LoadingOlderRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const Gap(8),
+          const Text('Loading older messages…').muted.small,
+        ],
+      ),
+    );
+  }
+}
+
+/// Whether the platform asks for reduced motion (accessibility). Non-essential
+/// animation should be skipped when this is true.
+bool _reduceMotion(BuildContext context) =>
+    MediaQuery.disableAnimationsOf(context) ||
+    MediaQuery.accessibleNavigationOf(context);
 
 /// Fades a message in and lifts it a few pixels, once.
 class _MessageEntrance extends StatefulWidget {
@@ -415,6 +674,7 @@ class _MessageEntranceState extends State<_MessageEntrance>
 
   @override
   Widget build(BuildContext context) {
+    if (_reduceMotion(context)) return widget.child;
     return AnimatedBuilder(
       animation: _curve,
       builder: (context, child) => Opacity(
@@ -518,8 +778,6 @@ class _MessageBubble extends StatefulWidget {
 }
 
 class _MessageBubbleState extends State<_MessageBubble> {
-  bool _hovered = false;
-
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
@@ -536,7 +794,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
       decoration: BoxDecoration(
         color: isUser ? colors.primary : colors.card,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: isUser ? null : Border.all(color: colors.border),
       ),
       child: Column(
@@ -567,58 +825,160 @@ class _MessageBubbleState extends State<_MessageBubble> {
       ),
     );
 
-    // The edit affordance is a user-message action, revealed on hover (the same
-    // pattern as the conversation tile's options) and hidden mid-turn.
-    final canEdit = isUser && !widget.isStreaming && !chat.isEditing;
+    // The user-message actions (`…`: Edit / Copy) are always reachable — not
+    // hover-only — so editing works on touch. They are disabled mid-turn and
+    // while already editing.
+    final canAct = isUser && !widget.isStreaming && !chat.isEditing;
 
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: isUser
-              ? MainAxisAlignment.end
-              : MainAxisAlignment.start,
-          children: [
-            if (!isUser) ...[
-              _Avatar(
-                icon: LucideIcons.sparkles,
-                background: colors.primary,
-                foreground: colors.primaryForeground,
-              ),
-              const Gap(10),
-            ],
-            if (isUser && canEdit && _hovered) ...[
-              IconAction(
-                key: const Key('edit-message'),
-                icon: LucideIcons.squarePen,
-                label: 'Edit message',
-                size: 16,
-                onPressed: () => widget.onEdit(message),
-              ),
-              const Gap(6),
-            ],
-            Flexible(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 680),
-                child: bubble,
-              ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: isUser
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+            _AssistantAvatar(
+              chat: chat,
+              message: message,
+              color: colors.primary,
+              foreground: colors.primaryForeground,
             ),
-            if (isUser) ...[
-              const Gap(10),
-              _Avatar(
-                icon: LucideIcons.user,
-                background: colors.secondary,
-                foreground: colors.secondaryForeground,
-              ),
-            ],
+            const Gap(10),
           ],
+          if (isUser) ...[
+            IconAction(
+              key: const Key('message-options'),
+              icon: LucideIcons.ellipsis,
+              label: 'Message options',
+              size: 16,
+              onPressed: canAct ? () => _showMessageMenu(context) : null,
+            ),
+            const Gap(6),
+          ],
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 680),
+              child: bubble,
+            ),
+          ),
+          if (isUser) ...[
+            const Gap(10),
+            _Avatar(
+              icon: LucideIcons.user,
+              background: colors.secondary,
+              foreground: colors.secondaryForeground,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// The user-message `…` menu: Edit (enters the composer edit mode) and Copy.
+  void _showMessageMenu(BuildContext context) {
+    showDropdown(
+      context: context,
+      builder: (context) => DropdownMenu(
+        children: [
+          MenuButton(
+            leading: const Icon(LucideIcons.squarePen, size: 16),
+            onPressed: (context) => widget.onEdit(widget.message),
+            child: const Text('Edit'),
+          ),
+          MenuButton(
+            leading: const Icon(LucideIcons.copy, size: 16),
+            onPressed: (context) =>
+                Clipboard.setData(ClipboardData(text: widget.message.text)),
+            child: const Text('Copy'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The assistant's avatar, tappable to reveal that response's model, time and
+/// token usage (a live turn's values; "—" once unknown, e.g. for history before
+/// the backend stores per-message metadata).
+class _AssistantAvatar extends StatelessWidget {
+  const _AssistantAvatar({
+    required this.chat,
+    required this.message,
+    required this.color,
+    required this.foreground,
+  });
+
+  final ChatController chat;
+  final ChatMessage message;
+  final Color color;
+  final Color foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      key: const Key('response-details'),
+      button: true,
+      label: 'Response details',
+      child: Tooltip(
+        tooltip: (context) =>
+            const TooltipContainer(child: Text('Response details')),
+        child: Clickable(
+          onPressed: () => _showDetails(context),
+          disableHoverEffect: true,
+          child: _Avatar(
+            icon: LucideIcons.sparkles,
+            background: color,
+            foreground: foreground,
+          ),
         ),
       ),
     );
   }
+
+  void _showDetails(BuildContext context) {
+    final usage = message.usage;
+    final created = message.createdAt;
+    showDropdown(
+      context: context,
+      builder: (context) => DropdownMenu(
+        children: [
+          MenuLabel(
+            trailing: Text(message.model ?? '—'),
+            child: const Text('Model'),
+          ),
+          MenuLabel(
+            trailing: Text(
+              created == null
+                  ? '—'
+                  : '${_formatDateTime(created)}  ·  '
+                        '${relativeTime(created)}',
+            ),
+            child: const Text('Time'),
+          ),
+          const MenuDivider(),
+          _UsageChip.usageLabel('Input', usage?.inputTokens ?? 0),
+          _UsageChip.usageLabel('Output', usage?.outputTokens ?? 0),
+          _UsageChip.usageLabel('Cached', usage?.cachedInputTokens ?? 0),
+          const MenuDivider(),
+          _UsageChip.usageLabel(
+            'Total',
+            usage?.totalTokens ?? 0,
+            emphasized: true,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A compact absolute timestamp for the response-details popover.
+String _formatDateTime(DateTime value) {
+  final local = value.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${local.year}-${two(local.month)}-${two(local.day)} '
+      '${two(local.hour)}:${two(local.minute)}';
 }
 
 /// The attachments of one message: image thumbnails and file chips. Tapping a
@@ -761,6 +1121,12 @@ class _AttachmentImage extends StatelessWidget {
       future: chat.loadAttachmentBytes(attachment.id),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
+          // A 404 means the backend's retention window purged the bytes (the
+          // metadata is kept). Say so instead of showing a broken image.
+          final error = snapshot.error;
+          if (error is ChatApiException && error.statusCode == 404) {
+            return _ExpiredAttachmentChip(attachment: attachment);
+          }
           return _AttachmentChip(attachment: attachment, onTap: onTap);
         }
 
@@ -805,6 +1171,48 @@ class _AttachmentImage extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// A chip for an attachment whose bytes the backend has purged (its retention
+/// window elapsed). The metadata is kept, so history still shows what was there
+/// — just not the file itself.
+class _ExpiredAttachmentChip extends StatelessWidget {
+  const _ExpiredAttachmentChip({required this.attachment});
+
+  final Attachment attachment;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ColorScheme.of(context);
+    return Semantics(
+      label: 'File expired: ${attachment.fileName}',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: colors.muted,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(LucideIcons.fileX, size: 14, color: colors.mutedForeground),
+            const Gap(8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 170),
+              child: Text(
+                attachment.fileName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ).small,
+            ),
+            const Gap(6),
+            const Text('no longer stored').muted.xSmall,
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1053,18 +1461,18 @@ class _UsageChip extends StatelessWidget {
       context: context,
       builder: (context) => DropdownMenu(
         children: [
-          _usageLabel('Input', usage.inputTokens),
-          _usageLabel('Output', usage.outputTokens),
-          _usageLabel('Cached', usage.cachedInputTokens),
+          usageLabel('Input', usage.inputTokens),
+          usageLabel('Output', usage.outputTokens),
+          usageLabel('Cached', usage.cachedInputTokens),
           const MenuDivider(),
-          _usageLabel('Total', usage.totalTokens, emphasized: true),
+          usageLabel('Total', usage.totalTokens, emphasized: true),
         ],
       ),
     );
   }
 
   /// A read-only labelled token count for the usage popover.
-  static MenuLabel _usageLabel(
+  static MenuLabel usageLabel(
     String label,
     int value, {
     bool emphasized = false,
@@ -1124,7 +1532,7 @@ class _ShimmerTextState extends State<_ShimmerText>
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.active) {
+    if (!widget.active || _reduceMotion(context)) {
       return widget.child;
     }
 
@@ -1185,6 +1593,22 @@ class _ThinkingDotsState extends State<_ThinkingDots>
   @override
   Widget build(BuildContext context) {
     final color = ColorScheme.of(context).mutedForeground;
+    if (_reduceMotion(context)) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < 3; i++)
+            Padding(
+              padding: EdgeInsets.only(right: i == 2 ? 0 : 4),
+              child: Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+            ),
+        ],
+      );
+    }
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, _) => Row(
@@ -1328,7 +1752,7 @@ class _Composer extends StatelessWidget {
   final FocusNode focusNode;
   final ChatController chat;
   final VoidCallback onSubmit;
-  final VoidCallback onAttach;
+  final ValueChanged<BuildContext> onAttach;
   final VoidCallback onCancelEdit;
 
   @override
@@ -1397,10 +1821,12 @@ class _Composer extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                IconAction(
-                  icon: LucideIcons.paperclip,
-                  label: 'Attach file',
-                  onPressed: canAttach ? onAttach : null,
+                Builder(
+                  builder: (context) => IconAction(
+                    icon: LucideIcons.paperclip,
+                    label: 'Attach file',
+                    onPressed: canAttach ? () => onAttach(context) : null,
+                  ),
                 ),
                 const Gap(4),
                 Expanded(
@@ -1431,10 +1857,23 @@ class _Composer extends StatelessWidget {
                   child: Semantics(
                     button: true,
                     label: isEditing ? 'Save changes' : 'Send message',
-                    child: PrimaryButton(
-                      density: ButtonDensity.icon,
-                      onPressed: enabled ? onSubmit : null,
-                      child: const Icon(LucideIcons.sendHorizontal),
+                    child: AnimatedScale(
+                      scale: enabled ? 1 : 0.9,
+                      duration: _reduceMotion(context)
+                          ? Duration.zero
+                          : const Duration(milliseconds: 150),
+                      curve: Curves.easeOut,
+                      child: AnimatedOpacity(
+                        opacity: enabled ? 1 : 0.5,
+                        duration: _reduceMotion(context)
+                            ? Duration.zero
+                            : const Duration(milliseconds: 150),
+                        child: PrimaryButton(
+                          density: ButtonDensity.icon,
+                          onPressed: enabled ? onSubmit : null,
+                          child: const Icon(LucideIcons.sendHorizontal),
+                        ),
+                      ),
                     ),
                   ),
                 ),

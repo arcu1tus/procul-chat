@@ -37,7 +37,11 @@ password, keeps the returned session token in secure storage, and can save and s
 - **HTTP:** `package:http` (manual SSE parsing; no SSE package) + `http_parser` (the `MediaType`
   for multipart uploads).
 - **Files:** [`file_picker`](https://pub.dev/packages/file_picker) (`^13.1.0`) — the composer's
-  attach picker and tap-to-save, behind the `AttachmentPicker` seam.
+  file picker and tap-to-save, behind the `AttachmentPicker` seam.
+  [`image_picker`](https://pub.dev/packages/image_picker) (`^1.2.4`) — the native camera and
+  photo-library/gallery sources, behind the same seam.
+- **App icon:** `flutter_launcher_icons` (dev) generates every platform's icons from
+  `assets/icon/icon.png`; see [`../docs/flutter-builds.md`](../docs/flutter-builds.md).
 - **Persistence:** `package:shared_preferences` — server profiles (without tokens), the active
   server id, the active conversation id and settings.
 - **Secure storage:** `package:flutter_secure_storage` — per-profile session tokens only.
@@ -60,7 +64,8 @@ frontend/
                                   #   ChatModel/ModelCapabilities/ModelHealth + modality/status enums
       time_format.dart            # shared relativeTime() (sidebar + Models health rows)
       attachments.dart            # Attachment DTO + size/MIME/`attachmentProblem` helpers +
-                                  #   AttachmentPicker abstraction (FilePickerAttachmentPicker)
+                                  #   AttachmentSource/AttachmentSources + AttachmentPicker
+                                  #   (camera/gallery via image_picker, files via file_picker)
       mcp_status.dart             # McpServerStatus: read-only MCP server status DTO
       mcp_status_controller.dart  # McpStatusController: MCP status for the Settings section
       model_catalog_controller.dart # ModelCatalogController: configured models + default + health
@@ -89,15 +94,18 @@ frontend/
       app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData, teal + Inter)
                                   #   + ShadcnMaterialBridge (flutter/material theme for markdown)
       home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow);
-                                  #   owns the ModelCatalogController; overlays UsageScreen/ModelsScreen
-      conversation_sidebar.dart   # conversation list, new chat, usage + models + settings footer
+                                  #   owns the ModelCatalogController; overlays UsageScreen/ModelsScreen;
+                                  #   lifecycle/periodic sync (WidgetsBindingObserver)
+      conversation_sidebar.dart   # conversation list, new chat, usage/models/settings tab row
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
       settings_dialog.dart        # settings dialog (theme selector + server management)
-      chat_screen.dart            # chat pane: header (+ model picker + usage chip), message list,
-                                  #   composer; streaming shimmer over assistant Markdown
+      chat_screen.dart            # chat pane: header (+ model picker + usage chip, or a single
+                                  #   overflow on narrow bars), reversed message list with
+                                  #   infinite scroll + bottom pull-to-refresh, per-response
+                                  #   popover, composer; streaming shimmer over assistant Markdown
       widgets/
         skeleton.dart             # Shimmer + Skeleton loading placeholders
-        icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label
+        icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label + busy spinner
         model_badges.dart         # CapabilityBadge(s) + ModelHealthDot (shared by picker & Models)
         content_width.dart        # kContentMaxWidth + centeredSidePadding (wide-screen measure)
   test/                           # controller, API, auth, settings, and widget tests
@@ -191,7 +199,7 @@ data: {"value":{"message":"received","type":"acknowledge"}}
 data: {"value":{"callId":"…","name":"get_current_time","arguments":"{\"utcOffsetMinutes\":120}","type":"toolCall"}}
 data: {"value":{"callId":"…","result":"2026-10-11T15:38:44+02:00","error":null,"type":"toolResult"}}
 data: {"value":{"content":"Hello","type":"token"}}
-data: {"value":{"inputTokens":10,"outputTokens":5,"cachedInputTokens":2,"totalTokens":17,"type":"usage"}}
+data: {"value":{"inputTokens":10,"outputTokens":5,"cachedInputTokens":2,"totalTokens":17,"model":"openai/gpt-4o-mini","type":"usage"}}
 data: {"value":{"error":"…","type":"error"}}
 data: {"value":{"type":"done"}}
 data: {"value":{"conversationId":"…","title":"France's capital","type":"title"}}
@@ -246,10 +254,11 @@ are editable. A hard failure triggers a resync (see below).
   `editingMessageId` and seeds `pendingAttachments` from the message; `cancelEdit()` clears both;
   `editMessage(text)` drops the local tail (`removeRange(index + 1, …)`), rewrites the message in
   place, inserts a fresh assistant bubble, and streams the reply. Only user messages are
-  editable, and the hover-revealed Edit `IconAction` on a user bubble (mirroring the conversation
-  tile's hover pattern) enters the mode; the composer shows an "Editing message" banner with a
-  Cancel action and relabels its send button "Save changes". Edit state resets on `newChat()`,
-  `openConversation`, and delete.
+  editable, and a persistent `…` `IconAction` on every user bubble opens an **Edit / Copy**
+  menu (Edit enters the mode; Copy puts the text on the clipboard) — reachable on touch, not
+  hover-only, and disabled mid-turn or while already editing. The composer shows an "Editing
+  message" banner with a Cancel action and relabels its send button "Save changes". Edit state
+  resets on `newChat()`, `openConversation`, and delete.
 - **A hard turn failure resyncs.** When `send`/`editMessage` throws (e.g. the connection drops),
   the controller sets `error` and calls `reloadActiveConversation()` so the buffer matches the
   server rather than leaving a local-only user message.
@@ -269,7 +278,7 @@ are editable. A hard failure triggers a resync (see below).
   window at 366), plus `isLoading`/`error`. `UsageScreen` shows lifetime cards, a `fl_chart`
   bar chart with a Total/Input/Output metric toggle, a per-model breakdown list, and
   pull-to-refresh via `RefreshTrigger` **plus** an explicit `IconAction`. It is opened from the
-  sidebar footer's **Usage** button beside Settings; `HomeShell` overlays it on top of the
+  sidebar's **Usage** tab; `HomeShell` overlays it on top of the
   still-mounted chat so the chat's scroll position and buffer survive.
 - **The model catalog is one controller owned by the shell.** `ModelCatalogController` (mirrors
   `McpStatusController`) holds `models`, `defaultModel` (derived from the `isDefault` entry),
@@ -289,15 +298,15 @@ are editable. A hard failure triggers a resync (see below).
 - **The app-bar model picker** (`_ModelPicker` in `chat_screen.dart`) shows the active model's
   name (or slug), is **hidden when only one model is configured**, is **disabled while streaming**,
   and opens a `showDropdown`/`DropdownMenu` whose rows carry a health dot, capability badges and a
-  check on the active model. On narrow screens `HomeShell` passes `compactModelPicker: true`, which
-  collapses it to a single `IconAction` (the `showMenuButton` pattern).
+  check on the active model. On a narrow app bar the whole trailing collapses to one overflow
+  `IconAction` (`compactActions`), whose menu holds Refresh, a **Model** submenu, the usage
+  breakdown, Rename and Delete.
 - **The Models screen is a read-only catalog with on-demand checks.** `ModelsScreen` renders each
   model's name/description/capability badges/a `Default` pill and a health row (status dot, latency,
   last checked/used, last error), with a per-model **Check** and a **Check all**, plus refresh via
   `RefreshTrigger` + `IconAction`; loading shimmer / empty / error match `UsageScreen`. Health is
   advisory — an unhealthy model stays selectable. It is overlaid on the still-mounted chat like
-  Usage, from the sidebar footer's **Models** entry (three compact `_FooterButton`s: Usage, Models,
-  Settings).
+  Usage, from the sidebar's **Models** tab.
 - **Assistant text shimmers while streaming.** `_ShimmerText` (in `chat_screen.dart`) wraps the
   `GptMarkdown` in a `ShaderMask` (`BlendMode.srcIn`) with a sliding `LinearGradient`, active
   only while the reply streams. It owns its own `AnimationController`, so per-token rebuilds do
@@ -327,16 +336,20 @@ are editable. A hard failure triggers a resync (see below).
   (`defaultTargetPlatform` is Android/iOS), where it would be meaningless.
 - **Attachments are picked, uploaded, and queued in `ChatController`.** `ChatScreen` owns an
   `AttachmentPicker` (`FilePickerAttachmentPicker` by default, injected in tests) and a paperclip
-  `IconAction`. The picker is **restricted to the active model's readable types**:
+  `IconAction` that opens a **Camera / Gallery / Files** source menu (`AttachmentSources`). The
+  picker is **restricted to the active model's readable types**:
   `_activeCapabilities()` looks the model up in the shared catalog via `chat.activeModel`, then
   `allowedExtensionsForCapabilities` produces the allow-list (`text/*` always; video never, since
   no model can receive it). A post-pick `attachmentProblem` check (in `attachments.dart`, mirroring
-  the backend rule) is the fallback if the platform ignores the filter. `ChatController.uploadAttachment`
-  then POSTs it — passing the active model so the **backend re-validates at upload** — and appends
-  the result to `pendingAttachments` (removable chips; disabled while streaming or mid-upload).
+  the backend rule) is the fallback if the platform ignores the filter. `ChatController.uploadAttachments`
+  (or `uploadAttachment` for one) then POSTs each — passing the active model so the **backend
+  re-validates at upload** — and appends the result to `pendingAttachments` (removable chips;
+  disabled while streaming or mid-upload); a multi-select keeps going when one file fails.
   `ChatController.send` snapshots the pending ids into the request and attaches the metadata to the
   user bubble; the queue clears on send, `newChat()`, and switching chats. `pendingAttachments` is
-  *not* persisted: a failed turn leaves the uploads orphaned server-side.
+  *not* persisted: a failed turn leaves the uploads orphaned server-side. When a fetch 404s
+  (retention purged the bytes) the image falls back to a **"no longer stored"** chip
+  (`_ExpiredAttachmentChip`), not a generic file chip.
 - **Attachment bytes are fetched through `ChatApi`, then cached.** `ChatController.loadAttachmentBytes`
   does an authenticated `GET /v1/attachments/{id}` and memoizes the **`Future`** (not just the
   bytes) in `_attachmentBytes`, so a rebuild never resets an `Image`'s `FutureBuilder` back to its
@@ -355,25 +368,31 @@ are editable. A hard failure triggers a resync (see below).
 - **Motion is subtle and one-shot** (120–220 ms, `easeOut`): new messages fade + rise once
   (tracked per `ChatMessage` in `ChatScreen`, and suppressed for a whole history load), the
   narrow-screen scrim + panel are driven by one `AnimationController`, and conversation
-  tiles/tool rows use `AnimatedContainer` / `AnimatedSwitcher`.
+  tiles/tool rows use `AnimatedContainer` / `AnimatedSwitcher`. Non-essential motion is skipped
+  when the platform asks for reduced motion (`MediaQuery.disableAnimationsOf` /
+  `accessibleNavigationOf`) — the entrance fade, the streaming shimmer, the thinking dots, the
+  send-button scale, and the sidebar slide all respect it.
 - **Icon-only buttons go through `IconAction`** (`widgets/icon_action.dart`) so every one has
-  a tooltip and an accessible label.
+  a tooltip and an accessible label. `IconAction(busy: true)` swaps the icon for a small spinner
+  (used by the refresh buttons).
 - **Wide screens cap the content column.** `widgets/content_width.dart` exposes
   `kContentMaxWidth` (900) and `centeredSidePadding(width)`; the chat list and the
   Usage/Models screens add that as horizontal padding, so on an ultra-wide monitor content
-  does not pin to the edges. On narrow app bars buttons collapse: the model picker to an icon
-  (`compactModelPicker`) and rename/delete into an overflow menu (`compactActions`).
-- **Relative timestamps are shared.** `time_format.dart`'s `relativeTime` backs both the
-  conversation sidebar and the Models health rows (previously two private copies).
+  does not pin to the edges. On narrow app bars the whole trailing collapses into one overflow
+  menu (`compactActions`).
+- **Relative timestamps are shared.** `time_format.dart`'s `relativeTime` backs the
+  conversation sidebar, the Models health rows, and the per-response popover.
 - **Pull-to-refresh uses `RefreshTrigger` plus an explicit button.** The conversation list
   (`conversation_sidebar.dart`), the chat pane (`chat_screen.dart`) and the MCP section
   (`settings_dialog.dart`) each wrap their scrollable in `RefreshTrigger`; every one also has a
   refresh `IconAction`, because mouse-overscroll on desktop is less discoverable than a drag.
   Empty states are scrollable (`AlwaysScrollableScrollPhysics`) so the gesture still works with
-  no content. The chat pane's `onRefresh` is **null while `chat.isStreaming`** so a pull cannot
+  no content. The chat pane is `RefreshTrigger(reverse: true)` (pull at the **bottom**, matching
+  its reversed list) and its `onRefresh` is **null while `chat.isStreaming`** so a pull cannot
   clobber a live stream. `ChatController.refreshAll()` (list + active history) backs the chat
   app-bar button; `reloadActiveConversation()` is a no-op when none is active or a reply is
-  streaming.
+  streaming. `ChatController.loadOlderMessages()` (keyset `afterMessageId`, prepended) backs
+  infinite scroll up.
 - **MCP status is read-only and secret-free.** `McpStatusController` (owned by the Settings
   dialog's `_McpSection`) fetches `GET /v1/mcp/servers` through `ChatApi`, so it inherits the
   bearer header and the `401 → logout` path. `showSettingsDialog` takes the `ChatApi`
@@ -439,9 +458,58 @@ surfaces the error rather than downgrading the token to plaintext.
   Popping from a `MenuButton.onPressed` pops the *app's* route (leaving a blank screen). Let the
   button's `autoClose` (the default) dismiss the menu and just run the action, as the model
   picker does.
-- **Three sidebar footer buttons are tight.** They are `_FooterButton`s (compact-density, small
-  `GhostButton`s with a leading icon and an ellipsizing label) inside `Expanded`s in a 300 px row;
-  a widget test asserts `takeException()` is null so an overflow fails CI.
+- **The sidebar's section tabs are tight.** Usage / Models / Settings are
+  `SelectedButton`s (compact-density, small) inside `Expanded`s in a 300 px row
+  above the chat list, with a `Divider` below them. A widget test asserts
+  `takeException()` is null so an overflow fails CI.
+- **A `showDropdown` menu needs a `DrawerOverlay` ancestor.** On mobile
+  platforms shadcn presents a menu as a bottom sheet, which routes through
+  `openRawDrawer` and asserts a `DrawerOverlay` in the tree. The chat pane gets
+  one from its `Scaffold`, but the sidebar (and the whole shell on narrow
+  screens) does not, so `HomeShell` wraps everything in a root `DrawerOverlay`.
+  When a widget calls `showDropdown` from a `State`'s own `context` (which sits
+  *above* its `Scaffold`), that lookup misses — so `ChatScreen` threads the
+  trigger's own `BuildContext` (via a `Builder`) into `_attach` /
+  `_showChatMenu`. Without this the conversation-tile `…` and the app-bar `…`
+  silently do nothing on Android/iOS.
+- **The chat list is reversed.** `_body` uses `ListView.builder(reverse: true)`
+  and indexes `messages[length - 1 - index]`, so offset `0` is the newest message
+  (the bottom) and pinning during streaming is a `jumpTo(0)`. Scrolling toward
+  the top (older) is near `maxScrollExtent`; the `_trackPin` listener triggers
+  `ChatController.loadOlderMessages()` there. The pane is wrapped in
+  `RefreshTrigger(reverse: true, …)` so a pull at the **bottom** refreshes
+  without scrolling to the top. (`RefreshTrigger.reverse` and `ListView.reverse`
+  are two separate coordinate flips; the combination is intentional here.)
+- **The app bar collapses to one `…` on narrow screens.** The shadcn `AppBar`
+  lays `leading`/`trailing` out at their intrinsic width and gives the title the
+  remaining space; with a long title and several actions the trailing overflows
+  (painting over the title) and the title's width can collapse to ~0, wrapping
+  one character per line — and because the bar uses `IntrinsicHeight`, an N-line
+  title makes an N-line-tall bar. `ChatScreen` therefore caps the title with
+  `maxLines: 1, overflow: ellipsis` and, when `compactActions` is set (or the
+  pane is under 720 px), collapses every action into a single overflow menu
+  (`_showChatMenu`: Refresh / Model submenu / Token usage / Rename / Delete).
+- **Attachment sources are camera / gallery / files.** The paperclip opens a
+  source menu built from `AttachmentSources.available()` (Camera only where
+  `ImagePickerPlatform.instance.supportsImageSource(camera)` — hidden on
+  desktop/web) intersected with the active model's capabilities (Camera/Gallery
+  need the image modality; Files is always offered). The `AttachmentPicker` seam
+  has `pickFromCamera` / `pickFromGallery` / `pickFiles`; `image_picker` backs
+  camera + gallery, `file_picker` backs files. `ChatController.uploadAttachments`
+  uploads a multi-select, keeping going when one file fails. Tests pin camera
+  availability via `AttachmentSources.debugCameraSupported` (the platform channel
+  is absent under `flutter_test`).
+- **A response carries its own model / time / tokens.** `ChatMessage.model` /
+  `ChatMessage.usage` are stamped live from the `usage` event (and `createdAt` at
+  stream time); tapping an assistant avatar (`Key('response-details')`) opens a
+  popover with Model / Time / Input / Output / Cached / Total, degrading to "—"
+  when unknown. History carries `model`/`usage` once the backend stores
+  per-message metadata (PLAN 2 §B4). The `usage` SSE event may also carry `model`.
+- **The shell syncs across devices.** `HomeShell` is a `WidgetsBindingObserver`:
+  a `resumed` lifecycle event (and a 25 s periodic timer) calls
+  `ChatController.refreshAll()`, skipped while a reply streams or an edit is in
+  progress. A `409` from rename / set-model / edit resyncs and surfaces
+  "This chat changed on another device — refreshed." (`ChatApiException.statusCode`).
 - **Backend input modalities include `pdf`, which maps to the `file` badge.** `ModelInputModality`
   has `text/image/file/audio/video`; `modelInputModalityFromValue` folds `pdf`/`file` into `file`
   and falls back to `text`. `ModelHealthStatus`/`modelInputModalityFromValue` also fall back, so a

@@ -190,12 +190,20 @@ class ChatApi {
   ///
   /// The backend returns messages newest-first (keyset paginated). This returns
   /// them oldest-first so they can be appended to the UI buffer directly.
+  ///
+  /// [afterMessageId] is the backend's keyset cursor: it returns the page of
+  /// messages *older* than that id (`CreatedAt < cursor`), so passing the oldest
+  /// loaded id fetches the previous page (infinite scroll up).
   Future<List<ChatMessage>> fetchMessages(
     String conversationId, {
     int limit = 100,
+    String? afterMessageId,
   }) async {
     final response = await _client.get(
-      _uri('/v1/conversations/$conversationId/messages', {'limit': '$limit'}),
+      _uri('/v1/conversations/$conversationId/messages', {
+        'limit': '$limit',
+        'afterMessageId': ?afterMessageId,
+      }),
       headers: _authHeaders,
     );
 
@@ -495,6 +503,7 @@ class ChatApi {
           cachedInputTokens: (value['cachedInputTokens'] as num?)?.toInt() ?? 0,
           totalTokens: (value['totalTokens'] as num?)?.toInt() ?? 0,
         ),
+        model: value['model'] as String?,
       ),
       'done' => const DoneEvent(),
       _ => null,

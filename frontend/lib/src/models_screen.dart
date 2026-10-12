@@ -43,10 +43,16 @@ class _ModelsScreenState extends State<ModelsScreen> {
               catalog.isLoading || catalog.isCheckingAll,
           headers: [
             AppBar(
-              title: const Text('Models'),
-              subtitle: const Text('Models configured on this server')
-                  .muted
-                  .small,
+              title: const Text(
+                'Models',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: const Text(
+                'Models configured on this server',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ).muted.small,
               leading: widget.showMenuButton
                   ? [
                       IconAction(

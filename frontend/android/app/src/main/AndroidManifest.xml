@@ -4,7 +4,7 @@
          hot reload), but release builds only inherit what is declared here. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="procul_chat_flutter"
+        android:label="Procul Chat"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
