@@ -415,6 +415,8 @@ are editable. A hard failure triggers a resync (see below).
   sidebar, Usage, Models and Connect. `HomeShell` cross-fades the main pane between
   Chat/Usage/Models/Settings with a shared-axis fade+slide, and menus/dialogs go through
   `showAppMenu`/`showAppDialog` (`widgets/app_dialog.dart`) so their open/close cadence matches.
+  Usage stats count up once, the Usage chart animates metric/range swaps, and a not-yet-observed
+  `ModelHealthDot` pulses a few times (a bounded animation) — all skipped under reduced motion.
 - **Icon-only buttons go through `IconAction`** (`widgets/icon_action.dart`) so every one has
   a tooltip and an accessible label. `IconAction(busy: true)` swaps the icon for a small spinner
   (used by the refresh buttons).
