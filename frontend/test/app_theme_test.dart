@@ -10,6 +10,29 @@ import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 /// back to Material's default light scheme, so in dark mode its code blocks turn
 /// near-white and its headings and rules use the wrong greys.
 void main() {
+  testWidgets('the material compatibility layer preserves the app typography', (
+    tester,
+  ) async {
+    late TextStyle seen;
+    await tester.pumpWidget(
+      MaterialShadcnApp(
+        theme: proculLightTheme,
+        builder: (context, child) => ShadcnMaterialBridge(child: child!),
+        home: Builder(
+          builder: (context) {
+            seen = DefaultTextStyle.of(context).style;
+            return const Text('A readable conversation');
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(seen.fontFamily, proculLightTheme.typography.sans.fontFamily);
+    expect(seen.fontSize, 16);
+    expect(seen.color, proculLightTheme.colorScheme.foreground);
+    expect(tester.takeException(), isNull);
+  });
+
   test('both themes use the magenta accent', () {
     expect(proculLightTheme.colorScheme.primary, const Color(0xFFA832A0));
     expect(proculDarkTheme.colorScheme.primary, const Color(0xFFA832A0));

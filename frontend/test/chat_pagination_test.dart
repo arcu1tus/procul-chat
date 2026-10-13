@@ -272,67 +272,81 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('the jump-to-latest pill returns to the newest message', (
-    tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 600));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+  for (final reduced in [false, true]) {
+    testWidgets(
+      'the jump-to-latest pill returns to the newest message (reduced: $reduced)',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1000, 600));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
 
-    final client = MockClient((request) async {
-      final path = request.url.path;
-      if (path == '/v1/conversations' && request.method == 'GET') {
-        return http.Response(
-          jsonEncode({
-            'conversations': [_conversation],
-          }),
-          200,
+        final client = MockClient((request) async {
+          final path = request.url.path;
+          if (path == '/v1/conversations' && request.method == 'GET') {
+            return http.Response(
+              jsonEncode({
+                'conversations': [_conversation],
+              }),
+              200,
+            );
+          }
+          if (path == '/v1/conversations/c1/messages') {
+            // A short (40 < 100) page, so paging is exhausted and scrolling does
+            // not kick off another fetch.
+            return http.Response(
+              jsonEncode({'messages': _page('m', 40, 1)}),
+              200,
+            );
+          }
+          if (path.startsWith('/v1/usage/')) return http.Response('{}', 200);
+          return http.Response('{}', 200);
+        });
+        final chat = _chat(client);
+        await chat.init();
+        expect(chat.messages, hasLength(40));
+        expect(chat.hasMoreHistory, isFalse);
+
+        await tester.pumpWidget(
+          MaterialShadcnApp(
+            theme: proculLightTheme,
+            darkTheme: proculDarkTheme,
+            themeMode: ThemeMode.light,
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(disableAnimations: reduced),
+              child: child!,
+            ),
+            home: ChatScreen(chat: chat),
+          ),
         );
-      }
-      if (path == '/v1/conversations/c1/messages') {
-        // A short (40 < 100) page, so paging is exhausted and scrolling does
-        // not kick off another fetch.
-        return http.Response(jsonEncode({'messages': _page('m', 40, 1)}), 200);
-      }
-      if (path.startsWith('/v1/usage/')) return http.Response('{}', 200);
-      return http.Response('{}', 200);
-    });
-    final chat = _chat(client);
-    await chat.init();
-    expect(chat.messages, hasLength(40));
-    expect(chat.hasMoreHistory, isFalse);
+        await tester.pumpAndSettle();
 
-    await tester.pumpWidget(
-      MaterialShadcnApp(
-        theme: proculLightTheme,
-        darkTheme: proculDarkTheme,
-        themeMode: ThemeMode.light,
-        home: ChatScreen(chat: chat),
-      ),
+        // Pinned to the bottom (the newest message) at first: no pill.
+        expect(find.text('Latest'), findsNothing);
+
+        final scrollable = find
+            .descendant(
+              of: find.byType(ChatScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+        final position = tester.state<ScrollableState>(scrollable).position;
+        position.jumpTo(position.maxScrollExtent);
+        await tester.pump();
+
+        // Scrolled away → the pill appears.
+        expect(find.text('Latest'), findsOneWidget);
+
+        await tester.tap(find.text('Latest'));
+        if (reduced) {
+          await tester.pump();
+          expect(position.pixels, 0);
+        }
+        await tester.pumpAndSettle();
+
+        // Back at offset 0 (the newest end), so the pill is gone again.
+        expect(position.pixels, lessThan(140));
+        expect(find.text('Latest'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
     );
-    await tester.pumpAndSettle();
-
-    // Pinned to the bottom (the newest message) at first: no pill.
-    expect(find.text('Latest'), findsNothing);
-
-    final scrollable = find
-        .descendant(
-          of: find.byType(ChatScreen),
-          matching: find.byType(Scrollable),
-        )
-        .first;
-    final position = tester.state<ScrollableState>(scrollable).position;
-    position.jumpTo(position.maxScrollExtent);
-    await tester.pump();
-
-    // Scrolled away → the pill appears.
-    expect(find.text('Latest'), findsOneWidget);
-
-    await tester.tap(find.text('Latest'));
-    await tester.pumpAndSettle();
-
-    // Back at offset 0 (the newest end), so the pill is gone again.
-    expect(position.pixels, lessThan(140));
-    expect(find.text('Latest'), findsNothing);
-    expect(tester.takeException(), isNull);
-  });
+  }
 }

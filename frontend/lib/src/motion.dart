@@ -21,6 +21,8 @@ abstract final class Motion {
   /// A larger, more deliberate move: a full-pane cross-fade, a hero reveal.
   static const Duration slow = Duration(milliseconds: 400);
 
+  static const Duration welcome = Duration(milliseconds: 600);
+
   /// The standard ease-out curve for entrances and state changes.
   static const Curve curve = Curves.easeOutCubic;
 

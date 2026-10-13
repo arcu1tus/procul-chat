@@ -28,9 +28,8 @@ password, keeps the returned session token in secure storage, and can save and s
   is built on shadcn components and the **New York** theme, not Material.
   `shadcn_flutter_material` provides a Material interop layer (see gotchas).
 - **Fonts:** [`google_fonts`](https://pub.dev/packages/google_fonts) (`^9.0.0`) — **Inter**
-  is the UI face everywhere, **Coiny** is used for a couple of display accents (the sidebar
-  "Procul" wordmark and the empty-state heading). Inline code / code blocks stay on the
-  bundled **GeistMono**.
+  is the UI face everywhere, including the restrained wordmark and welcome heading.
+  Inline code / code blocks stay on the bundled **GeistMono**.
 - **Markdown:** `gpt_markdown` (`^1.3.4`) renders assistant replies (code, lists, bold).
 - **Charts:** [`fl_chart`](https://pub.dev/packages/fl_chart) (`^1.2.0`) — the Usage
   dashboard's daily bar chart (the only charting dependency).
@@ -40,6 +39,10 @@ password, keeps the returned session token in secure storage, and can save and s
   file picker and tap-to-save, behind the `AttachmentPicker` seam.
   [`image_picker`](https://pub.dev/packages/image_picker) (`^1.2.4`) — the native camera and
   photo-library/gallery sources, behind the same seam.
+- **In-app logo:** `flutter_svg` renders `assets/brand/procul-logo.svg` through
+  `ProculLogo`. Its geometry comes from `../assets/procul-logo.svg`; only the black strokes
+  change to `currentColor` for theme contrast, and editor metadata is removed. Preserve the
+  original geometry and magenta fills when updating it.
 - **App icon:** `flutter_launcher_icons` (dev) generates every platform's icons from
   `assets/icon/icon.png`; see [`../docs/flutter-builds.md`](../docs/flutter-builds.md).
 - **Persistence:** `package:shared_preferences` — server profiles (without tokens), the active
@@ -55,6 +58,7 @@ The backend lives in `../backend` and its contract is documented in `../backend/
 ```
 frontend/
   lib/
+    previews.dart                 # isolated light/dark/phone welcome previews
     main.dart                     # entrypoint: preloads settings + auth + fonts; routes between
                                   #   ConnectScreen (signed out) and the keyed AuthenticatedShell
     src/
@@ -92,15 +96,15 @@ frontend/
       models_screen.dart          # Models catalog: name/description/capability badges/health,
                                   #   per-model + check-all probes, refresh
       settings_screen.dart        # settings pane (theme selector + server management + MCP)
-      motion.dart                 # Motion tokens (fast/medium/slow, curves) + reduceMotion gate
+      motion.dart                 # Motion tokens (fast/medium/slow/welcome, curves) + reduceMotion gate
       responsive.dart             # Breakpoint enum + expanded/app-bar thresholds
       app_theme.dart              # proculLightTheme / proculDarkTheme (shadcn ThemeData,
-                                  #   magenta accent #a832a0 + Inter)
+                                  #   warm paper/charcoal surfaces, magenta #a832a0 + Inter)
                                   #   + ShadcnMaterialBridge (flutter/material theme for markdown)
       home_shell.dart             # responsive shell: sidebar (wide) / slide-in panel (narrow);
                                   #   owns the ModelCatalogController; cross-fades Chat/Usage/
                                   #   Models/Settings panes; lifecycle/periodic sync
-      conversation_sidebar.dart   # conversation list, new chat, chat-like usage/models/settings pills
+      conversation_sidebar.dart   # brand, new chat, title search, chats, utility navigation footer
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
       chat_screen.dart            # chat pane: header (+ model picker + usage chip, or a single
                                   #   overflow on narrow bars), reversed message list with
@@ -112,7 +116,9 @@ frontend/
         icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label + busy spinner
         model_badges.dart         # CapabilityBadge(s) + ModelHealthDot (shared by picker & Models)
         content_width.dart        # kContentMaxWidth + centeredSidePadding (wide-screen measure)
-        composer.dart             # Composer: the rounded capsule (attach / field / send)
+        chat_welcome.dart         # welcome heading + responsive interactive starter cards
+        procul_logo.dart          # shared theme-aware rendering of the original SVG logo
+        composer.dart             # centered writing surface, field above attach/send toolbar
         attachment_views.dart     # AttachmentList / AttachmentChip / AttachmentImage / ... views
         streaming_text.dart       # StreamingText: pacer + frontier bloom + caret reveal
         pressable.dart            # PressableScale: press feedback for buttons
@@ -311,6 +317,8 @@ are editable. A hard failure triggers a resync (see below).
   `setModel(slug)` optimistically updates the conversation and `PUT`s `.../model`, rolling back on
   failure (like `renameConversation`); with no conversation it just records the pending choice.
   `send` passes the model only on `createConversation`.
+- **Header actions are restrained.** Desktop keeps the model picker, usage chip, refresh, and
+  one chat-options menu; rename and delete live in that menu. Narrow headers use one overflow.
 - **The app-bar model picker** (`_ModelPicker` in `chat_screen.dart`) shows the active model's
   name (or slug), is **hidden when only one model is configured**, is **disabled while streaming**,
   and opens a `showDropdown`/`DropdownMenu` whose rows carry a health dot, capability badges and a
@@ -343,18 +351,20 @@ are editable. A hard failure triggers a resync (see below).
   (user: a `…` menu with Edit/Copy, key `message-options`; assistant: Copy, key `message-copy`),
   revealed on hover on pointer platforms and always available on touch. The row is always in the
   tree and hit-testable, so `tester.tap` reaches it however it is revealed.
-- **The composer is a capsule.** `Composer` (`widgets/composer.dart`) is one rounded surface
-  (attach · text field · circular primary send) with a subtle border/shadow and an accent focus
-  ring that animates in while focused; the edit banner and the pending-attachment strip animate in
-  above it (`_AnimatedSlot`). The field's **own** `FocusOutline` must not draw, or the focused
+- **The composer is a centered writing surface.** `Composer` (`widgets/composer.dart`) is
+  one rounded surface (two-line-minimum text field above the attach / circular send toolbar)
+  with a subtle border/shadow and an accent focus ring that animates in while focused. The edit
+  banner and pending-attachment strip animate in above it (`_AnimatedSlot`). The field's **own** `FocusOutline` must not draw, or the focused
   composer shows a double outline. shadcn's `TextField` *always* wraps itself in its own
   `FocusOutline` and passes its own `FocusOutlineTheme`, so an ambient
   `ComponentTheme<FocusOutlineTheme>` is **ignored** — instead the field is wrapped in a `Theme`
   whose `colorScheme.ring` is transparent (the `FocusOutline` default border is the scheme's
   `ring`), leaving only the capsule's outer ring.
-  The a11y labels (`Send message` / `Attach file`) and the single
-  `TextField`/`PrimaryButton` are preserved (tests rely on them). Composer keyboard semantics are
-  unchanged (see the keyboard bullet below).
+  `Key('message-input')` identifies the composer field because the sidebar now also has a
+  `TextField` for search. Send is disabled for blank text and while attachments upload; the
+  keyboard submission path applies the same upload guard. The hint switches to reply progress
+  during streaming and explains destructive editing while editing. The a11y labels
+  (`Send message` / `Attach file`) and keyboard semantics are preserved.
 - **Errors are user-facing strings** on `ChatController.error`; `ChatScreen` shows them as a
   shadcn toast. Streaming failures still leave the partial reply in the bubble.
 - **Settings are a `ChangeNotifier` + `shared_preferences`.** `SettingsController.themeMode`
@@ -362,6 +372,13 @@ are editable. A hard failure triggers a resync (see below).
   `isDark` is a derived getter. `main.dart` rebuilds `MaterialShadcnApp` from it, and
   **awaits `settings.init()` (plus `GoogleFonts.pendingFonts`) before `runApp`** so the
   stored theme and fonts are in place on the first frame (no startup flash).
+- **Starter cards prepare a draft.** `ChatWelcome` offers Write / Understand / Explore / Plan;
+  tapping one fills and focuses the composer with an unfinished prompt for the user to complete.
+  It never sends automatically. The cards stack on phones and use two columns on wider panes.
+- **Chat search is local.** `ConversationSidebar` filters already-loaded titles using trimmed,
+  case-insensitive text; search never changes the active chat or mutates controller state.
+  Clearing search restores the list, and New chat clears the filter. The three utility
+  destinations sit below chats. Conversation options remain visible for touch and keyboard use.
 - **Branding is one accent and one display name.** Both themes seed `primary`/`ring` from
   `_accent` (`#a832a0`) so the UI, markdown, the web PWA colors and the Android splash agree;
   the **display name is "Procul Chat"** everywhere (Android `android:label`, iOS
@@ -419,8 +436,8 @@ are editable. A hard failure triggers a resync (see below).
   bubble awaiting its first token shows pulsing dots (`_ThinkingDots`).
 - **One motion language, centrally gated.** `motion.dart` holds the tokens
   (`Motion.fast` ~150 ms, `Motion.medium` ~240 ms, `Motion.slow` ~400 ms, plus
-  `curve`/`emphasized`/`pop` and `stagger`) and the single `reduceMotion(context)` gate. Every
-  animation draws its duration/curve from here, and every non-essential one is skipped (or
+  `welcome` ~600 ms, `curve`/`emphasized`/`pop` and `stagger`) and the single
+  `reduceMotion(context)` gate. Every animation draws its duration/curve from here, and every non-essential one is skipped (or
   collapsed to `Duration.zero` via `motionDuration`) under reduced motion. `PressableScale`
   (`widgets/pressable.dart`) gives buttons a consistent press dip — `IconAction` applies it
   centrally; `Stagger` (`widgets/stagger.dart`) is the one shared list/card entrance used by the
@@ -514,7 +531,9 @@ surfaces the error rather than downgrading the token to plaintext.
   `main.dart` therefore wraps the app in `ShadcnMaterialBridge` (in `app_theme.dart`), which
   derives a `package:flutter/material.dart` `ThemeData` from the ambient shadcn theme. Keep
   that bridge when changing the theme wiring; don't assume `MaterialShadcnApp` alone covers
-  `gpt_markdown`.
+  `gpt_markdown`. The bridge also restores `DefaultTextStyle` from the shadcn typography
+  below `MaterialLayer`, which otherwise replaces the app's Inter face with Roboto. Keep this
+  restoration and wrap layout tests with the same bridge as production.
 - **`google_fonts` 9.x is built on `material_ui`, like shadcn.** `GoogleFonts.inter()` returns
   a `material_ui` `TextStyle` — the *same* type shadcn's `Typography.sans` wants (both are
   `package:flutter/widgets.dart` `TextStyle`), so the shadcn typography override is direct.
@@ -541,14 +560,10 @@ surfaces the error rather than downgrading the token to plaintext.
   Popping from a `MenuButton.onPressed` pops the *app's* route (leaving a blank screen). Let the
   button's `autoClose` (the default) dismiss the menu and just run the action, as the model
   picker does.
-- **The sidebar's section entries read as chat-like pills.** Usage / Models /
-  Settings are stacked vertically above the chat list as `_SidebarTile`s — the
-  same rounded, hoverable, accent-on-select surface as the conversation tiles
-  (both use the shared `_SidebarTile`, which owns the hover/slide/selection
-  styling), with a `Divider` below them and "New chat" plus the chats beneath.
-  A widget test asserts they stack above "New chat" and that `takeException()`
-  is null so an overflow fails CI. The selected entry follows `HomeShell`'s
-  single `SidebarSection` field (which now includes `settings`).
+- **The sidebar puts conversations first.** Brand, New chat, search, and the chat list sit
+  above a divided Usage / Models / Settings footer. Both conversations and utilities share
+  `_SidebarTile`; only the visible main destination reads as selected. Tests guard this order,
+  filtering, touch-accessible options, and absence of layout overflow.
 - **A `showDropdown` menu needs a `DrawerOverlay` ancestor.** On mobile
   platforms shadcn presents a menu as a bottom sheet, which routes through
   `openRawDrawer` and asserts a `DrawerOverlay` in the tree. The chat pane gets

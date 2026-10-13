@@ -143,7 +143,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final chatTrigger = find.ancestor(
-      of: find.text('Send a message to start a new chat.'),
+      of: find.text('What can we work on?'),
       matching: find.byType(ChatRefreshTrigger),
     );
     expect(chatTrigger, findsOneWidget);
@@ -183,7 +183,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final chatTrigger = find.ancestor(
-      of: find.text('Send a message to start a new chat.'),
+      of: find.text('What can we work on?'),
       matching: find.byType(ChatRefreshTrigger),
     );
     expect(tester.widget<ChatRefreshTrigger>(chatTrigger).onRefresh, isNotNull);

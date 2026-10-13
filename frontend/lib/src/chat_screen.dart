@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'attachments.dart';
@@ -17,6 +16,8 @@ import 'time_format.dart';
 import 'widgets/app_dialog.dart';
 import 'widgets/attachment_views.dart';
 import 'widgets/composer.dart';
+import 'widgets/chat_welcome.dart';
+import 'widgets/procul_logo.dart';
 import 'widgets/chat_refresh_trigger.dart';
 import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
@@ -140,10 +141,14 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Scrolls back to the newest message (the jump-to-latest pill).
   void _jumpToLatest() {
     if (!_scrollController.hasClients) return;
+    if (reduceMotion(context)) {
+      _scrollController.jumpTo(0);
+      return;
+    }
     _scrollController.animateTo(
       0,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
+      duration: motionDuration(context, Motion.medium),
+      curve: Motion.curve,
     );
   }
 
@@ -165,7 +170,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _inputController.text;
     if (text.trim().isEmpty ||
         widget.chat.isStreaming ||
-        widget.chat.isLoadingMessages) {
+        widget.chat.isLoadingMessages ||
+        widget.chat.isUploadingAttachment) {
       return;
     }
     final editing = widget.chat.isEditing;
@@ -235,18 +241,15 @@ class _ChatScreenState extends State<ChatScreen> {
         busy: chat.isRefreshing,
         onPressed: chat.refreshAll,
       ),
-      if (active != null) ...[
-        IconAction(
-          icon: LucideIcons.squarePen,
-          label: 'Rename chat',
-          onPressed: () => renameConversationDialog(context, chat, active),
+      if (active != null)
+        Builder(
+          builder: (context) => IconAction(
+            key: const Key('chat-options'),
+            icon: LucideIcons.ellipsis,
+            label: 'Chat options',
+            onPressed: () => _showChatMenu(context, chat, active),
+          ),
         ),
-        IconAction(
-          icon: LucideIcons.trash2,
-          label: 'Delete chat',
-          onPressed: () => confirmDeleteConversation(context, chat, active),
-        ),
-      ],
     ];
   }
 
@@ -337,6 +340,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _inputController.selection = TextSelection.collapsed(
       offset: suggestion.length,
     );
+    _inputFocus.requestFocus();
   }
 
   /// The active model's input modalities, or null when unknown (catalog not
@@ -466,7 +470,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 overflow: TextOverflow.ellipsis,
               ),
               subtitle: active == null
-                  ? const Text('Ask Procul anything').muted.small
+                  ? const Text('A fresh start').muted.small
                   : null,
               leading: widget.showMenuButton
                   ? [
@@ -513,7 +517,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     if (chat.messages.isEmpty) {
-      return _EmptyState(onSuggestion: _useSuggestion);
+      return ChatWelcome(onSuggestion: _useSuggestion);
     }
 
     if (_suppressEntrance) {
@@ -653,12 +657,12 @@ class _MessageEntranceState extends State<_MessageEntrance>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 200),
+    duration: Motion.medium,
     value: widget.animate ? 0 : 1,
   );
   late final Animation<double> _curve = CurvedAnimation(
     parent: _controller,
-    curve: Curves.easeOut,
+    curve: Motion.curve,
   );
 
   @override
@@ -686,145 +690,6 @@ class _MessageEntranceState extends State<_MessageEntrance>
         ),
       ),
       child: widget.child,
-    );
-  }
-}
-
-class _EmptyState extends StatefulWidget {
-  const _EmptyState({required this.onSuggestion});
-
-  final ValueChanged<String> onSuggestion;
-
-  static const _suggestions = [
-    'Explain a tricky concept in simple terms',
-    'Help me debug this code',
-    'Brainstorm ideas with me',
-    'Plan my week',
-  ];
-
-  @override
-  State<_EmptyState> createState() => _EmptyStateState();
-}
-
-class _EmptyStateState extends State<_EmptyState>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 520),
-  )..forward();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-    final reduce = reduceMotion(context);
-
-    return Center(
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(32),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _rise(
-                reduce: reduce,
-                index: 0,
-                child: Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    color: colors.primary.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Icon(
-                    LucideIcons.sparkles,
-                    size: 24,
-                    color: colors.primary,
-                  ),
-                ),
-              ),
-              const Gap(16),
-              // The display heading is clamped so 2.0× text scaling cannot
-              // overflow the empty state.
-              MediaQuery.withClampedTextScaling(
-                maxScaleFactor: 1.4,
-                child: Text(
-                  'Ask Procul anything',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.coiny(
-                    fontSize: 34,
-                    height: 1.1,
-                    color: colors.foreground,
-                  ),
-                ),
-              ),
-              const Gap(10),
-              Container(
-                width: 30,
-                height: 3,
-                decoration: BoxDecoration(
-                  color: colors.primary,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const Gap(12),
-              const Text(
-                'Send a message to start a new chat.',
-                textAlign: TextAlign.center,
-              ).muted,
-              const Gap(22),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                alignment: WrapAlignment.center,
-                children: [
-                  for (final (index, suggestion)
-                      in _EmptyState._suggestions.indexed)
-                    _rise(
-                      reduce: reduce,
-                      index: index + 1,
-                      child: OutlineButton(
-                        onPressed: () => widget.onSuggestion(suggestion),
-                        child: Text(suggestion).small,
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Fades a child in and lifts it, staggered by [index]. Inert under reduced
-  /// motion.
-  Widget _rise({
-    required bool reduce,
-    required int index,
-    required Widget child,
-  }) {
-    if (reduce) return child;
-    final animation = CurvedAnimation(
-      parent: _controller,
-      curve: Interval((0.08 * index).clamp(0.0, 0.6), 1, curve: Motion.curve),
-    );
-    return AnimatedBuilder(
-      animation: animation,
-      builder: (context, _) => Opacity(
-        opacity: animation.value,
-        child: Transform.translate(
-          offset: Offset(0, 8 * (1 - animation.value)),
-          child: child,
-        ),
-      ),
     );
   }
 }
@@ -1074,7 +939,6 @@ class _AssistantAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
     return Semantics(
       key: const Key('response-details'),
       button: true,
@@ -1085,13 +949,7 @@ class _AssistantAvatar extends StatelessWidget {
         child: Clickable(
           onPressed: () => _showDetails(context),
           disableHoverEffect: true,
-          child: _Avatar(
-            icon: LucideIcons.sparkles,
-            size: 26,
-            radius: 9,
-            background: colors.primary.withValues(alpha: 0.14),
-            foreground: colors.primary,
-          ),
+          child: const ProculLogo(size: 30),
         ),
       ),
     );
@@ -1474,35 +1332,6 @@ class _ThinkingDotsState extends State<_ThinkingDots>
     final t = (_controller.value + index * 0.16) % 1.0;
     final triangle = 1 - (2 * (t - 0.5)).abs();
     return 0.35 + 0.65 * triangle;
-  }
-}
-
-class _Avatar extends StatelessWidget {
-  const _Avatar({
-    required this.icon,
-    required this.background,
-    required this.foreground,
-    this.size = 30,
-    this.radius = 15,
-  });
-
-  final IconData icon;
-  final Color background;
-  final Color foreground;
-  final double size;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(radius),
-      ),
-      child: Icon(icon, size: size * 0.55, color: foreground),
-    );
   }
 }
 

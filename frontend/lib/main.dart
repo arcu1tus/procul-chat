@@ -40,7 +40,7 @@ Future<void> _preload(SettingsController settings, AuthController auth) async {
   }
 
   try {
-    await GoogleFonts.pendingFonts([interTextStyle, GoogleFonts.coiny()]);
+    await GoogleFonts.pendingFonts([interTextStyle]);
   } catch (_) {
     // Fonts are cosmetic; the platform face is fine.
   }
