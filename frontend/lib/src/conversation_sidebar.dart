@@ -1,4 +1,3 @@
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'chat_controller.dart';
@@ -8,17 +7,18 @@ import 'motion.dart';
 import 'time_format.dart';
 import 'widgets/app_dialog.dart';
 import 'widgets/icon_action.dart';
+import 'widgets/procul_logo.dart';
 import 'widgets/skeleton.dart';
 
 /// Which of the sidebar's destinations is currently shown in the main pane, so
 /// its tab reads as selected.
 enum SidebarSection { chat, usage, models, settings }
 
-/// The conversation list: brand header, a stack of chat-like section entries
-/// (Usage / Models / Settings), a divider, "new chat", and the chats
-/// themselves. Shown persistently on wide screens and inside a drawer on narrow
-/// ones (where [onClose] dismisses it).
-class ConversationSidebar extends StatelessWidget {
+/// Brand, new chat, search, chats, and utility navigation.
+///
+/// Shown persistently on wide screens and inside a drawer on narrow ones
+/// (where [onClose] dismisses it).
+class ConversationSidebar extends StatefulWidget {
   const ConversationSidebar({
     super.key,
     required this.chat,
@@ -51,6 +51,19 @@ class ConversationSidebar extends StatelessWidget {
   final VoidCallback? onOpenChat;
 
   @override
+  State<ConversationSidebar> createState() => _ConversationSidebarState();
+}
+
+class _ConversationSidebarState extends State<ConversationSidebar> {
+  final _search = TextEditingController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
     // Use the raw view padding, not `MediaQuery.padding`: the narrow sidebar is
@@ -60,34 +73,30 @@ class ConversationSidebar extends StatelessWidget {
     final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
 
     return Container(
-      color: colors.background,
+      color: Color.alphaBlend(
+        colors.muted.withValues(alpha: 0.5),
+        colors.background,
+      ),
       child: SafeArea(
         right: false,
         // The bottom inset is added explicitly below (via `viewPadding`), so
         // don't let `SafeArea` add `padding.bottom` too.
         bottom: false,
         child: ListenableBuilder(
-          listenable: chat,
+          listenable: widget.chat,
           builder: (context, _) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _Header(
-                  onClose: onClose,
-                  onRefresh: chat.refreshConversations,
-                  isRefreshing: chat.isRefreshing,
+                  onClose: widget.onClose,
+                  onRefresh: widget.chat.refreshConversations,
+                  isRefreshing: widget.chat.isRefreshing,
                 ),
-                _SectionList(
-                  section: section,
-                  onOpenUsage: onOpenUsage,
-                  onOpenModels: onOpenModels,
-                  onOpenSettings: onOpenSettings,
-                ),
-                const Divider(),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                  child: PrimaryButton(
-                    onPressed: chat.isStreaming
+                  child: OutlineButton(
+                    onPressed: widget.chat.isStreaming
                         ? null
                         : () => _newChat(context),
                     child: const Row(
@@ -100,11 +109,50 @@ class ConversationSidebar extends StatelessWidget {
                     ),
                   ),
                 ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+                  child: TextField(
+                    key: const Key('chat-search'),
+                    controller: _search,
+                    placeholder: const Text('Search chats'),
+                    onChanged: (_) => setState(() {}),
+                    features: [
+                      const InputFeature.leading(
+                        Icon(LucideIcons.search, size: 15),
+                      ),
+                      if (_search.text.isNotEmpty)
+                        InputFeature.trailing(
+                          IconAction(
+                            icon: LucideIcons.x,
+                            size: 14,
+                            label: 'Clear search',
+                            onPressed: () => setState(_search.clear),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+                  child: const Text('Your chats').muted.xSmall,
+                ),
                 Expanded(
                   child: _ConversationList(
-                    chat: chat,
-                    onClose: onClose,
-                    onOpenChat: onOpenChat,
+                    query: _search.text,
+                    showSelection: widget.section == SidebarSection.chat,
+                    chat: widget.chat,
+                    onClose: widget.onClose,
+                    onOpenChat: widget.onOpenChat,
+                  ),
+                ),
+                const Divider(),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: _SectionList(
+                    section: widget.section,
+                    onOpenUsage: widget.onOpenUsage,
+                    onOpenModels: widget.onOpenModels,
+                    onOpenSettings: widget.onOpenSettings,
                   ),
                 ),
                 SizedBox(height: bottomInset),
@@ -117,17 +165,15 @@ class ConversationSidebar extends StatelessWidget {
   }
 
   Future<void> _newChat(BuildContext context) async {
-    await chat.newChat();
-    onOpenChat?.call();
-    onClose?.call();
+    setState(_search.clear);
+    await widget.chat.newChat();
+    if (!mounted) return;
+    widget.onOpenChat?.call();
+    widget.onClose?.call();
   }
 }
 
-/// The stack of section entries above the chat list: Usage / Models / Settings.
-/// They read exactly like the conversation tiles below (same rounded, hoverable,
-/// accent-on-select surface) so the sidebar is one uniform list; a `Divider`
-/// separates them from the chats. The entry whose overlay is currently shown
-/// reads as selected.
+/// Utility destinations sit below the conversations, with a shared selected state.
 class _SectionList extends StatelessWidget {
   const _SectionList({
     required this.section,
@@ -174,7 +220,7 @@ class _SectionList extends StatelessWidget {
 /// One row in the sidebar, styled like a conversation: a rounded surface that
 /// tints on hover and fills with the accent when selected, a leading icon, a
 /// single-line title (plus an optional muted subtitle) and an optional trailing
-/// action revealed on hover/selection. Shared by the section entries and the
+/// action that stays reachable on touch and keyboard. Shared by the entries and
 /// conversations so the whole column looks the same.
 class _SidebarTile extends StatefulWidget {
   const _SidebarTile({
@@ -204,7 +250,6 @@ class _SidebarTileState extends State<_SidebarTile> {
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
     final selected = widget.selected;
-    final showTrailing = _hovered || selected;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
@@ -269,7 +314,7 @@ class _SidebarTileState extends State<_SidebarTile> {
                     ],
                   ),
                 ),
-                if (showTrailing && widget.trailing != null) widget.trailing!,
+                if (widget.trailing != null) widget.trailing!,
               ],
             ),
           ),
@@ -290,29 +335,18 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 12, 8),
+      padding: const EdgeInsets.fromLTRB(18, 20, 12, 22),
       child: Row(
         children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: colors.primary,
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Icon(
-              LucideIcons.messagesSquare,
-              size: 17,
-              color: colors.primaryForeground,
-            ),
-          ),
+          const ProculLogo(size: 36),
           const Gap(10),
           Expanded(
             child: Text(
               'Procul',
-              style: GoogleFonts.coiny(
-                fontSize: 24,
-                height: 1,
+              style: TextStyle(
+                fontSize: 23,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.8,
                 color: colors.foreground,
               ),
             ),
@@ -339,9 +373,17 @@ class _Header extends StatelessWidget {
 }
 
 class _ConversationList extends StatelessWidget {
-  const _ConversationList({required this.chat, this.onClose, this.onOpenChat});
+  const _ConversationList({
+    required this.chat,
+    required this.query,
+    required this.showSelection,
+    this.onClose,
+    this.onOpenChat,
+  });
 
   final ChatController chat;
+  final String query;
+  final bool showSelection;
   final VoidCallback? onClose;
   final VoidCallback? onOpenChat;
 
@@ -361,7 +403,7 @@ class _ConversationList extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 64, 24, 24),
               child: const Text(
-                'No chats yet.\nSend a message to start one.',
+                'Your chats will live here.\nStart with a message.',
                 textAlign: TextAlign.center,
               ).muted.small,
             ),
@@ -370,16 +412,32 @@ class _ConversationList extends StatelessWidget {
       );
     }
 
+    final search = query.trim().toLowerCase();
+    final conversations = chat.conversations
+        .where(
+          (conversation) => conversation.title.toLowerCase().contains(search),
+        )
+        .toList();
+    if (conversations.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(24),
+        child: const Text('No matching chats.\nTry a different word.')
+            .muted
+            .small,
+      );
+    }
+
     return RefreshTrigger(
       onRefresh: chat.refreshConversations,
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-        itemCount: chat.conversations.length,
+        itemCount: conversations.length,
         itemBuilder: (context, index) {
-          final conversation = chat.conversations[index];
+          final conversation = conversations[index];
           return _ConversationTile(
             conversation: conversation,
-            selected: conversation.id == chat.activeConversationId,
+            selected:
+                showSelection && conversation.id == chat.activeConversationId,
             onSelect: () {
               chat.selectConversation(conversation.id);
               onOpenChat?.call();

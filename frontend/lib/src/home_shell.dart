@@ -34,8 +34,8 @@ class HomeShell extends StatefulWidget {
   final AttachmentPicker attachmentPicker;
 
   static const _sidebarBreakpoint = 840.0;
-  static const _sidebarWidth = 300.0;
-  static const _slideDuration = Duration(milliseconds: 200);
+  static const _sidebarWidth = 280.0;
+  static const _slideDuration = Motion.medium;
 
   /// Finger speed (logical px/s) past which a drag flings the drawer open or
   /// closed rather than settling on the halfway point.
@@ -55,7 +55,7 @@ class _HomeShellState extends State<HomeShell>
   );
   late final Animation<double> _eased = CurvedAnimation(
     parent: _controller,
-    curve: Curves.easeOut,
+    curve: Motion.curve,
   );
 
   /// Whether the drawer is mounted. It is kept mounted while the slide is

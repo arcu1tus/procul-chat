@@ -8,6 +8,7 @@ import '../motion.dart';
 import 'attachment_views.dart';
 import 'icon_action.dart';
 import 'pressable.dart';
+import 'content_width.dart';
 
 /// The chat composer: one rounded capsule holding the attach button, the text
 /// field and the circular send button, with the edit banner and attachment chips
@@ -49,91 +50,92 @@ class Composer extends StatelessWidget {
 
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _AnimatedSlot(
-              visible: isEditing,
-              child: Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    Icon(
-                      LucideIcons.squarePen,
-                      size: 14,
-                      color: colors.mutedForeground,
-                    ),
-                    const Gap(6),
-                    const Text('Editing message').muted.small,
-                    const Spacer(),
-                    IconAction(
-                      key: const Key('cancel-edit'),
-                      icon: LucideIcons.x,
-                      label: 'Cancel edit',
-                      size: 16,
-                      onPressed: onCancelEdit,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            _AnimatedSlot(
-              visible: pending.isNotEmpty || chat.isUploadingAttachment,
-              child: Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    for (final attachment in pending)
-                      AttachmentChip(
-                        attachment: attachment,
-                        chat: chat,
-                        thumbnail: true,
-                        onRemove: () =>
-                            chat.removePendingAttachment(attachment.id),
-                      ),
-                    if (chat.isUploadingAttachment) const UploadingChip(),
-                  ],
-                ),
-              ),
-            ),
-            _Capsule(
-              controller: controller,
-              focusNode: focusNode,
-              enabled: enabled,
-              canAttach: canAttach,
-              isEditing: isEditing,
-              onAttach: onAttach,
-              onSubmit: onSubmit,
-            ),
-            if (!isTouch) ...[
-              const Gap(6),
-              Padding(
-                padding: const EdgeInsets.only(left: 4),
-                child: Row(
-                  children: [
-                    const KeyboardDisplay(keys: [LogicalKeyboardKey.enter]),
-                    const Gap(6),
-                    const Text('send').muted.xSmall,
-                    const Gap(12),
-                    const KeyboardDisplay(
-                      keys: [
-                        LogicalKeyboardKey.shift,
-                        LogicalKeyboardKey.enter,
+      child: Center(
+        heightFactor: 1,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: kContentMaxWidth + 32),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _AnimatedSlot(
+                  visible: isEditing,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      children: [
+                        Icon(
+                          LucideIcons.squarePen,
+                          size: 14,
+                          color: colors.mutedForeground,
+                        ),
+                        const Gap(6),
+                        const Text('Editing message').muted.small,
+                        const Spacer(),
+                        IconAction(
+                          key: const Key('cancel-edit'),
+                          icon: LucideIcons.x,
+                          label: 'Cancel edit',
+                          size: 16,
+                          onPressed: onCancelEdit,
+                        ),
                       ],
                     ),
-                    const Gap(6),
-                    const Text('new line').muted.xSmall,
-                  ],
+                  ),
                 ),
-              ),
-            ],
-          ],
+                _AnimatedSlot(
+                  visible: pending.isNotEmpty || chat.isUploadingAttachment,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        for (final attachment in pending)
+                          AttachmentChip(
+                            attachment: attachment,
+                            chat: chat,
+                            thumbnail: true,
+                            onRemove: () =>
+                                chat.removePendingAttachment(attachment.id),
+                          ),
+                        if (chat.isUploadingAttachment) const UploadingChip(),
+                      ],
+                    ),
+                  ),
+                ),
+                _Capsule(
+                  controller: controller,
+                  focusNode: focusNode,
+                  enabled: enabled && !chat.isUploadingAttachment,
+                  canAttach: canAttach,
+                  isEditing: isEditing,
+                  onAttach: onAttach,
+                  onSubmit: onSubmit,
+                ),
+                const Gap(8),
+                Center(
+                  child: Text(
+                    chat.isStreaming
+                        ? 'Procul is replying…'
+                        : isEditing
+                        ? 'Saving replaces the replies after this message.'
+                        : isTouch
+                        ? 'Add photos or files with the paperclip.'
+                        : 'Enter to send · Shift + Enter for a new line',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colors.mutedForeground,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -174,7 +176,7 @@ class _AnimatedSlot extends StatelessWidget {
   }
 }
 
-/// The rounded input surface: attach · field · send.
+/// The writing surface, with a field above the attach/send toolbar.
 class _Capsule extends StatelessWidget {
   const _Capsule({
     required this.controller,
@@ -211,87 +213,91 @@ class _Capsule extends StatelessWidget {
     final theme = Theme.of(context);
 
     return ListenableBuilder(
-      listenable: focusNode,
+      listenable: Listenable.merge([focusNode, controller]),
       builder: (context, _) {
         final focused = focusNode.hasFocus;
         return AnimatedContainer(
-          duration: motionDuration(context, Motion.fast),
+          duration: motionDuration(context, Motion.medium),
           curve: Motion.curve,
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             color: colors.card,
             borderRadius: BorderRadius.circular(24),
             border: Border.all(
               color: focused
-                  ? colors.ring.withValues(alpha: 0.7)
+                  ? colors.ring.withValues(alpha: 0.55)
                   : colors.border,
               width: focused ? 1.5 : 1,
             ),
             boxShadow: [
               BoxShadow(
                 color: const Color(0xFF000000).withValues(alpha: 0.08),
-                blurRadius: 12,
+                blurRadius: focused ? 24 : 16,
                 offset: const Offset(0, 3),
               ),
             ],
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Builder(
-                builder: (context) => IconAction(
-                  icon: LucideIcons.paperclip,
-                  label: 'Attach file',
-                  onPressed: canAttach ? () => onAttach(context) : null,
-                ),
-              ),
-              const Gap(2),
-              Expanded(
-                child: CallbackShortcuts(
-                  bindings: {
-                    const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
-                    const SingleActivator(
-                      LogicalKeyboardKey.enter,
-                      shift: true,
-                    ): _insertNewline,
-                  },
-                  // The capsule already draws the accent focus ring. shadcn's
-                  // `TextField` *always* wraps itself in its own `FocusOutline`
-                  // (passing its own `FocusOutlineTheme`, so an ambient
-                  // `ComponentTheme` is ignored) and that outline's default
-                  // border is the scheme's `ring`. Blank the ring for the field
-                  // only, so just the capsule's outer ring shows.
-                  child: Theme(
-                    data: theme.copyWith(
-                      colorScheme: () => theme.colorScheme.copyWith(
-                        ring: () => const Color(0x00000000),
-                      ),
+              CallbackShortcuts(
+                bindings: {
+                  const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
+                  const SingleActivator(LogicalKeyboardKey.enter, shift: true):
+                      _insertNewline,
+                },
+                // The capsule already draws the accent focus ring. shadcn's
+                // `TextField` *always* wraps itself in its own `FocusOutline`
+                // (passing its own `FocusOutlineTheme`, so an ambient
+                // `ComponentTheme` is ignored) and that outline's default
+                // border is the scheme's `ring`. Blank the ring for the field
+                // only, so just the capsule's outer ring shows.
+                child: Theme(
+                  data: theme.copyWith(
+                    colorScheme: () => theme.colorScheme.copyWith(
+                      ring: () => const Color(0x00000000),
                     ),
-                    child: TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      minLines: 1,
-                      maxLines: 6,
-                      textInputAction: TextInputAction.send,
-                      filled: false,
-                      border: const Border(),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 8,
-                      ),
-                      placeholder: Text(
-                        isEditing ? 'Edit your message…' : 'Message Procul…',
-                      ),
-                      onSubmitted: (_) => onSubmit(),
+                  ),
+                  child: TextField(
+                    key: const Key('message-input'),
+                    controller: controller,
+                    focusNode: focusNode,
+                    minLines: 2,
+                    maxLines: 6,
+                    textInputAction: TextInputAction.send,
+                    filled: false,
+                    decoration: const BoxDecoration(),
+                    border: const Border(),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 8,
                     ),
+                    placeholder: Text(
+                      isEditing
+                          ? 'Edit your message…'
+                          : 'Ask, write, or think out loud…',
+                    ),
+                    onSubmitted: (_) => onSubmit(),
                   ),
                 ),
               ),
-              const Gap(6),
-              _SendButton(
-                enabled: enabled,
-                isEditing: isEditing,
-                onSubmit: onSubmit,
+              const Gap(4),
+              Row(
+                children: [
+                  Builder(
+                    builder: (context) => IconAction(
+                      icon: LucideIcons.paperclip,
+                      label: 'Attach file',
+                      onPressed: canAttach ? () => onAttach(context) : null,
+                    ),
+                  ),
+                  const Spacer(),
+                  _SendButton(
+                    enabled: enabled && controller.text.trim().isNotEmpty,
+                    isEditing: isEditing,
+                    onSubmit: onSubmit,
+                  ),
+                ],
               ),
             ],
           ),
@@ -324,17 +330,20 @@ class _SendButton extends StatelessWidget {
         child: AnimatedScale(
           scale: enabled ? 1 : 0.9,
           duration: motionDuration(context, Motion.fast),
-          curve: Motion.curve,
+          curve: Motion.pop,
           child: AnimatedOpacity(
             opacity: enabled ? 1 : 0.5,
             duration: motionDuration(context, Motion.fast),
+            curve: Motion.curve,
             child: PressableScale(
               enabled: enabled,
               child: PrimaryButton(
                 shape: ButtonShape.circle,
                 density: ButtonDensity.icon,
                 onPressed: enabled ? onSubmit : null,
-                child: const Icon(LucideIcons.sendHorizontal),
+                child: Icon(
+                  isEditing ? LucideIcons.check : LucideIcons.arrowUp,
+                ),
               ),
             ),
           ),

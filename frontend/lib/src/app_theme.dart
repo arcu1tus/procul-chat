@@ -4,11 +4,8 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Procul's shadcn themes.
 ///
-/// Both are built on the neutral "zinc" palette with a magenta accent
-/// (`#a832a0`), so the app reads as one cohesive design in either mode. Dark
-/// mode is the default (see [SettingsController]). The UI face is Inter;
-/// GeistMono (bundled by shadcn) stays on for inline code and code blocks, and
-/// Coiny is used for a couple of display accents (see `GoogleFonts.coiny`).
+/// Warm paper and charcoal surfaces with the logo's magenta accent.
+/// Inter is the UI face; GeistMono stays on for code. Dark mode is the default.
 const _accent = Color(0xFFA832A0);
 
 /// The UI face. Shared by the shadcn themes and the Material bridge so the
@@ -17,6 +14,15 @@ final interTextStyle = GoogleFonts.inter();
 
 final proculLightTheme = ThemeData(
   colorScheme: ColorSchemes.lightZinc.copyWith(
+    background: () => const Color(0xFFFAF9F6),
+    foreground: () => const Color(0xFF292826),
+    card: () => const Color(0xFFFFFFFF),
+    muted: () => const Color(0xFFF0EEEA),
+    mutedForeground: () => const Color(0xFF706D68),
+    secondary: () => const Color(0xFFF0EEEA),
+    accent: () => const Color(0xFFECE8E3),
+    border: () => const Color(0xFFE2DED8),
+    input: () => const Color(0xFFE2DED8),
     primary: () => _accent,
     primaryForeground: () => const Color(0xFFFFFFFF),
     ring: () => _accent,
@@ -27,6 +33,15 @@ final proculLightTheme = ThemeData(
 
 final proculDarkTheme = ThemeData(
   colorScheme: ColorSchemes.darkZinc.copyWith(
+    background: () => const Color(0xFF1B1B1D),
+    foreground: () => const Color(0xFFF3F1ED),
+    card: () => const Color(0xFF242426),
+    muted: () => const Color(0xFF242426),
+    mutedForeground: () => const Color(0xFFA5A29C),
+    secondary: () => const Color(0xFF2D2C2F),
+    accent: () => const Color(0xFF323035),
+    border: () => const Color(0xFF39373B),
+    input: () => const Color(0xFF39373B),
     primary: () => _accent,
     primaryForeground: () => const Color(0xFFFFFFFF),
     ring: () => _accent,
@@ -68,10 +83,21 @@ class ShadcnMaterialBridge extends StatelessWidget {
     );
     final materialTheme = base.copyWith(
       textTheme: base.textTheme.apply(
-        fontFamily: interTextStyle.fontFamily,
-        fontFamilyFallback: interTextStyle.fontFamilyFallback,
+        fontFamily: theme.typography.sans.fontFamily,
+        fontFamilyFallback: theme.typography.sans.fontFamilyFallback,
       ),
     );
-    return material.Theme(data: materialTheme, child: child);
+    return material.Theme(
+      data: materialTheme,
+      // MaterialLayer installs a Roboto DefaultTextStyle inside ShadcnApp.
+      // Restore the app's typography below that layer as well as theming Markdown.
+      child: DefaultTextStyle(
+        style: theme.typography.sans.copyWith(
+          fontSize: 16,
+          color: colors.foreground,
+        ),
+        child: child,
+      ),
+    );
   }
 }

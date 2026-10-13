@@ -175,7 +175,7 @@ void main() {
     await tester.tap(find.text('Llama'));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), 'Hi');
+    await tester.enterText(find.byKey(const Key('message-input')), 'Hi');
     await tester.testTextInput.receiveAction(TextInputAction.send);
     await tester.pumpAndSettle();
 

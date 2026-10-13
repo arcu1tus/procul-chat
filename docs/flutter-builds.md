@@ -40,6 +40,26 @@ Shift+Enter inserts a newline at the caret (or replaces the selected text). The 
 send action and the on-screen send button still submit. Refreshing after a streamed turn should
 show each message once, even when prompts and replies repeat identical text.
 
+The sidebar puts new chats and title search above the conversation list, with Usage, Models,
+and Settings at the bottom. Search filters loaded chat titles locally. Welcome cards fill and
+focus a draft for the user to finish; they do not send automatically. The centered composer
+keeps Send disabled for empty text and while attachments upload, including keyboard submission.
+Sign-in fields keep their labels visible and offer a password visibility toggle.
+
+The in-app logo is bundled at `frontend/assets/brand/procul-logo.svg`, derived from the original
+`assets/procul-logo.svg` with theme-aware strokes and the original magenta fills. Launcher icons
+still use the PNG described below. Both themes use Inter, with warm paper / charcoal surfaces.
+Motion uses eased transitions, staggered entrances, and small settling gestures, and respects
+both disabled animations and accessible navigation.
+
+For isolated welcome previews in light, dark, and phone layouts, run:
+
+```bash
+flutter widget-preview start
+```
+
+Preview definitions live in `frontend/lib/previews.dart`; no backend or sign-in is required.
+
 ---
 
 ## Android

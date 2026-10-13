@@ -3,6 +3,7 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'auth_controller.dart';
 import 'server_profile.dart';
 import 'widgets/app_dialog.dart';
+import 'widgets/icon_action.dart';
 
 /// The "add server" form: Name (optional), Base URL and Password, plus the
 /// Connect action and inline error / plain-HTTP warning.
@@ -48,6 +49,7 @@ class ServerFormState extends State<ServerForm> {
   final TextEditingController _password = TextEditingController();
 
   String? _localError;
+  bool _showPassword = false;
 
   @override
   void initState() {
@@ -110,21 +112,38 @@ class ServerFormState extends State<ServerForm> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
+            const Text('Server name (optional)').small.medium,
+            const Gap(6),
             TextField(
               controller: _name,
               placeholder: const Text('Name (optional)'),
             ),
-            const Gap(10),
+            const Gap(16),
+            const Text('Server address').small.medium,
+            const Gap(6),
             TextField(
               controller: _url,
               placeholder: const Text('Server URL'),
               autofocus: !widget.autofocusPassword,
             ),
-            const Gap(10),
+            const Gap(16),
+            const Text('Server password').small.medium,
+            const Gap(6),
             TextField(
               controller: _password,
               placeholder: const Text('Password'),
-              obscureText: true,
+              obscureText: !_showPassword,
+              features: [
+                InputFeature.trailing(
+                  IconAction(
+                    icon: _showPassword ? LucideIcons.eyeOff : LucideIcons.eye,
+                    size: 16,
+                    label: _showPassword ? 'Hide password' : 'Show password',
+                    onPressed: () =>
+                        setState(() => _showPassword = !_showPassword),
+                  ),
+                ),
+              ],
               autofocus: widget.autofocusPassword,
               onSubmitted: (_) => submit(),
             ),

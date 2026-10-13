@@ -28,7 +28,12 @@ class Stagger extends StatelessWidget {
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
       duration: Motion.medium + Motion.stagger(index),
-      curve: Motion.curve,
+      curve: Interval(
+        Motion.stagger(index).inMilliseconds /
+            (Motion.medium + Motion.stagger(index)).inMilliseconds,
+        1,
+        curve: Motion.curve,
+      ),
       child: child,
       builder: (context, value, child) => Opacity(
         opacity: value,

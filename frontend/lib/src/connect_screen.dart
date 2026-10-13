@@ -1,10 +1,10 @@
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'auth_controller.dart';
 import 'config.dart';
 import 'motion.dart';
 import 'widgets/stagger.dart';
+import 'widgets/procul_logo.dart';
 import 'server_form.dart';
 import 'server_profile.dart';
 
@@ -35,7 +35,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
     return Scaffold(
       child: Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(32),
+          padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 440),
             child: ListenableBuilder(
@@ -65,13 +65,25 @@ class _ConnectScreenState extends State<ConnectScreen> {
                       const Text('Or add another server').semiBold,
                     ] else
                       const Text('Connect to your server').semiBold,
-                    const Gap(10),
-                    ServerForm(
-                      key: ValueKey(_selected?.id ?? 'new'),
-                      auth: widget.auth,
-                      initialBaseUrl: _selected?.baseUrl ?? apiBaseUrl,
-                      initialName: _selected?.name,
-                      autofocusPassword: _selected != null,
+                    const Gap(8),
+                    const Text(
+                      'Use the address and password from the person who set up your server.',
+                    ).muted.small,
+                    const Gap(20),
+                    Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: colors.card,
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(color: colors.border),
+                      ),
+                      child: ServerForm(
+                        key: ValueKey(_selected?.id ?? 'new'),
+                        auth: widget.auth,
+                        initialBaseUrl: _selected?.baseUrl ?? apiBaseUrl,
+                        initialName: _selected?.name,
+                        autofocusPassword: _selected != null,
+                      ),
                     ),
                   ],
                 );
@@ -93,29 +105,19 @@ class _Brand extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Container(
-          width: 46,
-          height: 46,
-          decoration: BoxDecoration(
-            color: colors.primary,
-            borderRadius: BorderRadius.circular(13),
-          ),
-          child: Icon(
-            LucideIcons.messagesSquare,
-            size: 25,
-            color: colors.primaryForeground,
-          ),
-        ),
-        const Gap(14),
+        const ProculLogo(size: 64),
+        const Gap(18),
         Text(
           'Procul',
-          style: GoogleFonts.coiny(
-            fontSize: 40,
-            height: 1,
+          style: TextStyle(
+            fontSize: 36,
+            fontWeight: FontWeight.w600,
+            letterSpacing: -1.2,
+            height: 1.1,
             color: colors.foreground,
           ),
         ),
-        const Gap(8),
+        const Gap(10),
         const Text('Sign in to start chatting.').muted.small,
       ],
     );

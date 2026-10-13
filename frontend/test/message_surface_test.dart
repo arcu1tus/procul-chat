@@ -172,7 +172,7 @@ void main() {
     // The send control is a circular primary button.
     final send = tester.widget<PrimaryButton>(find.byType(PrimaryButton));
     expect(send.shape, ButtonShape.circle);
-    expect(send.onPressed, isNotNull);
+    expect(send.onPressed, isNull);
     expect(tester.takeException(), isNull);
   });
 

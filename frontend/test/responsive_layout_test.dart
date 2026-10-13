@@ -180,7 +180,7 @@ Widget _shell(
         textScaler: textScaler ?? media.textScaler,
         disableAnimations: disableAnimations ?? media.disableAnimations,
       ),
-      child: child ?? const SizedBox.shrink(),
+      child: ShadcnMaterialBridge(child: child ?? const SizedBox.shrink()),
     );
   },
   home: HomeShell(chat: chat, settings: SettingsController(), auth: _auth()),
@@ -237,7 +237,7 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(tester.takeException(), isNull);
-        expect(find.byType(TextField), findsOneWidget);
+        expect(find.byKey(const Key('message-input')), findsOneWidget);
         expect(find.bySemanticsLabel('Send message'), findsAtLeastNWidgets(1));
 
         if (size.width >= _breakpoint) {
@@ -372,7 +372,7 @@ void main() {
           await tester.pumpAndSettle();
 
           expect(tester.takeException(), isNull);
-          expect(find.byType(TextField), findsOneWidget);
+          expect(find.byKey(const Key('message-input')), findsOneWidget);
 
           // The composer's send control stays on-screen and hit-testable.
           final rect = tester.getRect(
@@ -422,7 +422,7 @@ void main() {
 
     // The composer still accepts input (the send-button scale is skipped, not
     // broken).
-    await tester.enterText(find.byType(TextField), 'Hi');
+    await tester.enterText(find.byKey(const Key('message-input')), 'Hi');
     await tester.pumpAndSettle();
     expect(find.text('Hi'), findsOneWidget);
 

@@ -44,6 +44,7 @@ Widget _app({
   theme: proculLightTheme,
   darkTheme: proculDarkTheme,
   themeMode: settings.themeMode,
+  builder: (context, child) => ShadcnMaterialBridge(child: child!),
   home: HomeShell(chat: chat, settings: settings, auth: auth),
 );
 
@@ -72,7 +73,7 @@ void main() {
 
     expect(find.text('Procul'), findsOneWidget);
     expect(find.text('New chat'), findsWidgets);
-    expect(find.text('Ask Procul anything'), findsWidgets);
+    expect(find.text('What can we work on?'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -100,7 +101,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), 'Hi');
+    await tester.enterText(find.byKey(const Key('message-input')), 'Hi');
     await tester.testTextInput.receiveAction(TextInputAction.send);
     await tester.pumpAndSettle();
 
@@ -249,7 +250,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), 'Hi');
+    await tester.enterText(find.byKey(const Key('message-input')), 'Hi');
 
     // Shift+Enter must edit the text, not merely avoid submitting.
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
@@ -258,7 +259,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(GptMarkdown), findsNothing);
     expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      tester
+          .widget<TextField>(find.byKey(const Key('message-input')))
+          .controller!
+          .text,
       'Hi\n',
     );
 
@@ -357,61 +361,56 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'the sidebar sections render as chat-like pills above the chats',
-    (tester) async {
-      await tester.binding.setSurfaceSize(const Size(1200, 800));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
+  testWidgets('the sidebar puts chats before utility navigation', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
 
-      final client = MockClient(
-        (request) async => http.Response('{"conversations":[]}', 200),
-      );
-      final chat = ChatController(
-        api: ChatApi(
-          baseUrl: 'http://test',
-          token: 'test-token',
-          client: client,
-        ),
-        store: FakeConversationStore(),
-      );
+    final client = MockClient(
+      (request) async => http.Response('{"conversations":[]}', 200),
+    );
+    final chat = ChatController(
+      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      store: FakeConversationStore(),
+    );
 
-      await tester.pumpWidget(
-        _app(chat: chat, settings: SettingsController(), auth: _auth()),
-      );
-      await tester.pumpAndSettle();
+    await tester.pumpWidget(
+      _app(chat: chat, settings: SettingsController(), auth: _auth()),
+    );
+    await tester.pumpAndSettle();
 
-      // The three entries stack vertically above the list, like conversations.
-      expect(find.text('Usage'), findsOneWidget);
-      expect(find.text('Models'), findsOneWidget);
-      expect(find.text('Settings'), findsOneWidget);
-      final usageY = tester.getTopLeft(find.text('Usage')).dy;
-      final modelsY = tester.getTopLeft(find.text('Models')).dy;
-      final settingsY = tester.getTopLeft(find.text('Settings')).dy;
-      final newChatY = tester
-          .getTopLeft(
-            find.descendant(
-              of: find.byType(ConversationSidebar),
-              matching: find.text('New chat'),
-            ),
-          )
-          .dy;
-      expect(usageY, lessThan(modelsY));
-      expect(modelsY, lessThan(settingsY));
-      expect(settingsY, lessThan(newChatY));
+    // Utility destinations stay together below the conversations.
+    expect(find.text('Usage'), findsOneWidget);
+    expect(find.text('Models'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+    final usageY = tester.getTopLeft(find.text('Usage')).dy;
+    final modelsY = tester.getTopLeft(find.text('Models')).dy;
+    final settingsY = tester.getTopLeft(find.text('Settings')).dy;
+    final newChatY = tester
+        .getTopLeft(
+          find.descendant(
+            of: find.byType(ConversationSidebar),
+            matching: find.text('New chat'),
+          ),
+        )
+        .dy;
+    expect(usageY, lessThan(modelsY));
+    expect(modelsY, lessThan(settingsY));
+    expect(newChatY, lessThan(usageY));
 
-      // A divider separates the section entries from the chats.
-      expect(
-        find.descendant(
-          of: find.byType(ConversationSidebar),
-          matching: find.byType(Divider),
-        ),
-        findsOneWidget,
-      );
+    // A divider separates the section entries from the chats.
+    expect(
+      find.descendant(
+        of: find.byType(ConversationSidebar),
+        matching: find.byType(Divider),
+      ),
+      findsOneWidget,
+    );
 
-      // The active section reads as selected after opening it.
-      await tester.tap(find.text('Models'));
-      await tester.pumpAndSettle();
-      expect(find.text('Models configured on this server'), findsOneWidget);
-    },
-  );
+    // The active section reads as selected after opening it.
+    await tester.tap(find.text('Models'));
+    await tester.pumpAndSettle();
+    expect(find.text('Models configured on this server'), findsOneWidget);
+  });
 }
