@@ -42,9 +42,13 @@ run-web:
 
 # --- Build -----------------------------------------------------------------
 
-# Web — output: build/web. Set the backend's server.corsAllowedOrigins to the web origin.
+# WebAssembly + JavaScript fallback — output: build/web. See docs for hosting headers.
 build-web:
-    flutter build web --release --dart-define=PROCUL_API_BASE={{api}}
+    flutter build web --release --wasm --dart-define=PROCUL_API_BASE={{api}}
+
+# Web release with Brotli/gzip sidecars. Requires Python 3 and the brotli CLI.
+build-web-compressed: build-web
+    python3 tool/compress_web.py build/web
 
 # Linux — output: build/linux/x64/release/bundle.
 build-linux:

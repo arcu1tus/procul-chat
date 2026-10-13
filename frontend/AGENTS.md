@@ -130,6 +130,8 @@ frontend/
   test/flutter_test_config.dart   # disables google_fonts runtime fetching for all tests
   linux/ android/ ios/ ...        # platform shells (generated)
   justfile                        # dev/test + per-platform release builds (see ../docs/flutter-builds.md)
+  tool/compress_web.py             # Brotli/gzip sidecars for web release assets
+  deploy/Caddyfile.example         # static web hosting: compression + Wasm isolation headers
   pubspec.yaml
 ```
 
@@ -156,6 +158,7 @@ just get | just analyze | just test | just format | just clean
 just run                           # -d linux
 just run-web                       # -d chrome
 just build-web | just build-linux | just build-windows | just build-macos
+just build-web-compressed          # Wasm + Brotli/gzip (Python 3 + brotli CLI)
 just build-android-apk | just build-android-bundle | just build-ios
 ```
 
@@ -172,8 +175,18 @@ no default that works in production), and the backend must allow that client's o
 for prerequisites, output paths, and signing on every platform):
 
 ```bash
-flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.com
+flutter build web --release --wasm --dart-define=PROCUL_API_BASE=https://api.example.com
 ```
+
+`build-web` compiles to WebAssembly with Flutter's automatic JavaScript fallback.
+`build-web-compressed` also runs `tool/compress_web.py`, creating `.br`/`.gz` sidecars for
+compressible assets (including `.wasm` and `.mjs`), keeping only sidecars smaller than the
+original. Originals remain available for clients without compression support; source maps and
+already compressed images/WOFF fonts are skipped. Deploy the **whole** `build/web/` directory.
+Static hosting must negotiate `Content-Encoding` rather than exposing compressed bytes as raw
+assets. `deploy/Caddyfile.example` uses `file_server { precompressed br gzip }` with dynamic
+zstd/gzip fallback and COOP/COEP headers to enable multithreaded Skwasm. Configure its
+`PROCUL_WEB_DOMAIN` and `PROCUL_WEB_ROOT`; see the build guide for deployment and verification.
 
 ## Backend contract (v1) as consumed here
 
@@ -523,6 +536,10 @@ surfaces the error rather than downgrading the token to plaintext.
 
 ## Gotchas (learned the hard way)
 
+- **Web release startup can log `RenderBox was not laid out` on the Connect screen.**
+  Browser smoke checks reproduced it in both Wasm/Skwasm and the JavaScript/CanvasKit fallback;
+  the sign-in form still rendered. It is not specific to Wasm compilation. Check the browser
+  console when investigating web layout, rather than treating a successful build as runtime QA.
 - **`gpt_markdown` imports `package:flutter/material.dart`, so it needs a Material theme
   from *that* library.** `MaterialShadcnApp` (from `shadcn_flutter_material`) only installs
   the **`material_ui`** theme — a separate library — which `gpt_markdown` cannot see. Without
