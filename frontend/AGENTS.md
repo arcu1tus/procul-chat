@@ -131,6 +131,9 @@ frontend/
   linux/ android/ ios/ ...        # platform shells (generated)
   justfile                        # dev/test + per-platform release builds (see ../docs/flutter-builds.md)
   tool/compress_web.py             # Brotli/gzip sidecars for web release assets
+  tool/release_metadata.py         # v<SemVer> validation + Actions version outputs
+  tool/test_release_metadata.py    # release tag validation tests (Python unittest)
+  packaging/nfpm.yaml             # Linux x64 DEB/RPM contents + distro runtime dependencies
   deploy/Caddyfile.example         # static web hosting: compression + Wasm isolation headers
   pubspec.yaml
 ```
@@ -169,8 +172,8 @@ recipes pass it through, and honour the `PROCUL_API_BASE` env var):
 flutter run -d linux --dart-define=PROCUL_API_BASE=http://localhost:5010
 ```
 
-For **release builds** the API base URL must be the deployed backend's public origin (there is
-no default that works in production), and the backend must allow that client's origin via its
+For **release builds** use an HTTPS API base URL to prefill Add server; users can replace it
+and save their own server profiles. The backend must allow a web client's origin via its
 `server.corsAllowedOrigins` setting (see [`../docs/flutter-builds.md`](../docs/flutter-builds.md)
 for prerequisites, output paths, and signing on every platform):
 
@@ -187,6 +190,36 @@ Static hosting must negotiate `Content-Encoding` rather than exposing compressed
 assets. `deploy/Caddyfile.example` uses `file_server { precompressed br gzip }` with dynamic
 zstd/gzip fallback and COOP/COEP headers to enable multithreaded Skwasm. Configure its
 `PROCUL_WEB_DOMAIN` and `PROCUL_WEB_ROOT`; see the build guide for deployment and verification.
+
+### GitHub CI & release artifacts
+
+`../.github/workflows/ci.yml` runs `flutter pub get --enforce-lockfile`, `flutter analyze
+--no-pub`, `flutter test --no-pub`, and `python3 -m unittest discover -s tool -p 'test_*.py'`
+on every PR to `main` and push to `main`. Flutter is pinned to **3.47.7** in both that workflow
+and `publish-flutter-app.yml`; update both pins together when changing the SDK.
+
+`publish-flutter-app.yml` builds only on valid `v<SemVer>` tag pushes, after repeating analysis
+and tests. `tool/release_metadata.py` validates full SemVer, strips the leading `v` for asset
+names, emits a numeric `build_name` for native platform version fields, and omits build metadata
+from Linux package versions. nFPM encodes prereleases with `~` for package ordering and converts
+RPM-incompatible prerelease hyphens to underscores. The workflow run number supplies Flutter's
+native build number; asset names retain the full SemVer.
+
+Artifacts are named `procul-chat-<platform>-<semver>.<extension>` in ignored `dist/`:
+Android `.apk`, Wasm web `.zip` (with JavaScript fallback), Windows x64 `.zip` (whole bundle
+plus Visual C++ runtime DLLs), Linux x64 `.deb` and `.rpm`. Linux builds on Ubuntu 22.04 for
+a glibc 2.35 baseline; pinned nFPM 2.47.0 packages the complete bundle under `/opt/procul-chat`,
+the existing desktop entry/icon, and an executable symlink in `/usr/bin`.
+Runtime dependencies use distro-specific names; token storage also needs a running Secret
+Service/keyring. Package compatibility on other distributions still needs runtime testing.
+
+Only the final publish job has `contents: write`; it creates the GitHub Release when absent
+(marking SemVer prereleases appropriately) and uploads all five files after every build passes.
+Reruns replace same-named assets. `vars.PROCUL_API_BASE` overrides the existing `justfile`
+HTTPS default for the Add server prefill. No signing secrets or custom signing are configured.
+Android retains automatic debug signing; fresh CI keys can require uninstalling an older APK
+(losing its local data) before installation. Windows, DEB, and RPM are unsigned.
+See `../docs/flutter-builds.md` for end-user distribution and hosting details.
 
 ## Backend contract (v1) as consumed here
 

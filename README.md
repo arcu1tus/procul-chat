@@ -126,7 +126,7 @@ against [OpenRouter](https://openrouter.ai/).
 │   ├── justfile              # dev/test + per-platform release builds
 │   └── AGENTS.md             # frontend conventions & gotchas
 ├── assets/                  # logo
-└── .github/workflows/       # CI + container publishing
+└── .github/workflows/       # backend/Flutter CI + container and client release publishing
 ```
 
 Each of `backend/` and `frontend/` has its own **`AGENTS.md`** with the detailed
@@ -458,10 +458,16 @@ and reuses the Docker layer cache through the Actions cache API.
 
 ## Continuous integration
 
-- [`ci.yml`](.github/workflows/ci.yml) builds and tests the backend on pushes to `main` and
-  on pull requests.
+- [`ci.yml`](.github/workflows/ci.yml) builds/tests the backend and analyzes/tests the Flutter
+  client on pushes to `main` and every pull request targeting `main`.
 - [`publish-backend-image.yml`](.github/workflows/publish-backend-image.yml) tests and
   publishes the container image on `v*` tags.
+- [`publish-flutter-app.yml`](.github/workflows/publish-flutter-app.yml) validates `v<SemVer>`
+  tags, tests the client, and attaches Android APK, Wasm web ZIP, Windows x64 ZIP, and Linux
+  x64 DEB/RPM assets to the matching GitHub Release after all builds pass. Filenames follow
+  `procul-chat-<platform>-<semver>.<extension>`. No custom signing is configured; Android
+  retains automatic debug signing. See [the Flutter build guide](docs/flutter-builds.md#automated-ci--tagged-releases)
+  for packaging, hosting, API URL configuration, and upgrade limitations.
 
 ## License & disclaimer
 

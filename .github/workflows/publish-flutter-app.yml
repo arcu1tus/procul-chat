@@ -1,0 +1,208 @@
+name: Publish Flutter app
+
+# Match the backend's tag trigger, then validate SemVer before building.
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: flutter-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with ci.yml (Dart >=3.13.5).
+  FLUTTER_VERSION: '3.47.7'
+  # This only prefills Add server; users can save any backend URL.
+  PROCUL_API_BASE: ${{ vars.PROCUL_API_BASE || 'https://procul-api.natix.dev' }}
+
+jobs:
+  validate:
+    name: Validate tag & test Flutter
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      valid: ${{ steps.version.outputs.valid }}
+      version: ${{ steps.version.outputs.version }}
+      build_name: ${{ steps.version.outputs.build_name }}
+      package_version: ${{ steps.version.outputs.package_version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 tool/release_metadata.py "$RELEASE_TAG"
+
+      - name: Set up Flutter
+        if: steps.version.outputs.valid == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Restore
+        if: steps.version.outputs.valid == 'true'
+        run: flutter pub get --enforce-lockfile
+
+      - name: Analyze & test
+        if: steps.version.outputs.valid == 'true'
+        run: |
+          flutter analyze --no-pub
+          flutter test --no-pub
+          python3 -m unittest discover -s tool -p 'test_*.py'
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: validate
+    if: needs.validate.outputs.valid == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-latest
+          - platform: web
+            os: ubuntu-latest
+          - platform: windows
+            os: windows-2022
+          - platform: linux
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      BUILD_NAME: ${{ needs.validate.outputs.build_name }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev libstdc++-12-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Restore
+        run: flutter pub get --enforce-lockfile
+
+      # Android requires a signed APK to install. Retain the project's automatic
+      # debug signing, with no release keystore, certificates, or signing secrets.
+      - name: Build & package Android APK
+        if: matrix.platform == 'android'
+        run: |
+          flutter build apk --release --no-pub --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER" --dart-define="PROCUL_API_BASE=$PROCUL_API_BASE"
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/procul-chat-android-$VERSION.apk"
+
+      - name: Build & package Wasm web app
+        if: matrix.platform == 'web'
+        run: |
+          flutter build web --release --wasm --no-pub --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER" --dart-define="PROCUL_API_BASE=$PROCUL_API_BASE"
+          mkdir -p dist
+          cd build/web
+          zip -r "../../dist/procul-chat-web-$VERSION.zip" .
+
+      - name: Build & package Windows app
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          flutter build windows --release --no-pub --build-name="$env:BUILD_NAME" --build-number="$env:BUILD_NUMBER" --dart-define="PROCUL_API_BASE=$env:PROCUL_API_BASE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundle = 'build/windows/x64/runner/Release'
+          # Include the application-local Visual C++ runtime beside Flutter's DLLs.
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $runtime = Get-ChildItem "$vs/VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT" -Directory |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $runtime) { throw 'Visual C++ redistributable directory not found' }
+          Copy-Item "$($runtime.FullName)/*.dll" $bundle
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$bundle/*" -DestinationPath "dist/procul-chat-windows-$env:VERSION.zip"
+
+      - name: Build Linux app
+        if: matrix.platform == 'linux'
+        run: flutter build linux --release --no-pub --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER" --dart-define="PROCUL_API_BASE=$PROCUL_API_BASE"
+
+      - name: Set up Go for nFPM
+        if: matrix.platform == 'linux'
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: false
+
+      - name: Package Linux DEB & RPM
+        if: matrix.platform == 'linux'
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          mkdir -p dist
+          nfpm package --config packaging/nfpm.yaml --packager deb --target "dist/procul-chat-linux-$VERSION.deb"
+          nfpm package --config packaging/nfpm.yaml --packager rpm --target "dist/procul-chat-linux-$VERSION.rpm"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: flutter-${{ matrix.platform }}
+          path: frontend/dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Attach files to GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: flutter-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            args=(--verify-tag --generate-notes --title "$RELEASE_TAG")
+            if [[ "$PRERELEASE" == true ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" "${args[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
