@@ -8,6 +8,8 @@ import 'package:procul_chat_flutter/src/auth_api.dart';
 import 'package:procul_chat_flutter/src/auth_controller.dart';
 import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
+import 'package:procul_chat_flutter/src/chat_screen.dart';
+import 'package:procul_chat_flutter/src/widgets/chat_refresh_trigger.dart';
 import 'package:procul_chat_flutter/src/conversation_sidebar.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
 import 'package:procul_chat_flutter/src/models_screen.dart';
@@ -142,11 +144,12 @@ void main() {
 
     final chatTrigger = find.ancestor(
       of: find.text('Send a message to start a new chat.'),
-      matching: find.byType(RefreshTrigger),
+      matching: find.byType(ChatRefreshTrigger),
     );
     expect(chatTrigger, findsOneWidget);
 
-    await _pullDown(tester, chatTrigger);
+    await tester.drag(chatTrigger, const Offset(0, -200));
+    await tester.pumpAndSettle();
 
     expect(chat.reloadCalls, greaterThanOrEqualTo(1));
   });
@@ -181,18 +184,90 @@ void main() {
 
     final chatTrigger = find.ancestor(
       of: find.text('Send a message to start a new chat.'),
-      matching: find.byType(RefreshTrigger),
+      matching: find.byType(ChatRefreshTrigger),
     );
-    expect(tester.widget<RefreshTrigger>(chatTrigger).onRefresh, isNotNull);
+    expect(tester.widget<ChatRefreshTrigger>(chatTrigger).onRefresh, isNotNull);
 
     // Mid-turn the pane must not offer a pull that could clobber the stream.
     chat.isStreaming = true;
     chat.setDefaultModel('busy/model'); // notify listeners so the pane rebuilds
     await tester.pump();
 
-    expect(tester.widget<RefreshTrigger>(chatTrigger).onRefresh, isNull);
+    expect(tester.widget<ChatRefreshTrigger>(chatTrigger).onRefresh, isNull);
     expect(tester.takeException(), isNull);
   });
+
+  for (final bottom in [true, false]) {
+    testWidgets(
+      'pulling ${bottom ? 'up at the bottom' : 'down at the top'} reloads chat history',
+      (tester) async {
+        var historyCalls = 0;
+        final chat = SpyChatController(
+          api: ChatApi(
+            baseUrl: 'http://test',
+            token: 'tok',
+            client: MockClient((request) async {
+              if (request.url.path == '/v1/conversations') {
+                return http.Response(
+                  '{"conversations":[{"id":"c1","title":"Chat"}]}',
+                  200,
+                );
+              }
+              if (request.url.path.endsWith('/messages')) {
+                historyCalls++;
+                return http.Response(
+                  jsonEncode({
+                    'messages': [
+                      if (historyCalls > 1)
+                        {
+                          'id': 'new',
+                          'text': 'New remote message',
+                          'messageRole': 1,
+                        },
+                      for (var i = 18; i > 0; i--)
+                        {'id': 'm$i', 'text': 'Message $i', 'messageRole': 1},
+                    ],
+                  }),
+                  200,
+                );
+              }
+              return http.Response('{}', 200);
+            }),
+          ),
+          store: FakeConversationStore('c1'),
+        );
+        addTearDown(chat.dispose);
+        await chat.init();
+        await tester.pumpWidget(
+          MaterialShadcnApp(
+            theme: proculLightTheme,
+            home: ChatScreen(chat: chat),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final list = find.descendant(
+          of: find.byType(ChatScreen),
+          matching: find.byType(ListView),
+        );
+        final scrollable = find.descendant(
+          of: list,
+          matching: find.byType(Scrollable),
+        );
+        final position = tester.state<ScrollableState>(scrollable).position;
+        expect(position.maxScrollExtent, greaterThan(0));
+        if (!bottom) position.jumpTo(position.maxScrollExtent);
+        await tester.pumpAndSettle();
+        await tester.drag(list, Offset(0, bottom ? -240 : 240));
+        await tester.pumpAndSettle();
+
+        expect(chat.reloadCalls, 1);
+        expect(historyCalls, 2);
+        expect(chat.messages.last.id, 'new');
+        expect(chat.messages, hasLength(19));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets('the chat app-bar refresh button runs refreshAll', (
     tester,

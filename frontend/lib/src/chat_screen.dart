@@ -17,6 +17,7 @@ import 'time_format.dart';
 import 'widgets/app_dialog.dart';
 import 'widgets/attachment_views.dart';
 import 'widgets/composer.dart';
+import 'widgets/chat_refresh_trigger.dart';
 import 'widgets/content_width.dart';
 import 'widgets/icon_action.dart';
 import 'widgets/model_badges.dart';
@@ -162,7 +163,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _submit() {
     final text = _inputController.text;
-    if (text.trim().isEmpty || widget.chat.isStreaming) return;
+    if (text.trim().isEmpty ||
+        widget.chat.isStreaming ||
+        widget.chat.isLoadingMessages) {
+      return;
+    }
     final editing = widget.chat.isEditing;
     _inputController.clear();
     _pinnedToBottom = true;
@@ -479,10 +484,7 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             children: [
               Expanded(
-                child: RefreshTrigger(
-                  // The list is reversed, so the pull happens at the *bottom*
-                  // (the newest end) — refreshing without scrolling to the top.
-                  reverse: true,
+                child: ChatRefreshTrigger(
                   // A pull must not clobber a live stream, so disable it mid-turn.
                   onRefresh: chat.isStreaming
                       ? null
@@ -531,6 +533,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ListView.builder(
               controller: _scrollController,
               reverse: true,
+              physics: const AlwaysScrollableScrollPhysics(),
               padding: EdgeInsets.fromLTRB(16 + side, 20, 16 + side, 12),
               itemCount: count + (showOlder ? 1 : 0),
               itemBuilder: (context, index) {

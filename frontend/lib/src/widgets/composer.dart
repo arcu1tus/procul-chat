@@ -38,7 +38,7 @@ class Composer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
-    final enabled = !chat.isStreaming;
+    final enabled = !chat.isStreaming && !chat.isLoadingMessages;
     final canAttach = enabled && !chat.isUploadingAttachment;
     final pending = chat.pendingAttachments;
     final isEditing = chat.isEditing;
@@ -194,6 +194,17 @@ class _Capsule extends StatelessWidget {
   final ValueChanged<BuildContext> onAttach;
   final VoidCallback onSubmit;
 
+  void _insertNewline() {
+    final value = controller.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    controller.value = TextEditingValue(
+      text: value.text.replaceRange(start, end, '\n'),
+      selection: TextSelection.collapsed(offset: start + 1),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
@@ -237,10 +248,12 @@ class _Capsule extends StatelessWidget {
               const Gap(2),
               Expanded(
                 child: CallbackShortcuts(
-                  // Enter sends; Shift+Enter is left to the field so it
-                  // inserts a newline.
                   bindings: {
                     const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
+                    const SingleActivator(
+                      LogicalKeyboardKey.enter,
+                      shift: true,
+                    ): _insertNewline,
                   },
                   // The capsule already draws the accent focus ring. shadcn's
                   // `TextField` *always* wraps itself in its own `FocusOutline`

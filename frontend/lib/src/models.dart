@@ -117,7 +117,7 @@ class ChatMessage {
     List<Attachment> attachments = const [],
   }) : attachments = List.of(attachments);
 
-  final String? id;
+  String? id;
   String text;
   final MessageRole role;
   final DateTime? createdAt;
