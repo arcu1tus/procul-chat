@@ -17,6 +17,8 @@ internal sealed class ShowImageTool(
     TurnToolContext context,
     ILogger logger)
 {
+    internal const string ClientName = "show-image";
+
     /// <summary>The wall-clock budget for a single URL fetch.</summary>
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(30);
 
@@ -74,19 +76,13 @@ internal sealed class ShowImageTool(
             throw new InvalidOperationException($"'{rawUrl}' is not an absolute URL.");
         }
 
-        var policy = await urlPolicy.CanFetchAsync(uri, ct);
-        if (!policy.Allowed)
-        {
-            throw new InvalidOperationException(policy.Error ?? "The URL is not allowed.");
-        }
-
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(FetchTimeout);
 
-        using var http = httpClientFactory.CreateClient();
+        using var http = httpClientFactory.CreateClient(ClientName);
         http.Timeout = Timeout.InfiniteTimeSpan; // the linked CTS bounds the call instead
 
-        using var response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        using var response = await FetchWithRedirectsAsync(http, uri, timeout.Token);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"The URL returned {(int)response.StatusCode}.");
@@ -120,16 +116,44 @@ internal sealed class ShowImageTool(
         return (bytes, contentType);
     }
 
+    private async Task<HttpResponseMessage> FetchWithRedirectsAsync(HttpClient http, Uri uri, CancellationToken ct)
+    {
+        for (var redirects = 0; ; redirects++)
+        {
+            var policy = await urlPolicy.CanFetchAsync(uri, ct);
+            if (!policy.Allowed)
+            {
+                throw new InvalidOperationException(policy.Error ?? "The URL is not allowed.");
+            }
+
+            var response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (response.StatusCode is not (System.Net.HttpStatusCode.MovedPermanently
+                or System.Net.HttpStatusCode.Found or System.Net.HttpStatusCode.SeeOther
+                or System.Net.HttpStatusCode.TemporaryRedirect or System.Net.HttpStatusCode.PermanentRedirect))
+            {
+                return response;
+            }
+
+            using (response)
+            {
+                if (redirects >= 5)
+                {
+                    throw new InvalidOperationException("The image URL redirected too many times.");
+                }
+
+                if (response.Headers.Location is not { } location)
+                {
+                    throw new InvalidOperationException("The image URL returned a redirect without a destination.");
+                }
+
+                uri = new Uri(uri, location);
+            }
+        }
+    }
+
     private static (byte[] Bytes, string ContentType) DecodeBase64(string raw, long maxBytes)
     {
         var value = raw.Trim();
-
-        // Bound the payload before decoding: base64 inflates by 4/3, so reject anything that
-        // could not possibly fit the configured size cap rather than allocating it first.
-        if (value.Length > maxBytes / 3 * 4 + 16)
-        {
-            throw new InvalidOperationException("The base64 payload exceeds the configured size limit.");
-        }
 
         string? declared = null;
 
@@ -145,6 +169,13 @@ internal sealed class ShowImageTool(
             var semicolon = header.IndexOf(';');
             declared = semicolon >= 0 ? header[..semicolon] : header;
             value = value[(comma + 1)..];
+        }
+
+        // Count the encoded bytes, excluding the data URL header and whitespace, before
+        // allocating a normalized payload. Padding rounds base64 up to a multiple of four.
+        if (value.Count(character => !char.IsWhiteSpace(character)) > (maxBytes / 3 + (maxBytes % 3 == 0 ? 0 : 1)) * 4)
+        {
+            throw new InvalidOperationException("The base64 payload exceeds the configured size limit.");
         }
 
         // Tolerate whitespace/newlines in a pasted base64 payload.

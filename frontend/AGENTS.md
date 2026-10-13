@@ -306,9 +306,11 @@ are editable. A hard failure triggers a resync (see below).
   the persisted id; `selectConversation` fetches a history once; replies are appended from the
   SSE stream (never re-fetched). List mutations (`renameConversation`, `deleteConversation`)
   update the local list optimistically/after the call so the sidebar stays in sync.
-- **`done` ends the turn.** `ChatController.send` sets `isStreaming = false` on `DoneEvent`
-  (not in `finally`), so the composer re-enables while the trailing `title` event is still in
-  flight. The `title` event then updates the conversation's title in the list.
+- **`done` ends the turn.** `ChatController` sets `isStreaming = false` on `DoneEvent`
+  immediately, so the composer re-enables while the trailing `title` event is still in
+  flight. The `title` event then updates the conversation's title in the list. Turn generations
+  guard events and cleanup so an older stream cannot change a newer reply or a different chat.
+  Send/edit share `_runReply`; EOF before `done`/`error` is a hard failure.
 - **`ChatMessage.id` and `text` are mutable** on purpose: streamed bubbles initially lack server
   IDs; background sync assigns them after matching the ordered local tail immediately after
   its persisted anchor (role, text, attachment IDs), preserving bubble identity and avoiding
@@ -328,15 +330,18 @@ are editable. A hard failure triggers a resync (see below).
   message" banner with a Cancel action and relabels its send button "Save changes". Edit state
   resets on `newChat()`, `openConversation`, and delete.
 - **A hard turn failure resyncs.** When `send`/`editMessage` throws (e.g. the connection drops),
-  the controller sets `error` and calls `reloadActiveConversation()` so the buffer matches the
-  server rather than leaving a local-only user message.
+  the controller refreshes both revisions and history, preserving the failure in `error`, via
+  `refreshConversations()` and `reloadActiveConversation()` so the buffer matches the
+  server rather than leaving a local-only user message. An SSE `error` preserves the partial
+  reply but refreshes the revision; `409` uses the same recovery for send and edit.
 - **Tool activity lives on the assistant message.** `ToolCallEvent`/`ToolResultEvent` are
   folded into the streaming assistant `ChatMessage.toolCalls` (matched by `callId`), not added
   as separate buffer entries. Tool calls are not persisted, so they vanish on reload.
 - **Token usage is two-level.** `ChatController.activeUsage` is the active conversation's
   cumulative total: seeded from `GET /v1/usage/conversations/{id}` when a conversation is
   opened, then incremented by each turn's `UsageEvent` so switching conversations needs no
-  refetch. `lastTurnUsage` is just the most recent reply; both reset in `newChat()` /
+  refetch. A successful edit refetches cumulative usage because it replaces discarded turns.
+  `lastTurnUsage` is just the most recent reply; both reset in `newChat()` /
   `deleteConversation`. The app-bar `_UsageChip` renders only when `activeUsage.hasTokens` and
   opens a `showDropdown` popover (`MenuLabel` rows + `MenuDivider`) with the
   input/output/cached/total breakdown.
@@ -460,6 +465,9 @@ are editable. A hard failure triggers a resync (see below).
   (or `uploadAttachment` for one) then POSTs each — passing the active model so the **backend
   re-validates at upload** — and appends the result to `pendingAttachments` (removable chips;
   disabled while streaming or mid-upload); a multi-select keeps going when one file fails.
+  One busy state spans the batch, and failures remain visible even if a later file succeeds.
+  Draft generations discard late upload results after a chat/edit switch and stop the batch;
+  controller send/edit methods also refuse submission during an upload.
   `ChatController.send` snapshots the pending ids into the request and attaches the metadata to the
   user bubble; the queue clears on send, `newChat()`, and switching chats. `pendingAttachments` is
   *not* persisted: a failed turn leaves the uploads orphaned server-side. When a fetch 404s
@@ -472,6 +480,8 @@ are editable. A hard failure triggers a resync (see below).
   so a retry is possible). Images render as `Image.memory` and other files as chips that fetch the
   bytes and hand them to `picker.save` (`FilePicker.saveFile`) on tap. Never build an `<img>` URL:
   it cannot carry the bearer token. The same path works on web, desktop, and mobile.
+  `image` SSE events become `ImageEvent` attachments on the streaming assistant message, so
+  generated images appear immediately and reconcile by attachment ID with persisted history.
 - **`AttachmentPicker` is a seam for tests.** `FakeAttachmentPicker` (`test/support/`) records
   `pick`/`save` calls so widget tests never touch the `file_picker` platform channel. Prefer
   `file_picker`'s static API (`FilePicker.pickFiles` / `FilePicker.saveFile`); v13 returns
@@ -517,6 +527,9 @@ are editable. A hard failure triggers a resync (see below).
   reply is streaming. `ChatController.loadOlderMessages()` (keyset `afterMessageId`, prepended)
   backs infinite scroll up, and `syncActiveConversation()` (a merge) backs the shell's background
   sync.
+- **Async catalog/status/usage refreshes use request generations.** Only the latest fetch may
+  update data, errors, or loading flags; disposal invalidates pending work. Model health checks
+  share one implementation and keep their busy state through the catalog refresh.
 - **MCP status is read-only and secret-free.** `McpStatusController` (owned by the Settings
   pane's `_McpSection`) fetches `GET /v1/mcp/servers` through `ChatApi`, so it inherits the
   bearer header and the `401 → logout` path. `SettingsScreen` takes the `ChatApi`

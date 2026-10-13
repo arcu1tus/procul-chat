@@ -20,6 +20,8 @@ public static class ImageGenerationServiceCollectionExtensions
 
         services.AddHttpClient();
         services.AddHttpClient(HttpImageGenerationClient.ClientName);
+        services.AddHttpClient(ShowImageTool.ClientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 
         services.AddSingleton<IRemoteUrlPolicy, SsrfRemoteUrlPolicy>();
 

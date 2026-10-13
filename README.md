@@ -79,13 +79,16 @@ against [OpenRouter](https://openrouter.ai/).
   the active model's readable types, has removable preview chips, and renders images and files
   inline; reloaded conversations show their attachments (and, by default, re-sends them to the
   model on later turns).
-- **AI-generated conversation titles** produced concurrently with the first reply.
+- **AI-generated conversation titles** produced concurrently with the first reply; a late title
+  preserves a manual rename.
 - **Message editing** (destructive in v1): rewrite an earlier user message, optionally swap its
   attachments, and re-prompt the model. Every later message — and its attachments — is discarded,
-  and the model replies afresh. A future version could branch instead (keep both versions).
+  and the model replies afresh. The in-chat usage total refreshes to match the retained history.
+  A future version could branch instead (keep both versions).
 - **Multi-device consistency**: each conversation carries a revision number, and mutating requests
   may echo the `expectedRevision` they last saw — a stale one is a `409 Conflict` instead of
-  silently overwriting another device's change.
+  silently overwriting another device's change. The client refreshes its revision and history
+  after a conflict so the next attempt can succeed.
 - **Multi-conversation UI** with rename, delete, and keyset-paginated history — **infinite scroll
   up** loads older messages, a **bottom pull-to-refresh** re-syncs without scrolling to the top,
   and a jump-to-latest pill returns to the newest message.

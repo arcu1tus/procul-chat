@@ -16,7 +16,8 @@ internal static class ChatModelTestHelpers
         bool healthCheck = true,
         bool discoverCapabilities = false,
         ModelProvider provider = ModelProvider.OpenRouter,
-        IEnumerable<ModelInputModality>? capabilities = null) => new(
+        IEnumerable<ModelInputModality>? capabilities = null,
+        int? maxOutputTokens = null) => new(
             slug,
             slug,
             null,
@@ -27,7 +28,7 @@ internal static class ChatModelTestHelpers
             isDefault,
             healthCheck,
             discoverCapabilities,
-            null);
+            maxOutputTokens);
 
     /// <summary>A registry whose per-slug clients are the supplied fakes.</summary>
     public static ChatModelRegistry Registry(

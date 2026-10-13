@@ -7,6 +7,7 @@ import 'package:procul_chat_flutter/src/app_theme.dart';
 import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
 import 'package:procul_chat_flutter/src/chat_screen.dart';
+import 'package:procul_chat_flutter/src/models.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
 
@@ -59,6 +60,7 @@ ChatController _chat(MockClient client, {String? stored}) => ChatController(
 MockClient _client({
   required List<http.Request> edits,
   int? editStatus,
+  int usageTokens = 0,
   void Function()? onMessageGet,
 }) => MockClient((request) async {
   final path = request.url.path;
@@ -75,7 +77,7 @@ MockClient _client({
     return http.Response(jsonEncode({'messages': _messages}), 200);
   }
   if (path == '/v1/usage/conversations/c1') {
-    return http.Response('{}', 200);
+    return http.Response(jsonEncode({'totalTokens': usageTokens}), 200);
   }
   if (path == '/v1/conversations/c1/messages/m1/edit' &&
       request.method == 'POST') {
@@ -94,14 +96,16 @@ MockClient _client({
 
 void main() {
   test(
-    'editing truncates the tail, rewrites the message, and streams',
+    'editing truncates the tail, streams, and replaces cumulative usage',
     () async {
       final edits = <http.Request>[];
-      final chat = _chat(_client(edits: edits), stored: 'c1');
+      final chat = _chat(_client(edits: edits, usageTokens: 20), stored: 'c1');
+      addTearDown(chat.dispose);
       await chat.init();
       expect(chat.messages, hasLength(2));
       expect(chat.messages.first.text, 'original');
 
+      chat.activeUsage = const TokenUsage(totalTokens: 100);
       chat.beginEdit(chat.messages.first);
       expect(chat.isEditing, isTrue);
       expect(chat.editingMessageId, 'm1');
@@ -119,6 +123,7 @@ void main() {
       expect(chat.messages.last.text, 'new reply');
       expect(chat.isEditing, isFalse);
       expect(chat.isStreaming, isFalse);
+      expect(chat.activeUsage.totalTokens, 20);
     },
   );
 

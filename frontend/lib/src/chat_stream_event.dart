@@ -1,3 +1,4 @@
+import 'attachments.dart';
 import 'models.dart';
 
 /// Events streamed by the SSE endpoints. The wire shape is
@@ -21,6 +22,12 @@ class AcknowledgeEvent extends ChatStreamEvent {
 class TokenEvent extends ChatStreamEvent {
   const TokenEvent(this.content);
   final String content;
+}
+
+/// An image produced during the reply, fetched through the attachment API.
+class ImageEvent extends ChatStreamEvent {
+  const ImageEvent(this.attachment);
+  final Attachment attachment;
 }
 
 /// `type: "title"` — the model-generated title for a newly created conversation.

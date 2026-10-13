@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -35,6 +36,42 @@ ChatApi _api(MockClient client) =>
     ChatApi(baseUrl: 'http://test', token: 'tok', client: client);
 
 void main() {
+  test('a stale refresh failure cannot clear a newer loading state', () async {
+    final first = Completer<http.Response>();
+    final second = Completer<http.Response>();
+    var requests = 0;
+    final controller = McpStatusController(
+      api: _api(
+        MockClient((_) {
+          return requests++ == 0 ? first.future : second.future;
+        }),
+      ),
+    );
+    addTearDown(controller.dispose);
+    final loading = controller.load();
+    final refreshing = controller.refresh();
+    first.complete(http.Response('old request failed', 500));
+    await loading;
+    expect(controller.isLoading, isTrue);
+    expect(controller.error, isNull);
+    second.complete(http.Response(jsonEncode({'servers': []}), 200));
+    await refreshing;
+    expect(controller.error, isNull);
+    expect(controller.isLoading, isFalse);
+  });
+
+  test('disposing during load ignores the late response', () async {
+    final response = Completer<http.Response>();
+    final controller = McpStatusController(
+      api: _api(MockClient((_) => response.future)),
+    );
+    final loading = controller.load();
+    controller.dispose();
+    response.complete(http.Response(jsonEncode({'servers': []}), 200));
+    await loading;
+    expect(controller.servers, isEmpty);
+  });
+
   test(
     'fetchMcpServers parses the payload and sends the bearer token',
     () async {
