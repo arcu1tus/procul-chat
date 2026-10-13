@@ -23,8 +23,10 @@ baked into the binary and the app pre-fills the Connect screen with it. Pass it 
 --dart-define=PROCUL_API_BASE=https://api.example.com
 ```
 
-If you omit it, the client defaults to `http://localhost:5010` (fine for local development, wrong
-for anything shipped). A **release** build has no working default, so always set it.
+If you omit it, the client prefills `http://localhost:5010` (fine for local development). This
+value only prefills **Add server**; users can replace it and save their own server profiles.
+For distribution, use an HTTPS default. The `just` recipes use `https://procul-api.natix.dev`
+unless overridden with the `PROCUL_API_BASE` environment variable.
 
 > **Web only:** a browser client is subject to CORS, so your backend's
 > `server.corsAllowedOrigins` must list the **exact origin** the app is served from (for example
@@ -59,6 +61,71 @@ flutter widget-preview start
 ```
 
 Preview definitions live in `frontend/lib/previews.dart`; no backend or sign-in is required.
+
+## Automated CI & tagged releases
+
+[`ci.yml`](../.github/workflows/ci.yml) runs Flutter analysis and the complete unit/widget test
+suite for every pull request targeting `main` and every push to `main`, alongside backend CI.
+It also tests release tag parsing. Dependencies are restored with `--enforce-lockfile`.
+Flutter **3.47.7** (Dart 3.13.5) is pinned in both CI and the release workflow; update both
+pins together when upgrading the SDK.
+
+Push a valid `v<SemVer>` tag (for example `v1.2.3` or `v1.2.3-rc.1`) to run
+[`publish-flutter-app.yml`](../.github/workflows/publish-flutter-app.yml), matching the backend's
+tag-driven publishing. Other `v*` tags skip client tests/builds/publication. Tests and analysis
+must pass before builds start, and all four platforms must build before publication.
+No iOS or macOS build is included.
+
+The workflow attaches these five assets to the matching GitHub Release, creating it with
+generated notes if absent. SemVer prereleases create prereleases; existing release notes and
+settings are preserved. Reruns replace same-named assets. No release needs to be created
+manually before pushing the tag.
+
+| Target | Release asset for `v1.2.3` | Contents |
+| --- | --- | --- |
+| Android | `procul-chat-android-1.2.3.apk` | Release-mode fat APK from `app-release.apk` |
+| Web | `procul-chat-web-1.2.3.zip` | Whole Wasm web output, including JavaScript fallback; `index.html` at ZIP root |
+| Windows x64 | `procul-chat-windows-1.2.3.zip` | EXE, Flutter/plugin DLLs, Visual C++ runtime DLLs, and `data/` |
+| Linux x64 | `procul-chat-linux-1.2.3.deb` | Installable Debian/Ubuntu package |
+| Linux x64 | `procul-chat-linux-1.2.3.rpm` | Installable RPM package |
+
+The full version appears in filenames, including any prerelease/build metadata, without `v`.
+Native app versions use the numeric `MAJOR.MINOR.PATCH` core and the workflow run number as
+the build number. nFPM encodes Linux package versions with `~` before prerelease identifiers
+so they sort before stable versions (RPM prerelease hyphens become underscores); SemVer build
+metadata is omitted from package versions.
+The repository Actions **variable** `PROCUL_API_BASE` sets the Add server prefill; absent that,
+the workflow uses `https://procul-api.natix.dev`, matching the `just` recipes. This is not a
+secret, and users can choose another server in the app.
+
+**Distribution quirks (no custom signing).**
+
+- Android requires every installable APK to be signed. CI retains the existing automatic
+  **debug signing**, with no custom keystore or signing secrets. These APKs are for sideloading,
+  not store submission. Fresh runners may generate different debug keys, preventing an in-place
+  upgrade over a previous build; uninstalling first loses the app's local profiles/settings.
+  See [Android's signing requirements](https://developer.android.com/studio/publish/app-signing).
+- Windows Flutter apps need supporting DLLs and assets, so an EXE alone is insufficient. The
+  ZIP includes the application-local Visual C++ runtime, as described in
+  [Flutter's Windows ZIP packaging guide](https://docs.flutter.dev/platform-integration/windows/building#building-your-own-zip-file-for-windows).
+  Extract the entire ZIP before running `procul_chat_flutter.exe`. It is unsigned, so Windows
+  may show publisher/reputation warnings.
+- Linux packages are unsigned and built on **Ubuntu 22.04**, requiring **glibc >=2.35**,
+  **libstdc++ >=12**, GTK 3, and libsecret. nFPM's
+  [configuration](../frontend/packaging/nfpm.yaml) installs the bundle in `/opt/procul-chat`,
+  links `procul_chat_flutter` in `/usr/bin`, and installs the desktop launcher/icon. The package
+  manager resolves distro-specific dependencies; a running Secret Service/keyring is also
+  needed. An RPM format does not guarantee compatibility with every RPM distribution: older
+  systems such as EL9 have a lower glibc baseline. Install with `sudo apt install ./<file>.deb`
+  or `sudo dnf install ./<file>.rpm` on a compatible x64 desktop, and launch Procul Chat.
+  Packages use [nFPM](https://nfpm.goreleaser.com/docs/configuration/) **2.47.0**.
+- Web output needs static hosting, HTTPS (or localhost for development), API CORS, and
+  COOP/COEP headers for multithreaded Skwasm. The archive contains both Wasm and JavaScript
+  fallback output; no hosting is provisioned by CI. See the [web section](#web) and
+  [Flutter's Wasm guide](https://docs.flutter.dev/platform-integration/web/wasm).
+
+Only the publication job gets `contents: write`; the built-in `GITHUB_TOKEN` suffices.
+Build files also remain available as Actions artifacts if publication fails.
 
 ---
 

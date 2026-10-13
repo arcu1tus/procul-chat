@@ -54,7 +54,7 @@ Pick the path that matches your task — you do not need to read everything.
 | `backend/src/Procul.Api/` | The API project (endpoints, services, entities, migrations) |
 | `backend/tests/Procul.Api.Tests/` | xUnit unit + integration tests |
 | `frontend/lib/` | Flutter app + `src/` (API client, controllers, UI) |
-| `assets/`, `.github/workflows/` | Logo; CI + container publishing |
+| `assets/`, `.github/workflows/` | Logo; backend/Flutter CI + container and client release publishing |
 
 Each of `backend/` and `frontend/` has its own **`AGENTS.md`** with the detailed architecture,
 conventions, and hard-won gotchas. Those are authoritative for their area; this file is general
@@ -69,7 +69,7 @@ guidance.
 | Frontend | Flutter (Dart 3), `shadcn_flutter`, `gpt_markdown`, `google_fonts`, `fl_chart`, `file_picker`, `package:http`, `flutter_secure_storage` |
 | Model    | OpenRouter (or any OpenAI-compatible endpoint you configure) |
 | Tooling  | [`just`](https://github.com/casey/just) (≥ 1.0, for its modules), Docker/Compose, GitHub Actions |
-| CI/CD    | GitHub Actions, Docker Buildx, GitHub Container Registry (`ghcr.io`) |
+| CI/CD    | GitHub Actions, Docker Buildx, GitHub Container Registry (`ghcr.io`), GitHub Releases, nFPM |
 
 ## Where to look for what
 
@@ -124,6 +124,22 @@ flutter test
 ```
 
 See `backend/AGENTS.md` / `frontend/AGENTS.md` for per-area detail and `docs/` for deployment.
+
+## GitHub CI & releases
+
+`.github/workflows/ci.yml` runs backend build/tests and Flutter analysis/unit/widget tests on
+every pull request targeting `main` and every push to `main`, without path filters.
+`publish-backend-image.yml` publishes the backend image on `v*` tag pushes.
+`publish-flutter-app.yml` uses the same trigger, validates `v<SemVer>` (including prereleases
+and build metadata), tests the frontend, then builds Android APK, Wasm web ZIP, Windows x64
+ZIP, and Linux x64 DEB/RPM. All client builds must pass before files are attached to the
+matching GitHub Release (created if absent). Other platforms are not built in CI.
+
+Keep the Flutter SDK pin in both workflows synchronized. Release builds use the repository
+variable `PROCUL_API_BASE`, defaulting to the same HTTPS origin as `frontend/justfile`;
+it only prefills Add server. No signing secrets are used; Android retains automatic debug
+signing because unsigned APKs cannot be installed. See `docs/flutter-builds.md` for filenames,
+packaging dependencies, and distribution limitations.
 
 ## ⚠️ Timeouts: do NOT set long ones
 

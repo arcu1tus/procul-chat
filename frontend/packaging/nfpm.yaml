@@ -1,0 +1,45 @@
+# Run nfpm from frontend/ after flutter build linux --release.
+name: procul-chat
+arch: amd64
+platform: linux
+version: ${PACKAGE_VERSION}
+version_schema: semver
+release: '1'
+section: net
+priority: optional
+maintainer: Procul contributors <arcu1tus@users.noreply.github.com>
+description: A Flutter chat client for the Procul backend.
+homepage: https://github.com/arcu1tus/procul-chat
+
+contents:
+  - src: build/linux/x64/release/bundle/
+    dst: /opt/procul-chat
+    type: tree
+  - src: /opt/procul-chat/procul_chat_flutter
+    dst: /usr/bin/procul_chat_flutter
+    type: symlink
+  - src: linux/procul-chat.desktop
+    dst: /usr/share/applications/procul-chat.desktop
+  - src: assets/icon/icon.png
+    # Unthemed fallback supports the existing 1024px PNG on older desktops too.
+    dst: /usr/share/pixmaps/procul-chat.png
+
+# Build on Ubuntu 22.04 for a glibc 2.35 baseline. Other GTK dependencies
+# are pulled in by the distro's GTK package. A Secret Service must be running.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.35)
+      - libstdc++6 (>= 12)
+      - libgtk-3-0
+      - libsecret-1-0
+    recommends:
+      - gnome-keyring
+  rpm:
+    depends:
+      - glibc >= 2.35
+      - libstdc++ >= 12
+      - gtk3
+      - libsecret
+    recommends:
+      - gnome-keyring
