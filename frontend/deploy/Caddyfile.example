@@ -1,0 +1,13 @@
+# Set PROCUL_WEB_DOMAIN to the app's hostname and PROCUL_WEB_ROOT to the build/web copy.
+# For local testing: PROCUL_WEB_DOMAIN=http://localhost:8080 PROCUL_WEB_ROOT=... caddy run ...
+{$PROCUL_WEB_DOMAIN:app.example.com} {
+	root * {$PROCUL_WEB_ROOT:/srv/procul-web}
+	header {
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Embedder-Policy credentialless
+	}
+	encode zstd gzip
+	file_server {
+		precompressed br gzip
+	}
+}

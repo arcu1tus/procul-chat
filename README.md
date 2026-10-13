@@ -376,8 +376,12 @@ The rules are:
 Build the production web client against your API's public URL:
 
 ```bash
-flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.com
+PROCUL_API_BASE=https://api.example.com just frontend build-web-compressed
 ```
+
+Web builds use WebAssembly with automatic JavaScript fallback. The compressed recipe requires
+Python 3 and the Brotli CLI and adds `.br`/`.gz` assets for a static host to serve. See the
+[web build guide](docs/flutter-builds.md#web) for Caddy compression and multithreaded Wasm headers.
 
 ## Testing
 

@@ -307,24 +307,83 @@ manage entitlements in `macos/Runner/*.entitlements`. See the
 **Commands**
 
 ```bash
-# Standard JavaScript build.
-flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.com
-
-# Opt in to WebAssembly (faster, but needs COOP/COEP headers on the server — see below).
+# WebAssembly with automatic JavaScript fallback (also used by just build-web).
 flutter build web --release --wasm --dart-define=PROCUL_API_BASE=https://api.example.com
 
+# Build and precompress static assets; requires Python 3 and the brotli CLI.
+# Debian/Ubuntu: sudo apt-get install python3 brotli
+PROCUL_API_BASE=https://api.example.com just build-web-compressed
+
+# JavaScript-only build, if needed.
+flutter build web --release --dart-define=PROCUL_API_BASE=https://api.example.com
+
 # Add source maps for a crash-reporting service (keep the .map files private).
-flutter build web --release --source-maps --dart-define=PROCUL_API_BASE=https://api.example.com
+flutter build web --release --wasm --source-maps --dart-define=PROCUL_API_BASE=https://api.example.com
 ```
 
-**Output** — static assets in `build/web/` (`index.html`, `main.dart.js`, `flutter_bootstrap.js`,
-assets, ...).
+**Output** — static assets in `build/web/` (`index.html`, `main.dart.wasm`, `main.dart.mjs`,
+`main.dart.js`, `flutter_bootstrap.js`, assets, ...). Flutter chooses Wasm on supported browsers
+and falls back to JavaScript elsewhere. Keep both outputs; a Wasm build does not guarantee a
+smaller download or faster startup. See [Flutter's Wasm guide](https://docs.flutter.dev/platform-integration/web/wasm).
 
 Serve it from any static host:
 
 ```bash
 cd build/web && python3 -m http.server 8000   # then open http://localhost:8000
 ```
+
+That simple server serves original files without compression or multithreaded rendering.
+
+**Compressed hosting with Caddy.** `build-web-compressed` adds Brotli (quality 9) and gzip
+(level 9) sidecars beside JS, MJS, Wasm, HTML, CSS, JSON, SVG, and TTF/OTF assets of at least
+512 bytes. It keeps a sidecar only if smaller than the original and leaves images, WOFF fonts,
+and source maps alone. To compress an existing build: `python3 tool/compress_web.py build/web`.
+Copy the **whole directory**, including originals and sidecars, to the host. A `.br` file alone
+does not enable compression; the HTTP server must negotiate the encoding.
+
+Use [`frontend/deploy/Caddyfile.example`](../frontend/deploy/Caddyfile.example), or add this
+site to your existing Caddyfile:
+
+```caddyfile
+app.example.com {
+    root * /srv/procul-web
+    header {
+        Cross-Origin-Opener-Policy same-origin
+        Cross-Origin-Embedder-Policy credentialless
+    }
+    encode zstd gzip
+    file_server {
+        precompressed br gzip
+    }
+}
+```
+
+Stock Caddy serves the `.br`/`.gz` sidecars with `Content-Encoding` and the original asset's
+content type; `encode zstd gzip` compresses responses when no matching sidecar exists. No Brotli
+Caddy plugin is needed. See [Caddy's file server docs](https://caddyserver.com/docs/caddyfile/directives/file_server).
+The example file accepts `PROCUL_WEB_DOMAIN` (default `app.example.com`) and `PROCUL_WEB_ROOT`
+(default `/srv/procul-web`) environment variables. For containerized Caddy, mount the output
+read-only at that path, for example `./web:/srv/procul-web:ro`, and set the API's allowed origin.
+Keep these directives in the **web app's** site block, separate from the API proxy.
+
+For a local check from `frontend/` (stop with Ctrl+C):
+
+```bash
+PROCUL_WEB_DOMAIN=http://localhost:8000 PROCUL_WEB_ROOT="$PWD/build/web" \
+  caddy run --config deploy/Caddyfile.example --adapter caddyfile
+```
+
+Verify production responses:
+
+```bash
+curl -I -H 'Accept-Encoding: br' https://app.example.com/main.dart.wasm
+curl -I -H 'Accept-Encoding: gzip' https://app.example.com/main.dart.js
+```
+
+Expect `Content-Encoding: br` / `gzip`, `Vary: Accept-Encoding`, and
+`Content-Type: application/wasm` on the Wasm response. In browser DevTools, check that a
+supported browser requests `main.dart.wasm` and that `crossOriginIsolated` is `true` in the
+console. Also check sign-in, chat, and attachment downloads after changing hosting headers.
 
 **CORS — the important part.** A web build is a **browser** client, so the backend must approve
 its origin. Set the backend's `server.corsAllowedOrigins` to the app's exact origin:
@@ -339,11 +398,15 @@ browser before a request reaches the server. See [`configuration.md`](configurat
 
 **Gotchas**
 
+- **A current startup layout error appears in both web targets.** Browser smoke checks of the
+  release Connect screen logged `RenderBox was not laid out` in both Wasm and the JavaScript
+  fallback, although the sign-in form rendered. Check browser console errors as well as appearance.
 - **Streaming may buffer on the web.** On desktop/mobile, SSE streams incrementally through
   `http.Client.send()`; on the web the browser's `fetch`/XHR layer buffers by default, so replies
   may appear all at once. This is a platform limitation, not a backend bug.
-- **WebAssembly needs COOP/COEP headers** on the web server
+- **Multithreaded Wasm rendering needs COOP/COEP headers** on the web server
   (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless`).
+  Without cross-origin isolation, Skwasm uses a single thread. API CORS is still required.
 - **Exclude source maps from public hosting** if you generated them — upload the `.map` files to
   your private error monitor, not your CDN.
 
