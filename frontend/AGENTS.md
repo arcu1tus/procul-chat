@@ -104,9 +104,10 @@ frontend/
       conversation_actions.dart   # rename + delete dialogs (shared by sidebar and header)
       chat_screen.dart            # chat pane: header (+ model picker + usage chip, or a single
                                   #   overflow on narrow bars), reversed message list with
-                                  #   infinite scroll + bottom pull-to-refresh, per-response
+                                  #   infinite scroll + pull-to-refresh at both ends, per-response
                                   #   popover, composer; streaming reveal over assistant Markdown
       widgets/
+        chat_refresh_trigger.dart # ChatRefreshTrigger: refresh by pulling at either chat edge
         skeleton.dart             # Shimmer + Skeleton loading placeholders
         icon_action.dart          # IconAction: ghost icon button + tooltip + a11y label + busy spinner
         model_badges.dart         # CapabilityBadge(s) + ModelHealthDot (shared by picker & Models)
@@ -256,7 +257,12 @@ are editable. A hard failure triggers a resync (see below).
 - **`done` ends the turn.** `ChatController.send` sets `isStreaming = false` on `DoneEvent`
   (not in `finally`), so the composer re-enables while the trailing `title` event is still in
   flight. The `title` event then updates the conversation's title in the list.
-- **`ChatMessage.text` is mutable** on purpose: an empty assistant bubble is inserted up
+- **`ChatMessage.id` and `text` are mutable** on purpose: streamed bubbles initially lack server
+  IDs; background sync assigns them after matching the ordered local tail immediately after
+  its persisted anchor (role, text, attachment IDs), preserving bubble identity and avoiding
+  duplicate copies. Incomplete or mismatched history waits for the next sync. History requests
+  carry a generation guard so responses started before a reload, chat switch, new turn, or
+  disposal cannot mutate the current buffer or loading flags. An empty assistant bubble is inserted up
   front and filled in token-by-token as `TokenEvent`s arrive. `attachments` is a mutable final
   list too, so an edit can replace the files while preserving the object's identity (which keeps
   the entrance-animation tracking in `ChatScreen` stable).
@@ -375,9 +381,9 @@ are editable. A hard failure triggers a resync (see below).
   embedded on the Connect screen and wrapped in a modal by `showAddServerDialog`, which
   Settings also calls. It owns its own validation and inline error; the modal's Save action
   drives `ServerFormState.submit()` so there is a single implementation.
-- **Composer keyboard.** On desktop **Enter sends** and **Shift+Enter inserts a newline**
-  (`CallbackShortcuts` bound to `SingleActivator(enter)`; the shifted variant falls through
-  to the field). The on-screen send button and `onSubmitted` are kept, so
+- **Composer keyboard.** On desktop and web **Enter sends** and **Shift+Enter inserts a newline**
+  (`CallbackShortcuts` binds both variants explicitly; Shift+Enter replaces the current selection
+  or inserts at the caret and advances it). The on-screen send button and `onSubmitted` are kept, so
   `TextInputAction.send` still submits. The Enter/Shift+Enter hint is hidden on touch platforms
   (`defaultTargetPlatform` is Android/iOS), where it would be meaningless.
 - **Attachments are picked, uploaded, and queued in `ChatController`.** `ChatScreen` owns an
@@ -433,13 +439,16 @@ are editable. A hard failure triggers a resync (see below).
   menu (`compactActions`).
 - **Relative timestamps are shared.** `time_format.dart`'s `relativeTime` backs the
   conversation sidebar, the Models health rows, and the per-response popover.
-- **Pull-to-refresh uses `RefreshTrigger` plus an explicit button.** The conversation list
-  (`conversation_sidebar.dart`), the chat pane (`chat_screen.dart`) and the MCP section
+- **Pull-to-refresh uses a trigger plus an explicit button.** The conversation list
+  (`conversation_sidebar.dart`) and the MCP section
   (`settings_screen.dart`) each wrap their scrollable in `RefreshTrigger`; every one also has a
   refresh `IconAction`, because mouse-overscroll on desktop is less discoverable than a drag.
   Empty states are scrollable (`AlwaysScrollableScrollPhysics`) so the gesture still works with
-  no content. The chat pane is `RefreshTrigger(reverse: true)` (pull at the **bottom**, matching
-  its reversed list) and its `onRefresh` is **null while `chat.isStreaming`** so a pull cannot
+  no content. The chat pane uses `ChatRefreshTrigger`, which observes drag overscroll at both
+  edges: pull **up at the bottom** or **down at the top**, then release past the threshold.
+  It handles both clamping and bouncing physics and allows only one refresh at a time.
+  The reversed message list is always scrollable, including short chats. The trigger's
+  `onRefresh` is **null while `chat.isStreaming`** so a pull cannot
   clobber a live stream. `ChatController.refreshAll()` (list + a full active-history reload)
   backs the chat app-bar button; `reloadActiveConversation()` is a no-op when none is active or a
   reply is streaming. `ChatController.loadOlderMessages()` (keyset `afterMessageId`, prepended)

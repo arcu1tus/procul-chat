@@ -35,6 +35,7 @@ class ChatController extends ChangeNotifier {
   final List<ChatMessage> messages = [];
 
   String? _conversationId;
+  int _historyGeneration = 0;
 
   /// True while the conversation list is being fetched.
   bool isLoadingConversations = false;
@@ -195,20 +196,61 @@ class ChatController extends ChangeNotifier {
   /// message every time it ran. Best-effort — a failure is never surfaced.
   Future<void> syncActiveConversation() async {
     final id = _conversationId;
-    if (id == null || isStreaming || isLoadingMessages) return;
+    if (id == null || isStreaming || isLoadingMessages || isEditing) return;
+    final generation = _historyGeneration;
 
     try {
       final latest = await api.fetchMessages(id, limit: _pageSize);
-      if (_conversationId != id) return; // Switched away mid-fetch.
+      if (_conversationId != id ||
+          generation != _historyGeneration ||
+          isStreaming ||
+          isLoadingMessages ||
+          isEditing) {
+        return;
+      }
+      // SSE turns have no server IDs. Match their ordered tail against history
+      // before merging, otherwise the server copies appear as new bubbles.
+      final localStart = messages.indexWhere((message) => message.id == null);
+      var reconciled = false;
+      if (localStart != -1) {
+        final local = messages.sublist(localStart);
+        final anchor = localStart == 0 ? null : messages[localStart - 1].id;
+        final anchorIndex = anchor == null
+            ? -1
+            : latest.indexWhere((message) => message.id == anchor);
+        // With an anchor, only its immediate successor can be our local turn.
+        // Searching by text alone would confuse repeated prompts and replies.
+        if (anchor != null && anchorIndex == -1) return;
+        final matchStart = anchorIndex + 1;
+        // Keep local bubbles while history is incomplete, and retry next sync.
+        if (matchStart + local.length > latest.length) return;
+        for (var i = 0; i < local.length; i++) {
+          final remote = latest[matchStart + i];
+          final pending = local[i];
+          if ((pending.id != null && pending.id != remote.id) ||
+              pending.role != remote.role ||
+              pending.text != remote.text ||
+              !setEquals(
+                pending.attachments.map((a) => a.id).toSet(),
+                remote.attachments.map((a) => a.id).toSet(),
+              )) {
+            return;
+          }
+        }
+        for (var i = 0; i < local.length; i++) {
+          local[i].id = latest[matchStart + i].id;
+        }
+        reconciled = true;
+      }
       final known = {
         for (final message in messages)
           if (message.id != null) message.id,
       };
       final additions = [
         for (final message in latest)
-          if (message.id == null || !known.contains(message.id)) message,
+          if (message.id == null || known.add(message.id)) message,
       ];
-      if (additions.isEmpty) return;
+      if (additions.isEmpty && !reconciled) return;
       messages.addAll(additions);
       notifyListeners();
     } catch (_) {
@@ -227,7 +269,14 @@ class ChatController extends ChangeNotifier {
   /// in flight, and when the backend has no more history.
   Future<void> loadOlderMessages() async {
     final id = _conversationId;
-    if (id == null || isLoadingOlder || !hasMoreHistory || isStreaming) return;
+    if (id == null ||
+        isLoadingOlder ||
+        isLoadingMessages ||
+        !hasMoreHistory ||
+        isStreaming) {
+      return;
+    }
+    final generation = _historyGeneration;
     final oldestId = messages.isEmpty ? null : messages.first.id;
     if (oldestId == null) {
       hasMoreHistory = false;
@@ -243,19 +292,23 @@ class ChatController extends ChangeNotifier {
         limit: _pageSize,
         afterMessageId: oldestId,
       );
-      if (_conversationId != id) return; // Switched away mid-fetch.
+      if (_conversationId != id || generation != _historyGeneration) return;
       final existing = {for (final message in messages) message.id};
       final fresh = [
         for (final message in older)
-          if (!existing.contains(message.id)) message,
+          if (existing.add(message.id)) message,
       ];
       messages.insertAll(0, fresh);
       hasMoreHistory = older.length >= _pageSize;
     } catch (e) {
-      error = 'Could not load older messages: $e';
+      if (generation == _historyGeneration) {
+        error = 'Could not load older messages: $e';
+      }
     } finally {
-      isLoadingOlder = false;
-      notifyListeners();
+      if (generation == _historyGeneration) {
+        isLoadingOlder = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -268,6 +321,8 @@ class ChatController extends ChangeNotifier {
   /// Starts a fresh, unsaved conversation. The backend record is created on the
   /// first [send].
   Future<void> newChat() async {
+    _historyGeneration++;
+    isLoadingMessages = false;
     _conversationId = null;
     messages.clear();
     pendingAttachments.clear();
@@ -381,7 +436,9 @@ class ChatController extends ChangeNotifier {
   /// appends to the active one. The reply is streamed into the buffer.
   Future<void> send(String text) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty || isStreaming) return;
+    if (trimmed.isEmpty || isStreaming || isLoadingMessages) return;
+    _historyGeneration++;
+    isLoadingOlder = false;
 
     error = null;
     final attachments = List<Attachment>.of(pendingAttachments);
@@ -475,6 +532,7 @@ class ChatController extends ChangeNotifier {
     final messageId = editingMessageId;
     if (trimmed.isEmpty ||
         isStreaming ||
+        isLoadingMessages ||
         messageId == null ||
         !hasConversation) {
       return;
@@ -486,6 +544,8 @@ class ChatController extends ChangeNotifier {
       return;
     }
 
+    _historyGeneration++;
+    isLoadingOlder = false;
     error = null;
     // The pending queue is the desired attachment set (seeded by [beginEdit] and
     // edited by the user); send it as a full replacement.
@@ -686,6 +746,8 @@ class ChatController extends ChangeNotifier {
       await api.deleteConversation(id);
       conversations.removeWhere((c) => c.id == id);
       if (_conversationId == id) {
+        _historyGeneration++;
+        isLoadingMessages = false;
         _conversationId = null;
         messages.clear();
         pendingAttachments.clear();
@@ -704,6 +766,7 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _openConversation(String id) async {
+    final generation = ++_historyGeneration;
     _conversationId = id;
     isLoadingMessages = true;
     isLoadingOlder = false;
@@ -718,6 +781,7 @@ class ChatController extends ChangeNotifier {
 
     try {
       final history = await api.fetchMessages(id, limit: _pageSize);
+      if (generation != _historyGeneration) return;
       messages
         ..clear()
         ..addAll(history);
@@ -725,17 +789,21 @@ class ChatController extends ChangeNotifier {
       hasMoreHistory = history.length >= _pageSize;
       await _store.write(id);
     } catch (e) {
-      error = 'Could not load the chat: $e';
+      if (generation == _historyGeneration) {
+        error = 'Could not load the chat: $e';
+      }
     } finally {
-      isLoadingMessages = false;
-      notifyListeners();
+      if (generation == _historyGeneration) {
+        isLoadingMessages = false;
+        notifyListeners();
+      }
     }
 
     // The running total is fetched separately: a failure here must not mark the
     // chat as broken, so it is best-effort and never touches `error`.
     try {
       final usage = await api.fetchConversationUsage(id);
-      if (_conversationId == id) {
+      if (_conversationId == id && generation == _historyGeneration) {
         activeUsage = usage;
         notifyListeners();
       }
@@ -801,6 +869,7 @@ class ChatController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _historyGeneration++;
     api.close();
     super.dispose();
   }

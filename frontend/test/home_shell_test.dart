@@ -225,7 +225,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('Enter sends while Shift+Enter does not', (tester) async {
+  testWidgets('Enter sends while Shift+Enter inserts a newline', (
+    tester,
+  ) async {
     await tester.binding.setSurfaceSize(const Size(1200, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -249,12 +251,16 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'Hi');
 
-    // Shift+Enter is left to the field, so nothing is submitted.
+    // Shift+Enter must edit the text, not merely avoid submitting.
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     await tester.pumpAndSettle();
     expect(find.byType(GptMarkdown), findsNothing);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'Hi\n',
+    );
 
     // A plain Enter submits the message.
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);

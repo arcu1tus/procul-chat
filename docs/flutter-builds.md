@@ -33,6 +33,13 @@ for anything shipped). A **release** build has no working default, so always set
 
 Handy `just` shortcuts exist for all of these — see [`../frontend/justfile`](../frontend/justfile).
 
+Client behavior to check after a build: pull up at the bottom of the chat or down at its top
+to refresh, including when the chat is shorter than the viewport. Refresh is disabled during
+a streamed reply; the header also has a refresh action. On web and desktop, Enter sends and
+Shift+Enter inserts a newline at the caret (or replaces the selected text). The mobile keyboard's
+send action and the on-screen send button still submit. Refreshing after a streamed turn should
+show each message once, even when prompts and replies repeat identical text.
+
 ---
 
 ## Android
