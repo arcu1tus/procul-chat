@@ -26,9 +26,13 @@ public class ModelSelectionTests
         return new ProculDbContext(options);
     }
 
-    private static FakeChatClient Streaming(string reply) => new(
+    private static FakeChatClient Streaming(string reply, Action<ChatOptions?>? capture = null) => new(
         (_, _, _) => Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, reply))),
-        (_, _, _) => Updates(reply));
+        (_, options, _) =>
+        {
+            capture?.Invoke(options);
+            return Updates(reply);
+        });
 
     private static async IAsyncEnumerable<ChatResponseUpdate> Updates(
         string reply,
@@ -68,18 +72,6 @@ public class ModelSelectionTests
     }
 
     [Fact]
-    public async Task A_conversation_model_is_persisted()
-    {
-        await using var db = NewDb();
-        var conversation = new Conversation { Title = "t", Model = "b" };
-        db.Conversations.Add(conversation);
-        await db.SaveChangesAsync();
-
-        var reloaded = await db.Conversations.SingleAsync(c => c.Id == conversation.Id);
-        Assert.Equal("b", reloaded.Model);
-    }
-
-    [Fact]
     public async Task A_turn_uses_the_conversations_model()
     {
         await using var db = NewDb();
@@ -87,13 +79,19 @@ public class ModelSelectionTests
         db.Conversations.Add(conversation);
         await db.SaveChangesAsync();
 
+        db.ChangeTracker.Clear(); // Route using the persisted model, not the seeded instance.
+        ChatOptions? seen = null;
         var registry = ChatModelTestHelpers.Registry(
             (ChatModelTestHelpers.Definition("a"), Streaming("from-a")),
-            (ChatModelTestHelpers.Definition("b", isDefault: false), Streaming("from-b")));
+            (ChatModelTestHelpers.Definition("b", isDefault: false, maxOutputTokens: 42),
+                Streaming("from-b", options => seen = options)));
 
         var reply = await RunTurnAsync(NewService(db, registry), conversation.Id);
 
         Assert.Equal("from-b", reply);
+        Assert.Equal(42, seen?.MaxOutputTokens);
+        Assert.NotEmpty(seen!.Tools!);
+        Assert.Equal("b", (await db.Conversations.SingleAsync()).Model);
         Assert.Equal("b", (await db.TurnUsages.SingleAsync()).Model);
     }
 
@@ -113,6 +111,39 @@ public class ModelSelectionTests
 
         Assert.Equal("from-a", reply);
         Assert.Equal("a", (await db.TurnUsages.SingleAsync()).Model);
+    }
+
+    [Fact]
+    public async Task A_late_generated_title_preserves_a_rename_after_done()
+    {
+        var options = new DbContextOptionsBuilder<ProculDbContext>()
+            .UseInMemoryDatabase($"late-title-{Guid.NewGuid():N}").Options;
+        await using var db = new ProculDbContext(options);
+        var conversation = new Conversation { Title = "initial" };
+        db.Conversations.Add(conversation);
+        await db.SaveChangesAsync();
+        var registry = ChatModelTestHelpers.Registry(
+            (ChatModelTestHelpers.Definition(), Streaming("generated")));
+        var service = NewService(db, registry);
+        ChatStreamEventV1.Title? titleEvent = null;
+
+        await foreach (var evt in service.StreamNewConversationAsync(
+            conversation, "hello", [], new HashSet<ModelInputModality> { ModelInputModality.Text }, CancellationToken.None))
+        {
+            if (evt is ChatStreamEventV1.Done)
+            {
+                await using var other = new ProculDbContext(options);
+                var renamed = await other.Conversations.SingleAsync();
+                renamed.Title = "My title";
+                renamed.Revision++;
+                await other.SaveChangesAsync();
+            }
+            if (evt is ChatStreamEventV1.Title title) titleEvent = title;
+        }
+
+        Assert.Equal("My title", titleEvent?.Value.Title);
+        Assert.Equal("My title", (await db.Conversations.SingleAsync()).Title);
+        Assert.Equal(2, conversation.Revision);
     }
 
     [Fact]

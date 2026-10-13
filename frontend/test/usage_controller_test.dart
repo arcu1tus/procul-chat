@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -48,6 +49,48 @@ ChatApi _api(MockClient client) =>
     ChatApi(baseUrl: 'http://test', token: 'tok', client: client);
 
 void main() {
+  test(
+    'a late range response cannot replace the currently selected window',
+    () async {
+      final first = Completer<http.Response>();
+      final second = Completer<http.Response>();
+      final controller = UsageController(
+        api: _api(
+          MockClient((request) {
+            return request.url.queryParameters['days'] == '30'
+                ? first.future
+                : second.future;
+          }),
+        ),
+      );
+      addTearDown(controller.dispose);
+      final loading = controller.load();
+      final changing = controller.setRange(7);
+      first.complete(http.Response('old request failed', 500));
+      await loading;
+      expect(controller.isLoading, isTrue);
+      expect(controller.error, isNull);
+      second.complete(http.Response(jsonEncode(_summaryJson), 200));
+      await changing;
+      expect(controller.selectedRange, 7);
+      expect(controller.lifetime.totalTokens, 150);
+      expect(controller.error, isNull);
+      expect(controller.isLoading, isFalse);
+    },
+  );
+
+  test('disposing during load ignores the late response', () async {
+    final response = Completer<http.Response>();
+    final controller = UsageController(
+      api: _api(MockClient((_) => response.future)),
+    );
+    final loading = controller.load();
+    controller.dispose();
+    response.complete(http.Response(jsonEncode(_summaryJson), 200));
+    await loading;
+    expect(controller.summary, isNull);
+  });
+
   test(
     'fetchUsage parses the payload, sends the token, and passes days',
     () async {

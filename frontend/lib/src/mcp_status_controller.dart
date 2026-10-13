@@ -11,6 +11,8 @@ class McpStatusController extends ChangeNotifier {
   McpStatusController({required this.api});
 
   final ChatApi api;
+  int _generation = 0;
+  bool _disposed = false;
 
   /// The configured servers, in backend order.
   List<McpServerStatus> servers = const [];
@@ -23,18 +25,31 @@ class McpStatusController extends ChangeNotifier {
 
   /// Fetches the status, showing the loading state. Safe to call repeatedly.
   Future<void> refresh() async {
+    if (_disposed) return;
+    final generation = ++_generation;
     isLoading = true;
     error = null;
     notifyListeners();
 
     try {
-      servers = await api.fetchMcpServers();
+      final fetched = await api.fetchMcpServers();
+      if (generation != _generation) return;
+      servers = fetched;
     } catch (e) {
-      error = 'Could not load tool servers: $e';
+      if (generation == _generation) error = 'Could not load tool servers: $e';
     } finally {
-      isLoading = false;
-      notifyListeners();
+      if (generation == _generation) {
+        isLoading = false;
+        notifyListeners();
+      }
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _generation++;
+    super.dispose();
   }
 
   /// Initial load; identical to [refresh] but reads better at the call site.

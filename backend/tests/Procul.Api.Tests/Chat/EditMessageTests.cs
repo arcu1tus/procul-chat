@@ -299,6 +299,39 @@ public class EditMessageTests
     }
 
     [Fact]
+    public async Task Usage_cleanup_follows_discarded_message_ids_even_when_timestamps_overlap()
+    {
+        await using var db = NewDb();
+        var store = new FakeAttachmentStore();
+        var conversation = await SeedConversationAsync(db);
+        var t0 = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var first = await AddMessageAsync(db, conversation.Id, MessageRole.User, "first", t0);
+        var keptReply = await AddMessageAsync(db, conversation.Id, MessageRole.Assistant, "kept", t0.AddMinutes(1));
+        var edited = await AddMessageAsync(db, conversation.Id, MessageRole.User, "second", t0.AddMinutes(2));
+        var discardedReply = await AddMessageAsync(db, conversation.Id, MessageRole.Assistant, "discarded", t0.AddMinutes(3));
+        var keptUsage = new TurnUsage
+        {
+            ConversationId = conversation.Id, MessageId = keptReply.Id, Model = "test/model",
+            CreatedAt = t0.AddMinutes(5), Kind = TurnKind.Chat,
+        };
+        var discardedUsage = new TurnUsage
+        {
+            ConversationId = conversation.Id, MessageId = discardedReply.Id, Model = "test/model",
+            CreatedAt = edited.CreatedAt, Kind = TurnKind.Chat,
+        };
+        db.TurnUsages.AddRange(keptUsage, discardedUsage);
+        await db.SaveChangesAsync();
+
+        await RunEditAsync(NewService(db, Replying(), store), conversation.Id, edited.Id, "edited");
+
+        var usage = await db.TurnUsages.ToListAsync();
+        Assert.Equal(2, usage.Count);
+        Assert.Contains(usage, u => u.Id == keptUsage.Id);
+        Assert.DoesNotContain(usage, u => u.Id == discardedUsage.Id);
+        Assert.Equal("first", (await db.ConversationMessages.SingleAsync(m => m.Id == first.Id)).Text);
+    }
+
+    [Fact]
     public async Task Editing_bumps_the_conversations_updated_at()
     {
         await using var db = NewDb();

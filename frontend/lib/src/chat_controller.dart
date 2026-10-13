@@ -36,6 +36,9 @@ class ChatController extends ChangeNotifier {
 
   String? _conversationId;
   int _historyGeneration = 0;
+  int _turnGeneration = 0;
+  int _draftGeneration = 0;
+  bool _disposed = false;
 
   /// True while the conversation list is being fetched.
   bool isLoadingConversations = false;
@@ -142,6 +145,7 @@ class ChatController extends ChangeNotifier {
     try {
       final storedId = await _store.read();
       final list = await api.listConversations();
+      if (_disposed) return;
       conversations
         ..clear()
         ..addAll(list);
@@ -167,6 +171,7 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
     try {
       final list = await api.listConversations();
+      if (_disposed) return;
       conversations
         ..clear()
         ..addAll(list);
@@ -322,6 +327,9 @@ class ChatController extends ChangeNotifier {
   /// first [send].
   Future<void> newChat() async {
     _historyGeneration++;
+    _turnGeneration++;
+    _draftGeneration++;
+    isStreaming = false;
     isLoadingMessages = false;
     _conversationId = null;
     messages.clear();
@@ -351,43 +359,7 @@ class ChatController extends ChangeNotifier {
   Future<bool> uploadAttachment(
     PickedAttachment picked, {
     Set<ModelInputModality>? capabilities,
-  }) async {
-    if (isUploadingAttachment) return false;
-
-    if (capabilities != null) {
-      final problem = attachmentProblem(
-        fileName: picked.fileName,
-        contentType: picked.contentType,
-        sizeBytes: picked.bytes.length,
-        capabilities: capabilities,
-      );
-      if (problem != null) {
-        reportError(problem);
-        return false;
-      }
-    }
-
-    isUploadingAttachment = true;
-    error = null;
-    notifyListeners();
-
-    try {
-      final attachment = await api.uploadAttachment(
-        bytes: picked.bytes,
-        fileName: picked.fileName,
-        contentType: picked.contentType,
-        model: activeModel,
-      );
-      pendingAttachments.add(attachment);
-      return true;
-    } catch (e) {
-      error = 'Could not attach ${picked.fileName}: $e';
-      return false;
-    } finally {
-      isUploadingAttachment = false;
-      notifyListeners();
-    }
-  }
+  }) => _uploadAttachments([picked], capabilities: capabilities);
 
   /// Removes a pending attachment (its bytes stay on the server, unreferenced).
   void removePendingAttachment(String id) {
@@ -395,14 +367,63 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Uploads several picked files (a gallery/file multi-select), keeping going
-  /// when one fails so a single bad file does not drop the rest.
+  /// Uploads several picked files, keeping successful files when another fails.
   Future<void> uploadAttachments(
     List<PickedAttachment> picked, {
     Set<ModelInputModality>? capabilities,
   }) async {
-    for (final file in picked) {
-      await uploadAttachment(file, capabilities: capabilities);
+    await _uploadAttachments(picked, capabilities: capabilities);
+  }
+
+  Future<bool> _uploadAttachments(
+    List<PickedAttachment> picked, {
+    Set<ModelInputModality>? capabilities,
+  }) async {
+    if (isUploadingAttachment || isStreaming || _disposed || picked.isEmpty) {
+      return false;
+    }
+    final generation = _draftGeneration;
+    final model = activeModel;
+    var succeeded = true;
+    isUploadingAttachment = true;
+    error = null;
+    notifyListeners();
+    try {
+      for (final file in picked) {
+        if (_disposed || generation != _draftGeneration) return false;
+        if (capabilities != null) {
+          final problem = attachmentProblem(
+            fileName: file.fileName,
+            contentType: file.contentType,
+            sizeBytes: file.bytes.length,
+            capabilities: capabilities,
+          );
+          if (problem != null) {
+            error = problem;
+            succeeded = false;
+            continue;
+          }
+        }
+        try {
+          final attachment = await api.uploadAttachment(
+            bytes: file.bytes,
+            fileName: file.fileName,
+            contentType: file.contentType,
+            model: model,
+          );
+          if (_disposed || generation != _draftGeneration) return false;
+          pendingAttachments.add(attachment);
+          notifyListeners();
+        } catch (e) {
+          if (_disposed || generation != _draftGeneration) return false;
+          error = 'Could not attach ${file.fileName}: $e';
+          succeeded = false;
+        }
+      }
+      return succeeded;
+    } finally {
+      isUploadingAttachment = false;
+      notifyListeners();
     }
   }
 
@@ -436,7 +457,13 @@ class ChatController extends ChangeNotifier {
   /// appends to the active one. The reply is streamed into the buffer.
   Future<void> send(String text) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty || isStreaming || isLoadingMessages) return;
+    if (trimmed.isEmpty ||
+        isStreaming ||
+        isLoadingMessages ||
+        isUploadingAttachment ||
+        _disposed) {
+      return;
+    }
     _historyGeneration++;
     isLoadingOlder = false;
 
@@ -462,52 +489,33 @@ class ChatController extends ChangeNotifier {
     isStreaming = true;
     notifyListeners();
 
-    final reply = StringBuffer();
-    var hardFailure = false;
-    try {
-      final stream = _conversationId == null
-          ? api.createConversation(
-              trimmed,
-              model: activeModel,
-              attachmentIds: attachmentIds,
-            )
-          : api.sendMessage(
-              _conversationId!,
-              trimmed,
-              attachmentIds: attachmentIds,
-              expectedRevision: activeConversation?.revision,
-            );
-
-      await _consumeReply(
-        stream,
-        assistant: assistant,
-        reply: reply,
-        handleCreated: true,
-      );
-    } catch (e) {
-      error = '$e';
-      hardFailure = true;
-    } finally {
-      if (assistant.text.isEmpty) {
-        assistant.text = error == null ? '(no reply)' : '(failed)';
-      }
-      isStreaming = false;
-      notifyListeners();
-    }
-
-    // A hard failure (e.g. the connection dropped) can leave a local-only user
-    // message — or a conversation the server never finished creating. Resync so
-    // the buffer matches the server.
-    if (hardFailure && hasConversation) {
-      await reloadActiveConversation();
-    }
+    final stream = _conversationId == null
+        ? api.createConversation(
+            trimmed,
+            model: activeModel,
+            attachmentIds: attachmentIds,
+          )
+        : api.sendMessage(
+            _conversationId!,
+            trimmed,
+            attachmentIds: attachmentIds,
+            expectedRevision: activeConversation?.revision,
+          );
+    await _runReply(stream, assistant: assistant, handleCreated: true);
   }
 
   /// Enters edit mode for [message] (a user message): remembers its id and seeds
   /// the pending queue with its current attachments so the composer shows them.
   /// The caller fills the input field from the message's text.
   void beginEdit(ChatMessage message) {
-    if (isStreaming) return;
+    if (isStreaming ||
+        isLoadingMessages ||
+        message.id == null ||
+        message.role != MessageRole.user ||
+        !messages.contains(message)) {
+      return;
+    }
+    _draftGeneration++;
     editingMessageId = message.id;
     pendingAttachments
       ..clear()
@@ -517,6 +525,7 @@ class ChatController extends ChangeNotifier {
 
   /// Leaves edit mode and drops the seeded attachments.
   void cancelEdit() {
+    _draftGeneration++;
     editingMessageId = null;
     pendingAttachments.clear();
     notifyListeners();
@@ -533,6 +542,8 @@ class ChatController extends ChangeNotifier {
     if (trimmed.isEmpty ||
         isStreaming ||
         isLoadingMessages ||
+        isUploadingAttachment ||
+        _disposed ||
         messageId == null ||
         !hasConversation) {
       return;
@@ -569,40 +580,71 @@ class ChatController extends ChangeNotifier {
     isStreaming = true;
     notifyListeners();
 
-    final reply = StringBuffer();
+    await _runReply(
+      api.editMessage(
+        _conversationId!,
+        messageId,
+        trimmed,
+        attachmentIds: attachmentIds,
+        expectedRevision: activeConversation?.revision,
+      ),
+      assistant: assistant,
+      refreshUsage: true,
+    );
+  }
+
+  // Both send and edit use the same failure recovery and stream ownership.
+  // A completed create stream can still be waiting for its title while the
+  // next turn starts; its cleanup must not change that newer turn's state.
+  Future<void> _runReply(
+    Stream<ChatStreamEvent> stream, {
+    required ChatMessage assistant,
+    bool handleCreated = false,
+    bool refreshUsage = false,
+  }) async {
+    final generation = ++_turnGeneration;
+    _draftGeneration++;
     var hardFailure = false;
     var conflict = false;
     try {
       await _consumeReply(
-        api.editMessage(
-          _conversationId!,
-          messageId,
-          trimmed,
-          attachmentIds: attachmentIds,
-          expectedRevision: activeConversation?.revision,
-        ),
+        stream,
         assistant: assistant,
-        reply: reply,
+        reply: StringBuffer(),
+        generation: generation,
+        handleCreated: handleCreated,
       );
     } catch (e) {
+      if (generation != _turnGeneration) return;
       conflict = _isConflict(e);
       error = conflict ? _conflictMessage : '$e';
       hardFailure = true;
     } finally {
-      if (assistant.text.isEmpty) {
-        assistant.text = error == null ? '(no reply)' : '(failed)';
+      if (generation == _turnGeneration) {
+        if (assistant.text.isEmpty && assistant.attachments.isEmpty) {
+          assistant.text = error == null ? '(no reply)' : '(failed)';
+        }
+        isStreaming = false;
+        notifyListeners();
       }
-      isStreaming = false;
-      notifyListeners();
     }
-
-    // A hard failure means the server may hold a different branch; resync.
+    if (generation != _turnGeneration || !hasConversation) return;
     if (hardFailure) {
-      if (conflict) {
-        await _resyncAfterConflict();
-      } else {
-        await reloadActiveConversation();
-      }
+      // Refresh revisions as well as history, or the next request conflicts again.
+      final failure = error;
+      await refreshConversations();
+      if (generation != _turnGeneration) return;
+      final recoveryGeneration = _turnGeneration + 1;
+      await reloadActiveConversation();
+      if (_disposed || _turnGeneration != recoveryGeneration) return;
+      error = conflict ? _conflictMessage : failure;
+      notifyListeners();
+    } else if (refreshUsage || error != null) {
+      // An edit replaces old usage; an SSE error may still have persisted the
+      // user message and bumped the revision. Keep its partial reply visible.
+      await refreshConversations();
+      if (generation != _turnGeneration) return;
+      await _refreshUsage(_conversationId!, _historyGeneration);
     }
   }
 
@@ -612,9 +654,19 @@ class ChatController extends ChangeNotifier {
     Stream<ChatStreamEvent> stream, {
     required ChatMessage assistant,
     required StringBuffer reply,
+    required int generation,
     bool handleCreated = false,
   }) async {
+    var terminated = false;
     await for (final event in stream) {
+      if (_disposed) return;
+      // Titles belong to their own conversation, even after a chat switch.
+      if (event case TitleEvent(:final conversationId, :final title)) {
+        _applyTitle(conversationId, title);
+        continue;
+      }
+      if (generation != _turnGeneration) continue;
+      if (terminated) continue;
       switch (event) {
         case CreatedEvent(:final conversation):
           if (handleCreated) {
@@ -642,9 +694,16 @@ class ChatController extends ChangeNotifier {
             }
           }
           notifyListeners();
+        case ImageEvent(:final attachment):
+          if (!assistant.attachments.any((a) => a.id == attachment.id)) {
+            assistant.attachments.add(attachment);
+            notifyListeners();
+          }
         case ErrorEvent(:final error):
+          terminated = true;
           this.error = error;
         case DoneEvent(:final revision):
+          terminated = true;
           // The reply is complete. Stop treating the turn as streaming now, so
           // the composer is usable even if the `title` event is still in
           // flight (it is emitted after the reply). Record the new revision so
@@ -664,6 +723,11 @@ class ChatController extends ChangeNotifier {
           notifyListeners();
         case AcknowledgeEvent():
       }
+    }
+    if (!terminated && generation == _turnGeneration && !_disposed) {
+      throw ChatApiException(
+        'The reply stream ended before the turn completed.',
+      );
     }
   }
 
@@ -747,6 +811,9 @@ class ChatController extends ChangeNotifier {
       conversations.removeWhere((c) => c.id == id);
       if (_conversationId == id) {
         _historyGeneration++;
+        _turnGeneration++;
+        _draftGeneration++;
+        isStreaming = false;
         isLoadingMessages = false;
         _conversationId = null;
         messages.clear();
@@ -767,6 +834,9 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _openConversation(String id) async {
     final generation = ++_historyGeneration;
+    _turnGeneration++;
+    _draftGeneration++;
+    isStreaming = false;
     _conversationId = id;
     isLoadingMessages = true;
     isLoadingOlder = false;
@@ -799,6 +869,11 @@ class ChatController extends ChangeNotifier {
       }
     }
 
+    if (generation != _historyGeneration) return;
+    await _refreshUsage(id, generation);
+  }
+
+  Future<void> _refreshUsage(String id, int generation) async {
     // The running total is fetched separately: a failure here must not mark the
     // chat as broken, so it is best-effort and never touches `error`.
     try {
@@ -868,8 +943,16 @@ class ChatController extends ChangeNotifier {
   }
 
   @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
   void dispose() {
+    _disposed = true;
     _historyGeneration++;
+    _turnGeneration++;
+    _draftGeneration++;
     api.close();
     super.dispose();
   }

@@ -32,10 +32,11 @@ public class ShowImageToolTests
         FakeAttachmentStore store,
         IHttpClientFactory factory,
         GeneratedMediaCollector? collector = null,
-        long maxFileSizeBytes = 20 * 1024 * 1024) =>
+        long maxFileSizeBytes = 20 * 1024 * 1024,
+        IRemoteUrlPolicy? policy = null) =>
         new(
             factory,
-            new PermissiveRemoteUrlPolicy(),
+            policy ?? new PermissiveRemoteUrlPolicy(),
             new TurnToolContext(
                 db, store, TestAttachmentOptions.Create(maxFileSizeBytes: maxFileSizeBytes),
                 Guid.NewGuid(), "test/model", collector ?? new GeneratedMediaCollector()),
@@ -79,21 +80,63 @@ public class ShowImageToolTests
         Assert.IsType<ChatStreamEventV1.Image>(evt);
     }
 
-    [Fact]
-    public async Task Decodes_base64_with_a_data_prefix()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Decodes_base64_at_the_size_limit_with_optional_data_prefix_and_whitespace(bool prefix)
     {
         await using var db = NewDb();
         var store = new FakeAttachmentStore();
         var collector = new GeneratedMediaCollector();
-        var tool = NewTool(db, store, Responder(HttpStatusCode.NotFound, [], "text/plain"), collector).Create();
+        var tool = NewTool(db, store, Responder(HttpStatusCode.NotFound, [], "text/plain"), collector,
+            maxFileSizeBytes: Png.Length).Create();
 
-        var data = "data:image/png;base64," + Convert.ToBase64String(Png);
+        var data = (prefix ? "data:image/png;base64," : "") +
+            string.Join("\n", Convert.ToBase64String(Png).Chunk(4).Select(chunk => new string(chunk)));
         var result = await tool.InvokeAsync(new AIFunctionArguments { ["base64"] = data });
 
         Assert.Contains("Displayed the image", AsText(result));
         var stored = await db.Attachments.SingleAsync();
         Assert.Equal("image/png", stored.ContentType);
         Assert.NotNull(store.Get(stored.StorageKey));
+    }
+
+    [Fact]
+    public async Task Checks_each_redirect_destination_before_fetching_it()
+    {
+        await using var db = NewDb();
+        var store = new FakeAttachmentStore();
+        var factory = new FakeHttpClientFactory(request => new HttpResponseMessage(HttpStatusCode.Found)
+        {
+            Headers = { Location = new Uri(request.RequestUri!.AbsolutePath == "/start"
+                ? "/next" : "http://127.0.0.1/private", UriKind.RelativeOrAbsolute) },
+        });
+        var tool = NewTool(db, store, factory, policy: new SsrfRemoteUrlPolicy()).Create();
+
+        var result = await tool.InvokeAsync(new AIFunctionArguments { ["url"] = "https://8.8.8.8/start" });
+
+        Assert.Contains("private or loopback", AsText(result));
+        Assert.Equal(new[] { "/start", "/next" }, factory.Requests.Select(r => r.RequestUri!.AbsolutePath));
+        Assert.Empty(await db.Attachments.ToListAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Bounds_redirect_loops_and_rejects_missing_destinations(bool missingDestination)
+    {
+        await using var db = NewDb();
+        var factory = new FakeHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.Found)
+        {
+            Headers = { Location = missingDestination ? null : new Uri("/loop", UriKind.Relative) },
+        });
+        var tool = NewTool(db, new FakeAttachmentStore(), factory).Create();
+
+        var result = await tool.InvokeAsync(new AIFunctionArguments { ["url"] = "https://images.test/loop" });
+
+        Assert.Contains(missingDestination ? "without a destination" : "too many times", AsText(result));
+        Assert.Equal(missingDestination ? 1 : 6, factory.Requests.Count);
+        Assert.Empty(await db.Attachments.ToListAsync());
     }
 
     [Fact]

@@ -309,7 +309,9 @@ spends tokens thinking before it emits a title; the sanitiser (`MaxTitleWords` =
 obviously long or meta answer and the caller falls back. The title call only produces a string —
 it never touches the `DbContext`, so it can run alongside the reply stream without sharing a
 context; the write happens after the stream completes. If it fails/times out, `FallbackTitle`
-is used. Rename/delete do not change `UpdatedAt`; only new messages (and an edit) do.
+is used. Rename/delete do not change `UpdatedAt`; only new messages (and an edit) do. The title
+write re-reads the conversation after `done`, preserves a manual rename, and skips a conversation
+deleted while the title was pending.
 
 ## Message editing
 
@@ -320,8 +322,9 @@ usage? → (error|done)`; no `created`, no `title`). Request body: `{"text":"…
 **Editing is destructive in v1.** `ChatStreamServiceV1.EditMessageAsync` truncates every message
 after the edited one (`(CreatedAt, Id)` keyset order), deletes those messages' attachment
 **bytes** from the store (metadata + Postgres blobs cascade; S3 objects do not — the same fix now
-also applies to conversation delete), drops their `TurnUsage` rows so the in-chat counter matches
-the visible branch, rewrites the text, optionally replaces the attachments, bumps
+also applies to conversation delete), drops `TurnUsage` rows linked to discarded message IDs
+(timestamp fallback for legacy/unlinked rows) so the in-chat counter matches the visible branch,
+rewrites the text, optionally replaces the attachments, bumps
 `Conversation.UpdatedAt`, and re-prompts the model through the shared reply core. The title is
 **not** regenerated, even when the first message is edited. The edited turn's own reply usage row
 is replaced by the new reply's row.
@@ -517,7 +520,10 @@ Two model-facing tools produce media that is stored like an upload and rendered 
   result is rejected), then stores the bytes. `IRemoteUrlPolicy`
   (`SsrfRemoteUrlPolicy`) blocks non-http(s) schemes and loopback/private/link-local addresses
   (hostnames are resolved first; IP literals are checked directly, including IPv4-mapped IPv6 such
-  as `::ffff:127.0.0.1`). Stored rows are marked `Source = "generated"`; the filename is
+  as `::ffff:127.0.0.1`). The named `show-image` HTTP client disables automatic redirects;
+  the tool follows at most five redirects and checks every destination before fetching it.
+  DNS rebinding remains a limitation because the HTTP connection resolves DNS again. Stored rows
+  are marked `Source = "generated"`; the filename is
   `generated-<timestamp>.<ext>` / `shown-<timestamp>.<ext>`.
 
 Stored media is emitted to the client as an `image` SSE event (`{"attachmentId","fileName",
@@ -565,7 +571,8 @@ default), `ResolveOrDefault(slug)` (logs a warning when a stored slug is gone).
   `AddConversationModel`) remembers the model. `POST /conversations` accepts an optional `model`
   (validated → 400 on unknown), `PUT /conversations/{id}/model` changes it, and every turn uses
   the conversation's model (stale/unknown → default with a warning). `ConversationV1.Model`
-  echoes it everywhere a conversation is returned.
+  echoes it everywhere a conversation is returned. Reply calls pass that model's
+  `MaxOutputTokens` to `ChatOptions`; title and health calls use their separate caps.
 - **Title model.** The title call uses `config.titleModel` when set, else the conversation's model.
 - **`ChatModelDefinition`** carries `Slug`, `Name`, `Description`, `BaseUrl`, `ApiKey`,
   `Provider` (`OpenRouter | OpenAiCompatible`), `DeclaredCapabilities` (a set of

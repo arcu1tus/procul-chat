@@ -162,7 +162,7 @@ of truth (it replaced the old `OPENROUTER_MODEL_SLUG`/`OPENROUTER_API_KEY` pair)
 | `default` | boolean | no | `false` | Marks the default model. At most one model may set this; if none does, the first configured model is used (with a warning). |
 | `healthCheck` | boolean | no | `true` | Whether this model is probed at startup and on the idle cadence. |
 | `discoverCapabilities` | boolean | no | `true` | Whether to query the provider's `/models` endpoint for capabilities. |
-| `maxOutputTokens` | integer ≥ 1 | no | – | Upper bound on output tokens, or the provider default. |
+| `maxOutputTokens` | integer ≥ 1 | no | – | Upper bound on output tokens for each reply/tool-loop model call, or the provider default. Titles and health probes use their own caps. |
 
 ```jsonc
 "models": [
@@ -236,7 +236,9 @@ not mention it.
 
 Generated and shown images are stored like uploads and served from `GET /v1/attachments/{id}`; the
 chat receives an `image` SSE event carrying the attachment id. The `show_image` tool (URL or
-base64) is always offered; its URL fetches are SSRF-guarded (public `http(s)` only).
+base64) is always offered; its URL fetches are SSRF-guarded (public `http(s)` only). Every
+redirect destination is checked, with at most five redirects per fetch. DNS rebinding is still
+a limitation because the HTTP connection resolves the hostname again.
 
 ### `modelHealth`
 

@@ -11,6 +11,8 @@ class UsageController extends ChangeNotifier {
   UsageController({required this.api});
 
   final ChatApi api;
+  int _generation = 0;
+  bool _disposed = false;
 
   /// The ranges offered, in tokens-days. `365` is the "all" view (the backend
   /// caps a window at 366 days).
@@ -42,24 +44,39 @@ class UsageController extends ChangeNotifier {
 
   /// Fetches the summary for [selectedRange], showing the loading state.
   Future<void> refresh() async {
+    if (_disposed) return;
+    final generation = ++_generation;
     isLoading = true;
     error = null;
     notifyListeners();
 
     try {
-      summary = await api.fetchUsage(days: selectedRange);
+      final fetched = await api.fetchUsage(days: selectedRange);
+      if (generation != _generation) return;
+      summary = fetched;
     } catch (e) {
-      error = 'Could not load usage: $e';
+      if (generation == _generation) error = 'Could not load usage: $e';
     } finally {
-      isLoading = false;
-      notifyListeners();
+      if (generation == _generation) {
+        isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
   /// Initial load; identical to [refresh] but reads better at the call site.
   Future<void> load() => refresh();
 
-  /// Switches the window and refetches. No-op when the range is unchanged.
+  @override
+  void dispose() {
+    _disposed = true;
+    _generation++;
+    super.dispose();
+  }
+
+  /// Switches the window and refetches.
+  ///
+  /// Does nothing when the range is unchanged.
   Future<void> setRange(int days) async {
     if (days == selectedRange) return;
     selectedRange = days;

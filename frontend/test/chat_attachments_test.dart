@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -89,6 +90,88 @@ ChatController _chat(MockClient client, {String? stored}) => ChatController(
 );
 
 void main() {
+  test('an upload cannot attach to a draft opened after it started', () async {
+    final response = Completer<http.Response>();
+    var uploads = 0;
+    final chat = _chat(
+      MockClient((_) {
+        uploads++;
+        return response.future;
+      }),
+    );
+    addTearDown(chat.dispose);
+    final uploading = chat.uploadAttachments([
+      PickedAttachment(
+        bytes: _textBytes,
+        fileName: 'first.txt',
+        contentType: 'text/plain',
+      ),
+      PickedAttachment(
+        bytes: _textBytes,
+        fileName: 'second.txt',
+        contentType: 'text/plain',
+      ),
+    ]);
+    expect(chat.isUploadingAttachment, isTrue);
+    await chat.send('cannot send while uploading');
+    expect(chat.messages, isEmpty);
+    await chat.newChat();
+    response.complete(
+      http.Response(
+        jsonEncode({
+          'id': 'a1',
+          'fileName': 'first.txt',
+          'contentType': 'text/plain',
+          'sizeBytes': 5,
+        }),
+        201,
+      ),
+    );
+    await uploading;
+    expect(uploads, 1);
+    expect(chat.pendingAttachments, isEmpty);
+    expect(chat.isUploadingAttachment, isFalse);
+    expect(chat.error, isNull);
+  });
+
+  test(
+    'a batch keeps successful uploads and reports an earlier failure',
+    () async {
+      var uploads = 0;
+      final chat = _chat(
+        MockClient((_) async {
+          uploads++;
+          if (uploads == 1) return http.Response('too big', 413);
+          return http.Response(
+            jsonEncode({
+              'id': 'a2',
+              'fileName': 'second.txt',
+              'contentType': 'text/plain',
+              'sizeBytes': 5,
+            }),
+            201,
+          );
+        }),
+      );
+      addTearDown(chat.dispose);
+      await chat.uploadAttachments([
+        PickedAttachment(
+          bytes: _textBytes,
+          fileName: 'first.txt',
+          contentType: 'text/plain',
+        ),
+        PickedAttachment(
+          bytes: _textBytes,
+          fileName: 'second.txt',
+          contentType: 'text/plain',
+        ),
+      ]);
+      expect(chat.pendingAttachments.single.id, 'a2');
+      expect(chat.error, contains('first.txt'));
+      expect(chat.isUploadingAttachment, isFalse);
+    },
+  );
+
   test('uploading queues an attachment and send forwards its id', () async {
     final creates = <http.Request>[];
     final client = MockClient((request) async {

@@ -501,6 +501,14 @@ class ChatApi {
       ),
       'acknowledge' => const AcknowledgeEvent(),
       'token' => TokenEvent('${value['content'] ?? ''}'),
+      'image' => ImageEvent(
+        Attachment(
+          id: '${value['attachmentId']}',
+          fileName: value['fileName'] as String? ?? 'image',
+          contentType: value['contentType'] as String? ?? 'image/png',
+          sizeBytes: 0,
+        ),
+      ),
       'title' => TitleEvent(
         conversationId: '${value['conversationId'] ?? ''}',
         title: '${value['title'] ?? ''}',

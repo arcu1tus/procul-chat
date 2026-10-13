@@ -110,6 +110,7 @@ internal sealed class ChatStreamServiceV1(
         [EnumeratorCancellation] CancellationToken ct
     )
     {
+        var initialTitle = conversation.Title;
         yield return new ChatStreamEventV1.Created(new ChatStreamCreatedV1(
             new ConversationV1(conversation.Id, conversation.Title, conversation.CreatedAt, conversation.UpdatedAt, conversation.Model, conversation.Revision)
         ));
@@ -125,7 +126,18 @@ internal sealed class ChatStreamServiceV1(
         // The title call runs concurrently with the reply, but its usage write happens here,
         // after the reply's write, so the injected DbContext is never used from two places.
         var titleResult = await titleTask;
-        conversation.Title = titleResult.Title ?? FallbackTitle(initialMessage);
+        // `done` lets the client rename/delete while the title is pending. Re-read the row
+        // before writing so a late generated title does not overwrite that explicit rename.
+        await db.Entry(conversation).ReloadAsync(ct);
+        if (db.Entry(conversation).State == EntityState.Detached)
+        {
+            yield break;
+        }
+
+        if (conversation.Title == initialTitle)
+        {
+            conversation.Title = titleResult.Title ?? FallbackTitle(initialMessage);
+        }
         if (titleResult.Usage.HasUsage)
         {
             db.TurnUsages.Add(titleResult.Usage.ToTurnUsage(conversation.Id, titleDefinition.Slug, TurnKind.Title));
@@ -225,8 +237,12 @@ internal sealed class ChatStreamServiceV1(
         // 2. Drop the discarded turns' usage rows so the counter matches the visible branch. The
         //    edited turn's reply row is included (it is created after the user message) and is
         //    replaced by the new reply's row.
+        var discardedIds = discarded.Select(m => m.Id).ToList();
         var discardedUsage = await db.TurnUsages
-            .Where(u => u.ConversationId == conversationId && u.CreatedAt > message.CreatedAt)
+            .Where(u => u.ConversationId == conversationId
+                && (u.MessageId != null
+                    ? discardedIds.Contains(u.MessageId.Value)
+                    : u.CreatedAt > message.CreatedAt))
             .ToListAsync(ct);
         db.TurnUsages.RemoveRange(discardedUsage);
 
@@ -343,7 +359,11 @@ internal sealed class ChatStreamServiceV1(
         var toolContext = new TurnToolContext(
             db, attachmentStore, attachmentOptions, conversationId, definition.Slug, media);
 
-        var options = new ChatOptions { Tools = toolFactory.BuildTurnTools(toolContext, mcp) };
+        var options = new ChatOptions
+        {
+            Tools = toolFactory.BuildTurnTools(toolContext, mcp),
+            MaxOutputTokens = definition.MaxOutputTokens,
+        };
 
         var reply = new StringBuilder();
         var failed = false;
