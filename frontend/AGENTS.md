@@ -417,9 +417,12 @@ are editable. A hard failure triggers a resync (see below).
   whose `colorScheme.ring` is transparent (the `FocusOutline` default border is the scheme's
   `ring`), leaving only the capsule's outer ring.
   `Key('message-input')` identifies the composer field because the sidebar now also has a
-  `TextField` for search. Send is disabled for an empty draft and while attachments are read/uploaded; media-only messages are allowed; the
-  keyboard submission path applies the same upload guard. The hint switches to reply progress
-  during streaming and explains destructive editing while editing. The a11y labels
+  `TextField` for search. The field stays editable during history loads, media reads/uploads,
+  and replies so waiting on an operation cannot lock typing or detach the web input connection.
+  Send is disabled during those operations and for an empty/incompatible draft; media-only
+  messages are allowed, and keyboard submission applies the same guards. A rejected send
+  restores its text ahead of any newer draft instead of overwriting it. The hint switches to
+  reply progress during streaming and explains destructive editing while editing. The a11y labels
   (`Send message` / `Attach file`) and keyboard semantics are preserved.
 - **Errors are user-facing strings** on `ChatController.error`; `ChatScreen` shows them as a
   shadcn toast. Streaming failures still leave the partial reply in the bubble.

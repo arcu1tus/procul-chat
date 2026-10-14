@@ -41,9 +41,9 @@ class Composer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
-    final enabled = !chat.isStreaming && !chat.isLoadingMessages;
+    final turnIdle = !chat.isStreaming && !chat.isLoadingMessages;
     final canAttach =
-        enabled &&
+        turnIdle &&
         !chat.isUploadingAttachment &&
         !chat.isReadingMedia &&
         chat.mediaReady;
@@ -117,13 +117,12 @@ class Composer extends StatelessWidget {
                 _Capsule(
                   controller: controller,
                   focusNode: focusNode,
-                  enabled:
-                      enabled &&
-                      !chat.isUploadingAttachment &&
-                      !chat.isReadingMedia,
                   canSubmit:
-                      pending.isEmpty ||
-                      chat.submissionProblem('message') == null,
+                      turnIdle &&
+                      !chat.isUploadingAttachment &&
+                      !chat.isReadingMedia &&
+                      (pending.isEmpty ||
+                          chat.submissionProblem('message') == null),
                   hasAttachments: pending.isNotEmpty,
                   onPaste: onPaste,
                   canAttach: canAttach,
@@ -196,7 +195,6 @@ class _Capsule extends StatelessWidget {
   const _Capsule({
     required this.controller,
     required this.focusNode,
-    required this.enabled,
     required this.canAttach,
     required this.isEditing,
     required this.onAttach,
@@ -211,7 +209,6 @@ class _Capsule extends StatelessWidget {
   final VoidCallback? onPaste;
   final TextEditingController controller;
   final FocusNode focusNode;
-  final bool enabled;
   final bool canAttach;
   final bool isEditing;
   final ValueChanged<BuildContext> onAttach;
@@ -289,7 +286,8 @@ class _Capsule extends StatelessWidget {
                   ),
                   child: TextField(
                     key: const Key('message-input'),
-                    enabled: enabled,
+                    // Keep the editor and its browser input connection alive
+                    // while work is pending. Only submission needs to wait.
                     contextMenuBuilder: onPaste == null
                         ? null
                         : (context, editable) => TextFieldTapRegion(
@@ -351,7 +349,6 @@ class _Capsule extends StatelessWidget {
                   const Spacer(),
                   _SendButton(
                     enabled:
-                        enabled &&
                         canSubmit &&
                         (controller.text.trim().isNotEmpty || hasAttachments),
                     isEditing: isEditing,
