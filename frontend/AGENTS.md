@@ -198,6 +198,11 @@ zstd/gzip fallback and COOP/COEP headers to enable multithreaded Skwasm. Configu
 on every PR to `main` and push to `main`. Flutter is pinned to **3.47.7** in both that workflow
 and `publish-flutter-app.yml`; update both pins together when changing the SDK.
 
+Both Linux test jobs install `pkg-config` and `libgtk-3-dev` before Flutter setup. Clipboard/drop
+Rust build hooks compile native host assets even for unit/widget tests; GTK development headers
+provide the GLib/GObject/GDK pkg-config metadata they require. Preserve this prerequisite in
+release validation as well as PR CI (installing it only in the Linux release-build job is too late).
+
 `publish-flutter-app.yml` builds only on valid `v<SemVer>` tag pushes, after repeating analysis
 and tests. `tool/release_metadata.py` validates full SemVer, strips the leading `v` for asset
 names, emits a numeric `build_name` for native platform version fields, and omits build metadata

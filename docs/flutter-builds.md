@@ -71,6 +71,10 @@ It also tests release tag parsing. Dependencies are restored with `--enforce-loc
 Flutter **3.47.7** (Dart 3.13.5) is pinned in both CI and the release workflow; update both
 pins together when upgrading the SDK.
 
+Linux unit/widget tests also compile the clipboard/drop package's Rust host assets. Both CI test
+jobs install `pkg-config` and `libgtk-3-dev` first; for local Debian/Ubuntu test runs install those
+packages too. GTK development headers supply the required GLib, GObject, and GDK metadata.
+
 Push a valid `v<SemVer>` tag (for example `v1.2.3` or `v1.2.3-rc.1`) to run
 [`publish-flutter-app.yml`](../.github/workflows/publish-flutter-app.yml), matching the backend's
 tag-driven publishing. Other `v*` tags skip client tests/builds/publication. Tests and analysis
@@ -271,7 +275,7 @@ obfuscate the Dart code with `--obfuscate --split-debug-info=build/debug-info`.
 
 ```bash
 sudo apt-get update -y
-sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev
+sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev libstdc++-12-dev
 ```
 
 At **runtime** the app also needs the GTK libraries (and, for the secure token store, `libsecret`
