@@ -47,6 +47,8 @@ and Settings at the bottom. Search filters loaded chat titles locally. Welcome c
 focus a draft for the user to finish; they do not send automatically. The centered composer
 allows media-only messages and keeps Send disabled for empty drafts, incompatible attachments,
 and while attachments are being read or uploaded, including keyboard submission.
+The text field stays editable while loading history, reading/uploading media, or waiting for
+a reply; only sending waits for those operations. Rejected sends preserve any newer draft text.
 Sign-in fields keep their labels visible and offer a password visibility toggle.
 
 The in-app logo is bundled at `frontend/assets/brand/procul-logo.svg`, derived from the original

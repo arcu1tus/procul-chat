@@ -301,7 +301,9 @@ class _ChatScreenState extends State<ChatScreen> {
       await widget.chat.send(text);
     }
     if (mounted && widget.chat.rejectedDraftText != null) {
-      _inputController.text = widget.chat.rejectedDraftText!;
+      final rejected = widget.chat.rejectedDraftText!;
+      final draft = _inputController.text;
+      _inputController.text = draft.isEmpty ? rejected : '$rejected\n\n$draft';
       widget.chat.rejectedDraftText = null;
     }
   }
