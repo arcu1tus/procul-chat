@@ -1,3 +1,5 @@
+import 'support/policy_chat_api.dart';
+
 import 'dart:convert';
 
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
@@ -8,7 +10,6 @@ import 'package:http/testing.dart';
 import 'package:procul_chat_flutter/src/app_theme.dart';
 import 'package:procul_chat_flutter/src/auth_api.dart';
 import 'package:procul_chat_flutter/src/auth_controller.dart';
-import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
 import 'package:procul_chat_flutter/src/conversation_sidebar.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
@@ -61,7 +62,11 @@ void main() {
       (request) async => http.Response('{"conversations":[]}', 200),
     );
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
@@ -91,7 +96,11 @@ void main() {
       );
     });
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
@@ -118,7 +127,11 @@ void main() {
       (request) async => http.Response('{"conversations":[]}', 200),
     );
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
@@ -149,7 +162,7 @@ void main() {
         (request) async => http.Response('{"conversations":[]}', 200),
       );
       final chat = ChatController(
-        api: ChatApi(
+        api: PolicyChatApi(
           baseUrl: 'http://test',
           token: 'test-token',
           client: client,
@@ -197,7 +210,11 @@ void main() {
       (request) async => http.Response('{"conversations":[]}', 200),
     );
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
@@ -240,7 +257,11 @@ void main() {
       );
     });
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
     final settings = SettingsController();
@@ -307,7 +328,11 @@ void main() {
       return http.Response('{"conversations":[]}', 200);
     });
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
 
@@ -337,7 +362,11 @@ void main() {
       return http.Response('{"conversations":[]}', 200);
     });
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
 
@@ -371,7 +400,11 @@ void main() {
       (request) async => http.Response('{"conversations":[]}', 200),
     );
     final chat = ChatController(
-      api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+      api: PolicyChatApi(
+        baseUrl: 'http://test',
+        token: 'test-token',
+        client: client,
+      ),
       store: FakeConversationStore(),
     );
 

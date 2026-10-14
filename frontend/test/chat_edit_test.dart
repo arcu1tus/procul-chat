@@ -1,3 +1,5 @@
+import 'support/media_fixture.dart';
+
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -52,9 +54,11 @@ Widget _app(ChatScreen screen) => MaterialShadcnApp(
   home: screen,
 );
 
-ChatController _chat(MockClient client, {String? stored}) => ChatController(
-  api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
-  store: FakeConversationStore(stored),
+ChatController _chat(MockClient client, {String? stored}) => withMediaPolicy(
+  ChatController(
+    api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+    store: FakeConversationStore(stored),
+  ),
 );
 
 MockClient _client({

@@ -4,5 +4,6 @@ Name=Procul Chat
 Comment=Chat with Procul
 Exec=procul_chat_flutter
 Icon=procul-chat
+StartupWMClass=com.example.procul_chat_flutter
 Terminal=false
 Categories=Network;Chat;

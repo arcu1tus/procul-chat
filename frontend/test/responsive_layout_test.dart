@@ -1,3 +1,5 @@
+import 'support/policy_chat_api.dart';
+
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,7 +8,6 @@ import 'package:http/testing.dart';
 import 'package:procul_chat_flutter/src/app_theme.dart';
 import 'package:procul_chat_flutter/src/auth_api.dart';
 import 'package:procul_chat_flutter/src/auth_controller.dart';
-import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
 import 'package:procul_chat_flutter/src/chat_screen.dart';
 import 'package:procul_chat_flutter/src/conversation_sidebar.dart';
@@ -159,7 +160,11 @@ MockClient _longUserClient() => MockClient((request) async {
 });
 
 ChatController _chatWith(MockClient client, {String? stored}) => ChatController(
-  api: ChatApi(baseUrl: 'http://test', token: 'test-token', client: client),
+  api: PolicyChatApi(
+    baseUrl: 'http://test',
+    token: 'test-token',
+    client: client,
+  ),
   store: FakeConversationStore(stored),
 );
 
@@ -214,7 +219,7 @@ void main() {
           (request) async => http.Response('{"conversations":[]}', 200),
         );
         final chat = ChatController(
-          api: ChatApi(
+          api: PolicyChatApi(
             baseUrl: 'http://test',
             token: 'test-token',
             client: client,
@@ -260,7 +265,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final chat = ChatController(
-        api: ChatApi(
+        api: PolicyChatApi(
           baseUrl: 'http://test',
           token: 'test-token',
           client: _longTitleClient(),
@@ -306,7 +311,7 @@ void main() {
     addTearDown(tester.view.reset);
 
     final chat = ChatController(
-      api: ChatApi(
+      api: PolicyChatApi(
         baseUrl: 'http://test',
         token: 'test-token',
         client: MockClient(

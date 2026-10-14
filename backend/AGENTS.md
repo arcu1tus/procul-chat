@@ -42,7 +42,9 @@ backend/
       ChatModelDefinition.cs       # validated model entry (slug, provider, capabilities, flags)
       ChatModelRegistry.cs         # one IChatClient per configured model + slug resolution
       Conversation.cs              # entity (incl. the per-conversation Model slug)
-      ConversationMessage.cs       # ConversationMessage entity
+      ConversationMessage.cs       # answer + reasoning + accepted model + completion state
+      ConversationToolCall.cs      # persisted ordered display-only tool calls
+      ResolvedChatModel.cs         # immutable accepted model/capability snapshot
       MessageRole.cs               # enum + MessageRoleExtensions.ToChatRole() (namespace Procul.Api.Chat)
       TurnUsage.cs                 # entity: one model call's token usage (TurnKind Chat | Title)
       TurnUsageTotals.cs           # mutable accumulator for a turn's UsageContent payloads
@@ -188,7 +190,7 @@ references a configured slug). Sections:
 - `database.connectionString` — Postgres connection string (was `ConnectionStrings__ChatContext`).
   Unset means "no database" (integration tests boot this way).
 - `attachments.*` — upload storage (`storage` selects the Postgres or S3 byte store), size limit,
-  allowed content types, `resendHistory`, `textInlineMaxBytes`, and `retention` (the media age
+  allowed content types, `maxAttachmentsPerMessage` (default 20), `resendHistory`, `textInlineMaxBytes`, and `retention` (the media age
   limit, default `14d`); plus the `s3` connection settings
   (`bucket`/`region`/`serviceUrl`/`forcePathStyle`/`accessKey`/`secretKey`).
 - `models[]` — one or more chat models (replaces `OPENROUTER_MODEL_SLUG`/`OPENROUTER_API_KEY`);
@@ -288,7 +290,7 @@ the auth and health routes do not (see Authentication).
 | DELETE | `/{conversationId:guid}` | Deletes the conversation, its messages, and their attachment bytes. 204 or 404. |
 | GET | `/{conversationId:guid}/messages` | JSON message page (`limit` 1–100, `afterMessageId` cursor). Assistant messages carry `model` + `usage` when known. |
 | POST | `/{conversationId:guid}/messages` | **SSE** stream. Appends a user message, streams the reply. Body may carry `attachmentIds` and `expectedRevision`. 404 if missing, **409** on a stale revision. May stream `image` events. |
-| POST | `/{conversationId:guid}/messages/{messageId:guid}/edit` | **SSE** stream. Rewrites an existing **user** message and re-prompts the model. Body may carry `expectedRevision`. **Destructive** (see *Message editing*). 404 conversation/message; 400 non-user message, empty/oversized `text`, or a bad `attachmentIds`; **409** on a stale revision. |
+| POST | `/{conversationId:guid}/messages/{messageId:guid}/edit` | **SSE** stream. Rewrites an existing **user** message and re-prompts the model. Body may carry `expectedRevision`. **Destructive** (see *Message editing*). 404 conversation/message; 400 non-user message, empty draft/oversized `text`, or a bad `attachmentIds`; **409** on a stale revision. |
 | POST | `/v{version}/attachments[?model=<slug>]` | Multipart upload (`file` field) → `201 AttachmentV1`. `400` disallowed type or a type the model (`model` query, else default) cannot read, `413` too large. |
 | GET | `/v{version}/attachments/{id:guid}` | The raw bytes, with the stored `Content-Type` and an inline `Content-Disposition`; `404` if unknown **or after retention purged the bytes** (metadata kept). |
 | DELETE | `/v{version}/attachments/{id:guid}` | `204`, idempotent (unknown id is also `204`). |
@@ -409,12 +411,18 @@ enforced at the host boundary, not by hiding modules. Runs are bounded by `MaxEx
 *subset*: unsupported constructs fail explicitly and the error is fed back to the model, which can
 retry. The isolation guarantees are locked in by `Chat/PythonSandboxTests.cs`.
 
-Tool call/result messages are **not persisted** (the schema stores only text + role), but tool
-activity **is surfaced** in the SSE stream: the streaming turn logic scans each
-`ChatResponseUpdate` for `FunctionCallContent`/`FunctionResultContent` and emits `toolCall`
-(then `toolResult`, correlated by `callId`) events around the assistant's `token`s. The client
-can therefore show which tools ran during a turn; a reloaded conversation only replays the
-final assistant text.
+Tool calls/results are captured in order and persisted on the assistant response as related
+`ConversationToolCall` rows (cascade-deleted with the message), with explicit `pending`/`completed`/
+`failed`/`interrupted` statuses. A null result can still be completed. `ConversationMessage.Reasoning`
+contains displayable `TextReasoningContent.Text`; protected provider data is never exposed.
+`reasoning` SSE events keep this text separate from answer `token` events. History carries
+`toolCalls`, `reasoning`, and `completionStatus`. The accepted model is saved even when a provider
+returns no token usage. These records are display-only and never replayed
+as model tool requests. Tool activity discarded by older releases cannot be backfilled.
+
+The reply iterator's `finally` saves partial answer/activity/media on failure or disconnect using
+a bounded independent save token. It checks that the originating user message still exists so a
+removed branch is not resurrected. Completed responses keep the normal `done` event.
 
 ## Token usage
 
@@ -481,7 +489,7 @@ Kestrel's `MaxRequestBodySize` to `maxFileSizeBytes + 1 MiB` so multipart upload
 handler (the `413` decision is the handler's, not Kestrel's).
 
 **Sending with a message.** `CreateConversationRequestV1`/`SendMessageRequestV1` carry optional
-`AttachmentIds`; `ConversationMessageV1` carries the attached files (empty for assistant/tool).
+`AttachmentIds`; `ConversationMessageV1` carries uploaded and generated attached files.
 `ChatEndpointsV1` runs `AttachmentGate` (load the rows, 400 on unknown/already-attached ids),
 then `ChatStreamServiceV1` attaches them to the persisted user message and builds the content
 parts. `resendHistory: true` (default) re-sends each earlier user message's bytes every turn
@@ -501,18 +509,17 @@ before the switch. Setting it to `false` has earlier turns contribute
 
 The **capability gate is the backend's job** (`AttachmentContentBuilder.IsSupported`): a type the
 model cannot read is a `400` naming the file and the missing capability. Video (and unknown
-types) are deliberately *not* gated — the OpenAI adapter drops them for every model, so they are
-stored + rendered but only ever contribute a placeholder.
+types) cannot be transmitted by the OpenAI adapter and are rejected for new submissions; unsupported historical files contribute only a metadata placeholder.
 
 ## Image generation & media tools
 
 Two model-facing tools produce media that is stored like an upload and rendered in the chat:
 
 - **`generate_image`** (only when `imageGeneration.enabled`) — `IImageGenerationClient` resolves to
-  `OpenRouterImageClient` (`POST {baseUrl}/images`, `input_references` as base64 data URLs) or
-  `OpenAiCompatibleImageClient` (`POST {baseUrl}/images/generations`, `response_format: "b64_json"`,
-  `image` array). Reference images are loaded from **this conversation's** attachments (image types
-  only, capped at `maxReferenceImages`; a reference id from another conversation is rejected as
+  `OpenRouterImageClient` (`POST {baseUrl}/images`, `input_references` as structured image-url entries containing base64 data URLs) or
+  `OpenAiCompatibleImageClient` (`POST {baseUrl}/images/generations` without references, multipart
+  `POST {baseUrl}/images/edits` with reference files; GPT image models omit `response_format`). Reference images are loaded from **this conversation's** attachments (image types
+  only, selected in requested order and rejected if above `maxReferenceImages`; a reference id from another conversation is rejected as
   unknown); the decoded `data[0].b64_json` is size-checked against `attachments.maxFileSizeBytes`
   and stored. Provider errors are returned to the model as text — they never fail the turn.
 - **`show_image`** — fetches a public URL (bounded timeout, size cap, `Content-Type: image/*` or
@@ -745,7 +752,7 @@ image is ASP.NET-only (no node/npx for stdio).
 - **The attachment capability gate is enforced server-side, not just in the client.** Never trust
   the client to have filtered unsupported files: `AttachmentGate` re-checks every referenced id
   against the resolved model's effective capabilities and `400`s a mismatch (video and unknown
-  types are exempt — they are never sent to any model).
+  types are rejected because the adapter cannot transmit them).
 - **`AIFunctionFactory` optional parameters need C# defaults.** A nullable parameter without a
   default (`Guid[]? ids`) is treated as **required** by the reflection marshaller; an omitted tool
   argument then throws `missing a value for the required parameter`. Give every optional tool
@@ -759,7 +766,7 @@ image is ASP.NET-only (no node/npx for stdio).
   attachment metadata, calls `store.PutAsync` (so the Postgres blob FK is satisfied), and saves —
   all on the request's scoped `ProculDbContext`, which is safe because the tool runs before the
   reply is persisted. `StreamReplyAsync` then sets `MessageId = assistantMessage.Id` and saves
-  again. If the turn fails, the rows stay orphaned and retention removes them.
+  again. Partial assistant activity/media is linked when the response iterator saves on failure; media that cannot be linked stays orphaned for retention.
 - **`show_image`'s URL policy is a seam.** In production `SsrfRemoteUrlPolicy` checks IP literals
   directly (so the unspecified `0.0.0.0`/`::` and IPv4-mapped IPv6 forms like `::ffff:127.0.0.1`
   are blocked, not thrown or misread as public) and resolves hostnames, then blocks
@@ -771,3 +778,22 @@ image is ASP.NET-only (no node/npx for stdio).
   step budget (`maximum execution step count exceeded`) while a slower CI box reaches the deadline
   (`execution canceled`), so `PythonSandboxTests.A_runaway_loop_is_stopped_by_a_limit` accepts either
   — do not re-narrow it to a single message or the test goes flaky again.
+
+## Media submission and streaming invariants
+
+- `attachments.maxAttachmentsPerMessage` is a positive integer, default 20, counted over distinct
+  IDs on the current new/edited user message. Omitted edit IDs validate the retained set before
+  any truncation. Blank text is accepted only with attachments; media-only titles use filenames.
+- `GET /v1/attachments/policy` is authenticated and returns count/size/allowed MIME settings.
+- Every HTTP turn resolves `ResolvedChatModel` once and passes its definition and frozen input
+  set through upload-ID validation and reply selection. A later model switch affects future
+  turns. Unsupported history is gated **before opening bytes**, even with `resendHistory: true`.
+- Attachment metadata labels include IDs for explicit image-reference selection. Media tools
+  return generated IDs. Missing, expired, foreign, non-image, and excessive references are tool
+  errors, never silent omission/truncation.
+- Downloads retain the authenticated API proxy. S3 `GetObject` response streams are wrapped in
+  `OwnedDownloadStream`, which owns/disposes the response and source on success/disconnect.
+  The HTTP file result copies in bounded buffers; it never calls `ToArray` for an S3 download.
+  Model input and image-reference reads load selected bytes separately.
+- Dev Compose now has TCP + SQL readiness and `just dev-db-up` waits for health (60s bound).
+  Deployment examples use 1s startup probes; require Engine 25+ / Compose 2.20.2+.

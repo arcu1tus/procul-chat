@@ -113,7 +113,7 @@ public class AttachmentGateTests
     }
 
     [Fact]
-    public async Task A_video_is_never_gated_even_without_the_video_capability()
+    public async Task A_video_is_rejected_when_the_adapter_cannot_transmit_it()
     {
         await using var db = NewDb();
         var registry = Registry(ModelInputModality.Text);
@@ -123,6 +123,6 @@ public class AttachmentGateTests
             db, registry, ChatModelTestHelpers.Catalog(registry),
             [attachment.Id], null, CancellationToken.None);
 
-        Assert.True(result.IsValid);
+        Assert.False(result.IsValid);
     }
 }

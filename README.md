@@ -48,7 +48,7 @@ against [OpenRouter](https://openrouter.ai/).
 ## Features
 
 - **Streaming replies** over SSE, with a `type`-tagged event protocol (`created`,
-  `acknowledge`, `token`, `toolCall`, `toolResult`, `usage`, `image`, `title`, `error`, `done`).
+  `acknowledge`, `reasoning`, `token`, `toolCall`, `toolResult`, `usage`, `image`, `title`, `error`, `done`).
 - **Multiple models** declared in `config.jsonc`, each with its own client, capability metadata,
   and live health (`GET /v1/models`); a conversation remembers and can switch its model. The
   client picks the model per conversation from the chat app bar and lists every model — with
@@ -64,15 +64,19 @@ against [OpenRouter](https://openrouter.ai/).
   (a contained, file/network-denying Python subset via `Lokad.Lython`), plus `show_image` and —
   when `imageGeneration.enabled` — `generate_image` (OpenRouter Image API or any OpenAI-compatible
   images endpoint). Generated/shown images are stored like uploads and streamed to the client as
-  `image` events.
+  metadata-only `image` events. Media downloads use the authenticated API; S3 downloads stream
+  through bounded buffers rather than loading the object into backend RAM.
 - **Media retention**: user uploads and generated images expire after a configurable window
   (default 14 days). Orphaned media is deleted outright; media attached to a message keeps its
   metadata but loses its bytes (an "expired" chip). Set `"0"` to keep media forever.
 - **MCP tool servers**: connect to remote Streamable HTTP / SSE MCP servers, discover their
   tools, and expose them to the model (namespaced `{server}__{tool}`), with live status in the
   client's Settings.
+- **Saved response activity**: expandable tool calls and provider-supplied reasoning survive reloads. Reasoning stays separate from the answer and is collapsed by default.
 - **File attachments**: attach images, text, PDFs, and (where the model supports it) audio to a
-  message. Bytes land in PostgreSQL or S3-compatible storage (config choice); the backend maps
+  message through the picker, clipboard paste, or drag and drop where supported. Media-only
+  messages are allowed; `attachments.maxAttachmentsPerMessage` defaults to 20 per submitted message.
+  Bytes land in PostgreSQL or S3-compatible storage (config choice); the backend maps
   each file to the content the selected model can read and **refuses** types it cannot — at
   upload *and* at send. The Flutter client picks from the native **Camera**, photo **Gallery**,
   or **Files** (Camera only where the OS provides one), multi-selects, restricts the picker to

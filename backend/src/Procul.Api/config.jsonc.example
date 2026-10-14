@@ -18,6 +18,7 @@
 
   "attachments": {
     "storage": "postgres",            // "postgres" | "s3"
+    "maxAttachmentsPerMessage": 20,
     "maxFileSizeBytes": 20971520,     // 20 MiB
     "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
     "resendHistory": true,            // true = earlier turns re-send the bytes; false = note only

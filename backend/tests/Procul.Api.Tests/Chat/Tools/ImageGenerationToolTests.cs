@@ -81,6 +81,29 @@ public class ImageGenerationToolTests
     };
 
     [Fact]
+    public async Task Reference_selection_preserves_order_and_rejects_excess_or_expired_images()
+    {
+        await using var db = NewDb();
+        var store = new FakeAttachmentStore();
+        var conversationId = Guid.NewGuid();
+        var first = await SeedImageAsync(db, store, conversationId, "first.png", [1]);
+        var second = await SeedImageAsync(db, store, conversationId, "second.png", [2]);
+        var third = await SeedImageAsync(db, store, conversationId, "third.png", [3]);
+        var client = new FakeImageGenerationClient();
+        var tool = new ImageGenerationTool(client, EnabledOptions(), Context(db, store, conversationId), NullLogger.Instance).Create();
+        await tool.InvokeAsync(new AIFunctionArguments { ["prompt"] = "edit", ["referenceAttachmentIds"] = new[] { second.Id, first.Id, second.Id } });
+        Assert.Equal(new byte[] { 2 }, client.LastRequest!.References[0].Bytes);
+        Assert.Equal(new byte[] { 1 }, client.LastRequest.References[1].Bytes);
+        var excess = await tool.InvokeAsync(new AIFunctionArguments { ["prompt"] = "edit", ["referenceAttachmentIds"] = new[] { first.Id, second.Id, third.Id } });
+        Assert.Contains("at most 2", AsText(excess));
+        Assert.Equal(1, client.CallCount);
+        await store.DeleteAsync(first.StorageKey, CancellationToken.None);
+        var expired = await tool.InvokeAsync(new AIFunctionArguments { ["prompt"] = "edit", ["referenceAttachmentIds"] = new[] { first.Id } });
+        Assert.Contains("no longer stored", AsText(expired));
+        Assert.Equal(1, client.CallCount);
+    }
+
+    [Fact]
     public async Task Stores_the_image_and_enqueues_an_image_event()
     {
         await using var db = NewDb();

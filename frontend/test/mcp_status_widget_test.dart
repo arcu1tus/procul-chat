@@ -1,3 +1,5 @@
+import 'support/policy_chat_api.dart';
+
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,7 +8,6 @@ import 'package:http/testing.dart';
 import 'package:procul_chat_flutter/src/app_theme.dart';
 import 'package:procul_chat_flutter/src/auth_api.dart';
 import 'package:procul_chat_flutter/src/auth_controller.dart';
-import 'package:procul_chat_flutter/src/chat_api.dart';
 import 'package:procul_chat_flutter/src/chat_controller.dart';
 import 'package:procul_chat_flutter/src/home_shell.dart';
 import 'package:procul_chat_flutter/src/settings_controller.dart';
@@ -37,7 +38,7 @@ Future<void> _openSettings(
     return http.Response('{"conversations":[]}', 200);
   });
   final chat = ChatController(
-    api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+    api: PolicyChatApi(baseUrl: 'http://test', token: 'tok', client: client),
     store: FakeConversationStore(),
   );
   final settings = SettingsController();

@@ -22,6 +22,8 @@ internal static class AttachmentEndpointsV1
         // IFormFile binding opts into antiforgery by default; the API is bearer-token, cookie-less,
         // so there is no CSRF surface to protect.
         group.MapPost("/", UploadAsync).DisableAntiforgery();
+        group.MapGet("/policy", (AttachmentOptions options) => TypedResults.Ok(new AttachmentPolicyV1(
+            options.MaxAttachmentsPerMessage, options.MaxFileSizeBytes, options.AllowedContentTypes)));
         group.MapGet("/{id:guid}", DownloadAsync);
         group.MapDelete("/{id:guid}", DeleteAsync);
         return group;

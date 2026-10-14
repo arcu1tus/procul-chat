@@ -19,7 +19,8 @@ contents:
     dst: /usr/bin/procul_chat_flutter
     type: symlink
   - src: linux/procul-chat.desktop
-    dst: /usr/share/applications/procul-chat.desktop
+    # Must match linux/CMakeLists.txt APPLICATION_ID for Wayland icon matching.
+    dst: /usr/share/applications/com.example.procul_chat_flutter.desktop
   - src: assets/icon/icon.png
     # Unthemed fallback supports the existing 1024px PNG on older desktops too.
     dst: /usr/share/pixmaps/procul-chat.png

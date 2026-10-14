@@ -1,3 +1,5 @@
+import 'support/media_fixture.dart';
+
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -81,9 +83,11 @@ MockClient _client({void Function(http.Request request)? onRequest}) {
   });
 }
 
-ChatController _chat(MockClient client) => ChatController(
-  api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
-  store: FakeConversationStore(),
+ChatController _chat(MockClient client) => withMediaPolicy(
+  ChatController(
+    api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+    store: FakeConversationStore(),
+  ),
 );
 
 void main() {
@@ -408,8 +412,8 @@ void main() {
         sizeBytes: 10,
         capabilities: caps,
       ),
-      isNull,
-      reason: 'video is stored + shown, never sent, so it is not gated',
+      isNotNull,
+      reason: 'the adapter cannot transmit video',
     );
 
     // A capability the model lacks is reported.

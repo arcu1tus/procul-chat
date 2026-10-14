@@ -79,11 +79,25 @@ class Conversation {
 
 /// A single tool invocation made by the model during an assistant turn.
 ///
-/// Tool activity is streamed but never persisted by the backend, so these only
-/// exist for the lifetime of the turn that produced them (a reloaded
-/// conversation shows just the final assistant text).
+/// Live and historical tool state, including explicit completion for null outputs.
 class ToolCall {
-  ToolCall({required this.id, required this.name, this.arguments});
+  ToolCall({
+    required this.id,
+    required this.name,
+    this.arguments,
+    this.result,
+    this.error,
+    this.status = 'pending',
+  });
+  String status;
+  factory ToolCall.fromJson(Map<String, dynamic> json) => ToolCall(
+    id: json['callId'] as String,
+    name: json['name'] as String,
+    arguments: json['arguments'] as String?,
+    result: json['result'] as String?,
+    error: json['error'] as String?,
+    status: json['status'] as String? ?? 'completed',
+  );
 
   final String id;
   final String name;
@@ -98,7 +112,7 @@ class ToolCall {
   String? error;
 
   /// Whether the tool has neither produced a result nor failed yet.
-  bool get isPending => result == null && error == null;
+  bool get isPending => status == 'pending' && result == null && error == null;
 
   bool get hasFailed => error != null;
 }
@@ -114,10 +128,18 @@ class ChatMessage {
     this.createdAt,
     this.model,
     this.usage,
+    this.reasoning = '',
+    this.phase = 'waiting',
+    this.completionStatus = 'completed',
+    List<ToolCall> toolCalls = const [],
     List<Attachment> attachments = const [],
-  }) : attachments = List.of(attachments);
+  }) : attachments = List.of(attachments),
+       toolCalls = List.of(toolCalls);
 
   String? id;
+  String reasoning;
+  String phase;
+  String completionStatus;
   String text;
   final MessageRole role;
   final DateTime? createdAt;
@@ -140,8 +162,8 @@ class ChatMessage {
   final List<Attachment> attachments;
 
   /// Tool invocations the model made while producing this assistant message.
-  /// Empty for every other role and for messages loaded from history.
-  final List<ToolCall> toolCalls = [];
+  /// Rehydrated from backend history as well as live SSE.
+  final List<ToolCall> toolCalls;
 
   bool get isUser => role == MessageRole.user;
 
@@ -151,6 +173,12 @@ class ChatMessage {
     role: messageRoleFromValue(json['messageRole']),
     createdAt: DateTime.tryParse('${json['createdAt']}'),
     model: json['model'] as String?,
+    reasoning: json['reasoning'] as String? ?? '',
+    completionStatus: json['completionStatus'] as String? ?? 'completed',
+    phase: 'done',
+    toolCalls: (json['toolCalls'] as List? ?? const [])
+        .map((t) => ToolCall.fromJson((t as Map).cast<String, dynamic>()))
+        .toList(),
     usage: json['usage'] is Map
         ? TokenUsage.fromJson((json['usage'] as Map).cast<String, dynamic>())
         : null,

@@ -49,6 +49,7 @@
       "additionalProperties": false,
       "properties": {
         "storage": { "enum": ["postgres", "s3"] },
+        "maxAttachmentsPerMessage": { "type": "integer", "minimum": 1, "default": 20 },
         "maxFileSizeBytes": { "type": "integer", "minimum": 1 },
         "allowedContentTypes": {
           "type": "array",

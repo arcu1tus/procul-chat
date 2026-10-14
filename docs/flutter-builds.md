@@ -45,7 +45,8 @@ show each message once, even when prompts and replies repeat identical text.
 The sidebar puts new chats and title search above the conversation list, with Usage, Models,
 and Settings at the bottom. Search filters loaded chat titles locally. Welcome cards fill and
 focus a draft for the user to finish; they do not send automatically. The centered composer
-keeps Send disabled for empty text and while attachments upload, including keyboard submission.
+allows media-only messages and keeps Send disabled for empty drafts, incompatible attachments,
+and while attachments are being read or uploaded, including keyboard submission.
 Sign-in fields keep their labels visible and offer a password visibility toggle.
 
 The in-app logo is bundled at `frontend/assets/brand/procul-logo.svg`, derived from the original
@@ -532,7 +533,7 @@ configured under `flutter_launcher_icons:` in `frontend/pubspec.yaml`).
 | macOS | `macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_{16,32,64,128,256,512,1024}.png` | 16…1024 |
 | Windows | `windows/runner/resources/app_icon.ico` | single-frame ICO (`windows.icon_size`, 256) |
 | Web | `web/icons/Icon-192.png`, `Icon-512.png`, `Icon-maskable-192.png`, `Icon-maskable-512.png`, `web/favicon.png` | 192/512 |
-| Linux | no icon file by convention; ship `linux/procul-chat.desktop` + a themed icon (`hicolor/<size>/apps/procul-chat.png`) | 16…512 |
+| Linux | bundled `assets/icon/icon.png` for X11; install the desktop entry matching the GTK application ID + `procul-chat.png` | 16…512 |
 
 The accent color is **`#a832a0`** (`lib/src/app_theme.dart`; also the web `theme_color`).
 
@@ -557,3 +558,23 @@ point it at a different backend from the Connect screen by adding a server profi
 - **[`docker-compose.md`](docker-compose.md)** — run the backend the client connects to.
 - **[`configuration.md`](configuration.md)** — every `config.jsonc` field (including the CORS
   origins a web build needs).
+
+## Media and native window integration
+
+Clipboard paste and incoming drag/drop use `super_clipboard` and `super_drag_and_drop`
+`0.10.0-dev.2`, locked in `pubspec.lock`. Stable `0.9.1` conflicts with the Windows `win32` version
+required by secure storage 11.2.0. The prerelease uses Rust build hooks; install a Rust toolchain
+for native builds, and keep Android's NDK available. Web uses browser paste events and supports
+Wasm. Only incoming media is added: public image URLs are not fetched on drop.
+
+Test Ctrl/Cmd+V, context-menu paste, selection replacement, screenshots, file drops, mixed batches,
+model changes, and count/size/type limits on available targets. Browser/OS clipboard permissions
+and virtual-file support differ; the picker remains available. Response reasoning/tool details
+are expandable on touch and keyboard and persist after refresh.
+
+Linux uses ordinary GTK window decorations rather than forcing a GTK header bar. Check native
+KDE Plasma controls, dragging, resizing, and maximize/minimize/close on Wayland and X11. GNOME
+may supply its own client decoration. X11 loads the bundled PNG relative to the executable, so
+unpackaged builds also have the Procul icon. Wayland uses the installed desktop entry; nFPM
+installs `com.example.procul_chat_flutter.desktop` to match `APPLICATION_ID` in Linux CMake,
+with the same `StartupWMClass`. Keep these identifiers synchronized. Session restoration is verified before the chat appears.

@@ -3,6 +3,8 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'src/app_theme.dart';
 import 'src/widgets/chat_welcome.dart';
+import 'src/widgets/response_activity.dart';
+import 'src/models.dart';
 
 Widget lightPreview(Widget child) => ShadcnApp(
   theme: proculLightTheme,
@@ -74,3 +76,38 @@ class _WelcomePreviewState extends State<_WelcomePreview> {
     ],
   );
 }
+
+@Preview(
+  group: 'Chat',
+  name: 'Response activity · light',
+  size: Size(650, 350),
+  wrapper: lightPreview,
+)
+@Preview(
+  group: 'Chat',
+  name: 'Response activity · dark',
+  size: Size(650, 350),
+  wrapper: darkPreview,
+)
+@Preview(
+  group: 'Chat',
+  name: 'Response activity · phone',
+  size: Size(360, 450),
+  wrapper: lightPreview,
+)
+Widget responseActivityPreview() => ResponseActivity(
+  isStreaming: false,
+  message: ChatMessage(
+    text: 'Here is your answer.',
+    role: MessageRole.assistant,
+    reasoning: 'Provider-supplied reasoning appears here.',
+    toolCalls: [
+      ToolCall(
+        id: 'clock',
+        name: 'get_current_time',
+        result: '2026-10-14T12:00:00Z',
+        status: 'completed',
+      ),
+    ],
+  ),
+);

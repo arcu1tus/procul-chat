@@ -39,6 +39,12 @@ class ChatController extends ChangeNotifier {
   int _turnGeneration = 0;
   int _draftGeneration = 0;
   bool _disposed = false;
+  int get draftGeneration => _draftGeneration;
+  bool isReadingMedia = false;
+  void setReadingMedia(bool value) {
+    isReadingMedia = value;
+    if (!_disposed) notifyListeners();
+  }
 
   /// True while the conversation list is being fetched.
   bool isLoadingConversations = false;
@@ -243,7 +249,13 @@ class ChatController extends ChangeNotifier {
           }
         }
         for (var i = 0; i < local.length; i++) {
-          local[i].id = latest[matchStart + i].id;
+          final remote = latest[matchStart + i];
+          local[i].id = remote.id;
+          local[i].reasoning = remote.reasoning;
+          local[i].completionStatus = remote.completionStatus;
+          local[i].toolCalls
+            ..clear()
+            ..addAll(remote.toolCalls);
         }
         reconciled = true;
       }
@@ -350,6 +362,71 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  AttachmentPolicy? attachmentPolicy;
+  List<ChatModel> _models = const [];
+  String? rejectedDraftText;
+  bool get mediaReady => attachmentPolicy != null && activeCapabilities != null;
+  Set<ModelInputModality>? get activeCapabilities {
+    for (final model in _models) {
+      if (model.slug == activeModel) return model.capabilities.input;
+    }
+    return null;
+  }
+
+  void setModels(List<ChatModel> models) {
+    if (listEquals(_models, models)) return;
+    _models = List.of(models);
+    notifyListeners();
+  }
+
+  Future<void> loadAttachmentPolicy() async {
+    try {
+      final policy = await api.fetchAttachmentPolicy();
+      if (_disposed) return;
+      attachmentPolicy = policy;
+      notifyListeners();
+    } catch (e) {
+      if (!_disposed) reportError('Could not load attachment policy: $e');
+    }
+  }
+
+  String? pendingAttachmentProblem(Attachment attachment) {
+    final policy = attachmentPolicy;
+    final capabilities = activeCapabilities;
+    if (policy == null || capabilities == null) {
+      return 'Loading attachment policy and model capabilities…';
+    }
+    return attachmentProblem(
+      fileName: attachment.fileName,
+      contentType: attachment.contentType,
+      sizeBytes: attachment.sizeBytes,
+      capabilities: capabilities,
+      maxBytes: policy.maxFileSizeBytes,
+      policy: policy,
+    );
+  }
+
+  String? submissionProblem(String text) {
+    if (text.trim().isEmpty && pendingAttachments.isEmpty) {
+      return 'Add a message or an attachment.';
+    }
+    if (pendingAttachments.isNotEmpty) {
+      final policy = attachmentPolicy;
+      if (policy == null || activeCapabilities == null) {
+        return 'Wait for attachment policy and model capabilities.';
+      }
+      if (pendingAttachments.map((a) => a.id).toSet().length >
+          policy.maxAttachmentsPerMessage) {
+        return 'A message may contain at most ${policy.maxAttachmentsPerMessage} attachments.';
+      }
+      for (final attachment in pendingAttachments) {
+        final problem = pendingAttachmentProblem(attachment);
+        if (problem != null) return problem;
+      }
+    }
+    return null;
+  }
+
   /// Uploads [picked] and queues it as a pending attachment.
   ///
   /// When [capabilities] is given, the file is first checked against the active
@@ -383,7 +460,6 @@ class ChatController extends ChangeNotifier {
       return false;
     }
     final generation = _draftGeneration;
-    final model = activeModel;
     var succeeded = true;
     isUploadingAttachment = true;
     error = null;
@@ -391,28 +467,45 @@ class ChatController extends ChangeNotifier {
     try {
       for (final file in picked) {
         if (_disposed || generation != _draftGeneration) return false;
-        if (capabilities != null) {
-          final problem = attachmentProblem(
-            fileName: file.fileName,
-            contentType: file.contentType,
-            sizeBytes: file.bytes.length,
-            capabilities: capabilities,
-          );
-          if (problem != null) {
-            error = problem;
-            succeeded = false;
-            continue;
-          }
+        final policy = attachmentPolicy;
+        final currentCapabilities = activeCapabilities;
+        if (policy == null || currentCapabilities == null) {
+          error = 'Wait for attachment policy and model capabilities.';
+          return false;
+        }
+        if (pendingAttachments.length >= policy.maxAttachmentsPerMessage) {
+          error =
+              'A message may contain at most ${policy.maxAttachmentsPerMessage} attachments.';
+          succeeded = false;
+          break;
+        }
+        final problem = attachmentProblem(
+          fileName: file.fileName,
+          contentType: file.contentType,
+          sizeBytes: file.bytes.length,
+          capabilities: currentCapabilities,
+          maxBytes: policy.maxFileSizeBytes,
+          policy: policy,
+        );
+        if (problem != null) {
+          error = problem;
+          succeeded = false;
+          continue;
         }
         try {
           final attachment = await api.uploadAttachment(
             bytes: file.bytes,
             fileName: file.fileName,
             contentType: file.contentType,
-            model: model,
+            model: activeModel,
           );
           if (_disposed || generation != _draftGeneration) return false;
           pendingAttachments.add(attachment);
+          final lateProblem = pendingAttachmentProblem(attachment);
+          if (lateProblem != null) {
+            error = lateProblem;
+            succeeded = false;
+          }
           notifyListeners();
         } catch (e) {
           if (_disposed || generation != _draftGeneration) return false;
@@ -457,13 +550,20 @@ class ChatController extends ChangeNotifier {
   /// appends to the active one. The reply is streamed into the buffer.
   Future<void> send(String text) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty ||
+    if ((trimmed.isEmpty && pendingAttachments.isEmpty) ||
         isStreaming ||
         isLoadingMessages ||
         isUploadingAttachment ||
+        isReadingMedia ||
         _disposed) {
       return;
     }
+    final problem = submissionProblem(trimmed);
+    if (problem != null) {
+      reportError(problem);
+      return;
+    }
+    rejectedDraftText = null;
     _historyGeneration++;
     isLoadingOlder = false;
 
@@ -501,7 +601,13 @@ class ChatController extends ChangeNotifier {
             attachmentIds: attachmentIds,
             expectedRevision: activeConversation?.revision,
           );
-    await _runReply(stream, assistant: assistant, handleCreated: true);
+    await _runReply(
+      stream,
+      assistant: assistant,
+      handleCreated: true,
+      draftText: trimmed,
+      draftAttachments: attachments,
+    );
   }
 
   /// Enters edit mode for [message] (a user message): remembers its id and seeds
@@ -539,10 +645,11 @@ class ChatController extends ChangeNotifier {
   Future<void> editMessage(String text) async {
     final trimmed = text.trim();
     final messageId = editingMessageId;
-    if (trimmed.isEmpty ||
+    if ((trimmed.isEmpty && pendingAttachments.isEmpty) ||
         isStreaming ||
         isLoadingMessages ||
         isUploadingAttachment ||
+        isReadingMedia ||
         _disposed ||
         messageId == null ||
         !hasConversation) {
@@ -555,6 +662,12 @@ class ChatController extends ChangeNotifier {
       return;
     }
 
+    final problem = submissionProblem(trimmed);
+    if (problem != null) {
+      reportError(problem);
+      return;
+    }
+    rejectedDraftText = null;
     _historyGeneration++;
     isLoadingOlder = false;
     error = null;
@@ -590,6 +703,9 @@ class ChatController extends ChangeNotifier {
       ),
       assistant: assistant,
       refreshUsage: true,
+      draftText: trimmed,
+      draftAttachments: attachments,
+      draftEditId: messageId,
     );
   }
 
@@ -601,11 +717,15 @@ class ChatController extends ChangeNotifier {
     required ChatMessage assistant,
     bool handleCreated = false,
     bool refreshUsage = false,
+    String? draftText,
+    List<Attachment> draftAttachments = const [],
+    String? draftEditId,
   }) async {
     final generation = ++_turnGeneration;
     _draftGeneration++;
     var hardFailure = false;
     var conflict = false;
+    var rejected = false;
     try {
       await _consumeReply(
         stream,
@@ -619,16 +739,43 @@ class ChatController extends ChangeNotifier {
       conflict = _isConflict(e);
       error = conflict ? _conflictMessage : '$e';
       hardFailure = true;
+      assistant.completionStatus = 'interrupted';
+      rejected =
+          e is ChatApiException && e.statusCode != null && e.statusCode != 401;
     } finally {
       if (generation == _turnGeneration) {
-        if (assistant.text.isEmpty && assistant.attachments.isEmpty) {
+        if (assistant.text.isEmpty &&
+            assistant.attachments.isEmpty &&
+            assistant.toolCalls.isEmpty &&
+            assistant.reasoning.isEmpty) {
           assistant.text = error == null ? '(no reply)' : '(failed)';
+        }
+        assistant.phase = 'done';
+        for (final call in assistant.toolCalls.where((t) => t.isPending)) {
+          call.status = assistant.completionStatus == 'failed'
+              ? 'failed'
+              : 'interrupted';
         }
         isStreaming = false;
         notifyListeners();
       }
     }
-    if (generation != _turnGeneration || !hasConversation) return;
+    if (generation != _turnGeneration) return;
+    if (rejected) {
+      rejectedDraftText = draftText;
+      pendingAttachments
+        ..clear()
+        ..addAll(draftAttachments);
+      editingMessageId = draftEditId;
+      if (!hasConversation) {
+        messages.remove(assistant);
+        if (messages.isNotEmpty && messages.last.id == null) {
+          messages.removeLast();
+        }
+      }
+      notifyListeners();
+    }
+    if (!hasConversation) return;
     if (hardFailure) {
       // Refresh revisions as well as history, or the next request conflicts again.
       final failure = error;
@@ -638,6 +785,13 @@ class ChatController extends ChangeNotifier {
       await reloadActiveConversation();
       if (_disposed || _turnGeneration != recoveryGeneration) return;
       error = conflict ? _conflictMessage : failure;
+      if (rejected) {
+        rejectedDraftText = draftText;
+        pendingAttachments
+          ..clear()
+          ..addAll(draftAttachments);
+        editingMessageId = draftEditId;
+      }
       notifyListeners();
     } else if (refreshUsage || error != null) {
       // An edit replaces old usage; an SSE error may still have persisted the
@@ -674,13 +828,19 @@ class ChatController extends ChangeNotifier {
             _upsertConversation(conversation);
             await _store.write(conversation.id);
           }
+        case ReasoningEvent(:final content):
+          assistant.reasoning += content;
+          assistant.phase = 'thinking';
+          notifyListeners();
         case TokenEvent(:final content):
+          assistant.phase = 'answering';
           reply.write(content);
           assistant.text = reply.toString();
           notifyListeners();
         case TitleEvent(:final conversationId, :final title):
           _applyTitle(conversationId, title);
         case ToolCallEvent(:final callId, :final name, :final arguments):
+          assistant.phase = 'tools';
           assistant.toolCalls.add(
             ToolCall(id: callId, name: name, arguments: arguments),
           );
@@ -690,6 +850,7 @@ class ChatController extends ChangeNotifier {
             if (call.id == callId) {
               call.result = result;
               call.error = error;
+              call.status = error == null ? 'completed' : 'failed';
               break;
             }
           }
@@ -701,9 +862,12 @@ class ChatController extends ChangeNotifier {
           }
         case ErrorEvent(:final error):
           terminated = true;
+          assistant.phase = 'done';
+          assistant.completionStatus = 'failed';
           this.error = error;
         case DoneEvent(:final revision):
           terminated = true;
+          assistant.phase = 'done';
           // The reply is complete. Stop treating the turn as streaming now, so
           // the composer is usable even if the `title` event is still in
           // flight (it is emitted after the reply). Record the new revision so

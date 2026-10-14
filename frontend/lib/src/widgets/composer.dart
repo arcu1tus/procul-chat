@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform;
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -27,6 +27,7 @@ class Composer extends StatelessWidget {
     required this.onSubmit,
     required this.onAttach,
     required this.onCancelEdit,
+    this.onPaste,
   });
 
   final TextEditingController controller;
@@ -35,12 +36,17 @@ class Composer extends StatelessWidget {
   final VoidCallback onSubmit;
   final ValueChanged<BuildContext> onAttach;
   final VoidCallback onCancelEdit;
+  final VoidCallback? onPaste;
 
   @override
   Widget build(BuildContext context) {
     final colors = ColorScheme.of(context);
     final enabled = !chat.isStreaming && !chat.isLoadingMessages;
-    final canAttach = enabled && !chat.isUploadingAttachment;
+    final canAttach =
+        enabled &&
+        !chat.isUploadingAttachment &&
+        !chat.isReadingMedia &&
+        chat.mediaReady;
     final pending = chat.pendingAttachments;
     final isEditing = chat.isEditing;
     // The Enter / Shift+Enter hint is meaningless without a hardware keyboard.
@@ -99,6 +105,7 @@ class Composer extends StatelessWidget {
                             attachment: attachment,
                             chat: chat,
                             thumbnail: true,
+                            problem: chat.pendingAttachmentProblem(attachment),
                             onRemove: () =>
                                 chat.removePendingAttachment(attachment.id),
                           ),
@@ -110,7 +117,15 @@ class Composer extends StatelessWidget {
                 _Capsule(
                   controller: controller,
                   focusNode: focusNode,
-                  enabled: enabled && !chat.isUploadingAttachment,
+                  enabled:
+                      enabled &&
+                      !chat.isUploadingAttachment &&
+                      !chat.isReadingMedia,
+                  canSubmit:
+                      pending.isEmpty ||
+                      chat.submissionProblem('message') == null,
+                  hasAttachments: pending.isNotEmpty,
+                  onPaste: onPaste,
                   canAttach: canAttach,
                   isEditing: isEditing,
                   onAttach: onAttach,
@@ -186,8 +201,14 @@ class _Capsule extends StatelessWidget {
     required this.isEditing,
     required this.onAttach,
     required this.onSubmit,
+    required this.canSubmit,
+    required this.hasAttachments,
+    this.onPaste,
   });
 
+  final bool canSubmit;
+  final bool hasAttachments;
+  final VoidCallback? onPaste;
   final TextEditingController controller;
   final FocusNode focusNode;
   final bool enabled;
@@ -242,6 +263,14 @@ class _Capsule extends StatelessWidget {
             children: [
               CallbackShortcuts(
                 bindings: {
+                  if (!kIsWeb && onPaste != null) ...{
+                    const SingleActivator(
+                      LogicalKeyboardKey.keyV,
+                      control: true,
+                    ): onPaste!,
+                    const SingleActivator(LogicalKeyboardKey.keyV, meta: true):
+                        onPaste!,
+                  },
                   const SingleActivator(LogicalKeyboardKey.enter): onSubmit,
                   const SingleActivator(LogicalKeyboardKey.enter, shift: true):
                       _insertNewline,
@@ -260,6 +289,34 @@ class _Capsule extends StatelessWidget {
                   ),
                   child: TextField(
                     key: const Key('message-input'),
+                    enabled: enabled,
+                    contextMenuBuilder: onPaste == null
+                        ? null
+                        : (context, editable) => TextFieldTapRegion(
+                            child: ContextMenuPopup(
+                              anchorContext: context,
+                              position:
+                                  editable.contextMenuAnchors.primaryAnchor,
+                              children: [
+                                for (final item
+                                    in editable.contextMenuButtonItems.where(
+                                      (i) =>
+                                          i.type != ContextMenuButtonType.paste,
+                                    ))
+                                  MenuButton(
+                                    onPressed: (_) => item.onPressed?.call(),
+                                    child: Text(item.label ?? item.type.name),
+                                  ),
+                                MenuButton(
+                                  onPressed: (_) {
+                                    editable.hideToolbar();
+                                    onPaste!();
+                                  },
+                                  child: const Text('Paste'),
+                                ),
+                              ],
+                            ),
+                          ),
                     controller: controller,
                     focusNode: focusNode,
                     minLines: 2,
@@ -293,7 +350,10 @@ class _Capsule extends StatelessWidget {
                   ),
                   const Spacer(),
                   _SendButton(
-                    enabled: enabled && controller.text.trim().isNotEmpty,
+                    enabled:
+                        enabled &&
+                        canSubmit &&
+                        (controller.text.trim().isNotEmpty || hasAttachments),
                     isEditing: isEditing,
                     onSubmit: onSubmit,
                   ),

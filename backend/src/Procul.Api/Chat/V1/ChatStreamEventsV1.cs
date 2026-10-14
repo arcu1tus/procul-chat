@@ -14,6 +14,8 @@ public sealed record ChatStreamCreatedV1(ConversationV1 Conversation, string Typ
 public sealed record ChatStreamProcessingV1(string Message, string Type = "acknowledge");
 
 /// <summary>A chunk of the assistant's reply.</summary>
+public sealed record ChatStreamReasoningV1(string Content, string Type = "reasoning");
+
 public sealed record ChatStreamTokenV1(string Content, string Type = "token");
 
 /// <summary>The model-generated title for a conversation. Only emitted by create, after the reply.</summary>
@@ -58,6 +60,7 @@ public abstract record ChatStreamEventV1
 {
     public sealed record Created(ChatStreamCreatedV1 Value) : ChatStreamEventV1;
     public sealed record Processing(ChatStreamProcessingV1 Value) : ChatStreamEventV1;
+    public sealed record Reasoning(ChatStreamReasoningV1 Value) : ChatStreamEventV1;
     public sealed record Token(ChatStreamTokenV1 Value) : ChatStreamEventV1;
     public sealed record Title(ChatStreamTitleV1 Value) : ChatStreamEventV1;
     public sealed record ToolCall(ChatStreamToolCallV1 Value) : ChatStreamEventV1;

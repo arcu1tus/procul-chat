@@ -107,7 +107,8 @@ internal sealed class ChatStreamServiceV1(
         string initialMessage,
         IReadOnlyList<Attachment> attachments,
         IReadOnlySet<ModelInputModality> capabilities,
-        [EnumeratorCancellation] CancellationToken ct
+        [EnumeratorCancellation] CancellationToken ct,
+        ChatModelDefinition? acceptedModel = null
     )
     {
         var initialTitle = conversation.Title;
@@ -116,9 +117,11 @@ internal sealed class ChatStreamServiceV1(
         ));
 
         var titleDefinition = ResolveTitleModel(conversation.Model);
-        var titleTask = GenerateTitleAsync(titleDefinition, initialMessage, ct);
+        var titleInput = string.IsNullOrWhiteSpace(initialMessage)
+            ? string.Join(", ", attachments.Select(a => a.FileName)) : initialMessage;
+        var titleTask = GenerateTitleAsync(titleDefinition, titleInput, ct);
 
-        await foreach (var streamEvent in StreamAssistantReplyAsync(conversation.Id, initialMessage, attachments, capabilities, ct))
+        await foreach (var streamEvent in StreamAssistantReplyAsync(conversation.Id, initialMessage, attachments, capabilities, ct, acceptedModel))
         {
             yield return streamEvent;
         }
@@ -136,7 +139,7 @@ internal sealed class ChatStreamServiceV1(
 
         if (conversation.Title == initialTitle)
         {
-            conversation.Title = titleResult.Title ?? FallbackTitle(initialMessage);
+            conversation.Title = titleResult.Title ?? FallbackTitle(titleInput);
         }
         if (titleResult.Usage.HasUsage)
         {
@@ -157,7 +160,8 @@ internal sealed class ChatStreamServiceV1(
         string userText,
         IReadOnlyList<Attachment> attachments,
         IReadOnlySet<ModelInputModality> capabilities,
-        [EnumeratorCancellation] CancellationToken ct
+        [EnumeratorCancellation] CancellationToken ct,
+        ChatModelDefinition? acceptedModel = null
     )
     {
         var userMessage = new ConversationMessage
@@ -189,7 +193,7 @@ internal sealed class ChatStreamServiceV1(
 
         await db.SaveChangesAsync(ct);
 
-        await foreach (var streamEvent in StreamReplyAsync(conversationId, userMessage, capabilities, ct))
+        await foreach (var streamEvent in StreamReplyAsync(conversationId, userMessage, capabilities, ct, acceptedModel))
         {
             yield return streamEvent;
         }
@@ -207,7 +211,8 @@ internal sealed class ChatStreamServiceV1(
         string newText,
         IReadOnlyList<Attachment>? replacementAttachments,
         IReadOnlySet<ModelInputModality> capabilities,
-        [EnumeratorCancellation] CancellationToken ct
+        [EnumeratorCancellation] CancellationToken ct,
+        ChatModelDefinition? acceptedModel = null
     )
     {
         var message = await db.ConversationMessages
@@ -229,6 +234,7 @@ internal sealed class ChatStreamServiceV1(
                 && (m.CreatedAt > message.CreatedAt
                     || (m.CreatedAt == message.CreatedAt && m.Id.CompareTo(message.Id) > 0)))
             .Include(m => m.Attachments)
+            .Include(m => m.ToolCalls)
             .ToListAsync(ct);
 
         await attachmentStore.DeleteBytesAsync(discarded.SelectMany(m => m.Attachments), ct);
@@ -264,7 +270,7 @@ internal sealed class ChatStreamServiceV1(
 
         await db.SaveChangesAsync(ct);
 
-        await foreach (var streamEvent in StreamReplyAsync(conversationId, message, capabilities, ct))
+        await foreach (var streamEvent in StreamReplyAsync(conversationId, message, capabilities, ct, acceptedModel))
         {
             yield return streamEvent;
         }
@@ -320,12 +326,13 @@ internal sealed class ChatStreamServiceV1(
         Guid conversationId,
         ConversationMessage userMessage,
         IReadOnlySet<ModelInputModality> capabilities,
-        [EnumeratorCancellation] CancellationToken ct
+        [EnumeratorCancellation] CancellationToken ct,
+        ChatModelDefinition? acceptedModel = null
     )
     {
         // The conversation remembers its model; an unknown/stale slug falls back to the default.
         var conversation = await db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId, ct);
-        var definition = registry.ResolveOrDefault(conversation?.Model);
+        var definition = acceptedModel ?? registry.ResolveOrDefault(conversation?.Model);
         var chatClient = registry.GetClient(definition.Slug);
 
         yield return new ChatStreamEventV1.Processing(new(Message: "received"));
@@ -366,63 +373,72 @@ internal sealed class ChatStreamServiceV1(
         };
 
         var reply = new StringBuilder();
-        var failed = false;
+        var capture = new TurnResponseCapture();
         var usage = new TurnUsageTotals();
-
-        await foreach (var streamEvent in CatchToEvent(
-            StreamTokens(
-                chatClient.GetStreamingResponseAsync(messages, options, ct),
-                reply,
-                usage,
-                media,
-                definition.Slug,
-                ct
-            ),
-            ex => new ChatStreamEventV1.Failed(new(Error: ex.Message)),
-            ct
-        ))
+        var completed = false;
+        var failed = false;
+        try
         {
-            if (streamEvent is ChatStreamEventV1.Failed)
+            await foreach (var streamEvent in CatchToEvent(
+                StreamTokens(chatClient.GetStreamingResponseAsync(messages, options, ct), reply,
+                    usage, media, definition.Slug, ct, capture),
+                ex => new ChatStreamEventV1.Failed(new(Error: ex.Message)), ct))
             {
-                failed = true;
+                if (streamEvent is ChatStreamEventV1.Failed) failed = true;
+                yield return streamEvent;
             }
-
-            yield return streamEvent;
+            completed = !failed;
         }
-
-        if (failed)
+        finally
         {
-            yield break;
+            await SaveResponseAsync(conversationId, userMessage.Id, reply.ToString(), capture,
+                media, usage, definition.Slug, completed, failed);
         }
-
-        var assistantMessage = new ConversationMessage
+        if (completed)
         {
-            ConversationId = conversationId,
-            Text = reply.ToString(),
-            MessageRole = MessageRole.Assistant
-        };
-        db.ConversationMessages.Add(assistantMessage);
-
-        // Link the turn's generated/shown images to the reply so they survive a reload.
-        foreach (var attachment in media.Attachments)
-        {
-            attachment.ConversationId = conversationId;
-            attachment.MessageId = assistantMessage.Id;
+            yield return new ChatStreamEventV1.Done(new(Revision: conversation?.Revision));
         }
+    }
 
-        if (usage.HasUsage)
+    // Keep asynchronous persistence outside the iterator state machine: disposal must
+    // await every database operation before releasing the request-scoped context.
+    private async Task SaveResponseAsync(
+        Guid conversationId, Guid userMessageId, string answer, TurnResponseCapture capture,
+        GeneratedMediaCollector media, TurnUsageTotals usage, string model, bool completed, bool failed)
+    {
+        var status = completed ? "completed" : failed ? "failed" : "interrupted";
+        capture.Finish(status);
+        if (!completed && answer.Length == 0 && !capture.HasContent && media.Attachments.Count == 0) return;
+        using var saveDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        try
         {
-            var usageRow = usage.ToTurnUsage(conversationId, definition.Slug, TurnKind.Chat);
-            usageRow.MessageId = assistantMessage.Id;
-            db.TurnUsages.Add(usageRow);
+            // A deleted/edited branch must not be resurrected by a late response.
+            if (!await db.ConversationMessages.AsNoTracking().AnyAsync(m => m.Id == userMessageId, saveDeadline.Token)) return;
+            var assistant = new ConversationMessage
+            {
+                ConversationId = conversationId,
+                Text = answer,
+                MessageRole = MessageRole.Assistant,
+                Reasoning = capture.Reasoning.Length == 0 ? null : capture.Reasoning.ToString(),
+                Model = model,
+                ToolCalls = capture.ToolCalls,
+                CompletionStatus = status,
+            };
+            db.ConversationMessages.Add(assistant);
+            foreach (var attachment in media.Attachments) attachment.MessageId = assistant.Id;
+            if (usage.HasUsage)
+            {
+                var row = usage.ToTurnUsage(conversationId, model, TurnKind.Chat);
+                row.MessageId = assistant.Id;
+                db.TurnUsages.Add(row);
+            }
+            await db.SaveChangesAsync(saveDeadline.Token);
+            usageTracker.RecordUse(model);
         }
-
-        await db.SaveChangesAsync(ct);
-        usageTracker.RecordUse(definition.Slug);
-
-        // Surface the post-save revision so the client can echo it as `expectedRevision` on its
-        // next mutation (send/edit bump it server-side; the client cannot otherwise learn it).
-        yield return new ChatStreamEventV1.Done(new(Revision: conversation?.Revision));
+        catch (Exception ex) when (!completed)
+        {
+            logger.LogWarning(ex, "Could not save interrupted response for {ConversationId}", conversationId);
+        }
     }
 
     /// <summary>
@@ -441,6 +457,11 @@ internal sealed class ChatStreamServiceV1(
 
         foreach (var attachment in message.Attachments)
         {
+            if (!AttachmentContentBuilder.IsSupported(attachment.ContentType, capabilities))
+            {
+                parts.Add(AttachmentContentBuilder.NotSentNote(attachment));
+                continue;
+            }
             if (!isCurrentTurn && !attachmentOptions.ResendHistory)
             {
                 parts.Add(AttachmentContentBuilder.HistoryNote(attachment));
@@ -460,6 +481,7 @@ internal sealed class ChatStreamServiceV1(
                 continue;
             }
 
+            parts.Add(AttachmentContentBuilder.HistoryNote(attachment));
             parts.AddRange(AttachmentContentBuilder.Build(
                 attachment, bytes, capabilities, attachmentOptions.TextInlineMaxBytes));
         }
@@ -608,7 +630,8 @@ internal sealed class ChatStreamServiceV1(
         TurnUsageTotals usage,
         GeneratedMediaCollector? media,
         string? model,
-        [EnumeratorCancellation] CancellationToken ct
+        [EnumeratorCancellation] CancellationToken ct,
+        TurnResponseCapture? capture = null
     )
     {
         await foreach (var update in updates.WithCancellation(ct))
@@ -621,6 +644,7 @@ internal sealed class ChatStreamServiceV1(
                 switch (content)
                 {
                     case FunctionCallContent call:
+                        capture?.AddCall(call.CallId, call.Name, FormatArguments(call.Arguments));
                         yield return new ChatStreamEventV1.ToolCall(new(
                             CallId: call.CallId,
                             Name: call.Name,
@@ -629,6 +653,7 @@ internal sealed class ChatStreamServiceV1(
                         break;
 
                     case FunctionResultContent result:
+                        capture?.SetResult(result.CallId, FormatResult(result.Result), result.Exception?.Message);
                         yield return new ChatStreamEventV1.ToolResult(new(
                             CallId: result.CallId,
                             Result: FormatResult(result.Result),
@@ -638,6 +663,11 @@ internal sealed class ChatStreamServiceV1(
 
                     // A turn can make several underlying model calls (the tool-invocation
                     // loop); their usage payloads are summed rather than replaced.
+                    case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
+                        capture?.Reasoning.Append(reasoning.Text);
+                        yield return new ChatStreamEventV1.Reasoning(new(reasoning.Text));
+                        break;
+
                     case UsageContent usageContent:
                         usage.Add(usageContent.Details);
                         break;

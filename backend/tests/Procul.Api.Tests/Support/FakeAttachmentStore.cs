@@ -9,6 +9,8 @@ internal sealed class FakeAttachmentStore : IAttachmentStore
 
     public string Kind => "fake";
 
+    public int ReadCount { get; private set; }
+
     public int Count => _byKey.Count;
 
     public Task<string> PutAsync(Attachment attachment, Stream content, CancellationToken ct)
@@ -20,10 +22,13 @@ internal sealed class FakeAttachmentStore : IAttachmentStore
         return Task.FromResult(key);
     }
 
-    public Task<Stream> OpenReadAsync(string storageKey, CancellationToken ct) =>
-        _byKey.TryGetValue(storageKey, out var data)
+    public Task<Stream> OpenReadAsync(string storageKey, CancellationToken ct)
+    {
+        ReadCount++;
+        return _byKey.TryGetValue(storageKey, out var data)
             ? Task.FromResult<Stream>(new MemoryStream(data, writable: false))
             : Task.FromException<Stream>(new FileNotFoundException(storageKey));
+    }
 
     public Task DeleteAsync(string storageKey, CancellationToken ct)
     {

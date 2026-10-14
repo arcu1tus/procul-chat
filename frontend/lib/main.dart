@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:shadcn_flutter_material/shadcn_flutter_material.dart';
@@ -85,9 +87,9 @@ class _ProculChatAppState extends State<ProculChatApp> {
                 return ConnectScreen(auth: widget.auth);
               }
               return AuthenticatedShell(
-                // Keyed by profile id so switching servers rebuilds the whole
+                // Keyed by profile + token so switching sessions rebuilds the whole
                 // shell (and a fresh ChatController) instead of leaking state.
-                key: ValueKey(session.profile.id),
+                key: ValueKey((session.profile.id, session.token)),
                 auth: widget.auth,
                 settings: widget.settings,
               );
@@ -114,8 +116,13 @@ class AuthenticatedShell extends StatefulWidget {
   State<AuthenticatedShell> createState() => _AuthenticatedShellState();
 }
 
-class _AuthenticatedShellState extends State<AuthenticatedShell> {
+class _AuthenticatedShellState extends State<AuthenticatedShell>
+    with WidgetsBindingObserver {
   late final ChatController _chat;
+  Timer? _sessionTimer;
+  bool _sessionChecked = false;
+  bool _checkingSession = false;
+  String? _sessionError;
 
   @override
   void initState() {
@@ -127,20 +134,69 @@ class _AuthenticatedShellState extends State<AuthenticatedShell> {
         token: session.token,
         // An expired / rejected token bounces the app back to the Connect
         // screen instead of leaving the user with silent failures.
-        onUnauthorized: widget.auth.logout,
+        onUnauthorized: () => widget.auth.invalidateSession(session),
       ),
     );
-    _chat.init();
+    WidgetsBinding.instance.addObserver(this);
+    _validateSession();
+    _sessionTimer = Timer.periodic(
+      const Duration(seconds: 25),
+      (_) => _validateSession(),
+    );
   }
 
   @override
   void dispose() {
+    _sessionTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _chat.dispose();
     super.dispose();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _validateSession();
+  }
+
+  Future<void> _validateSession() async {
+    if (_checkingSession) return;
+    _checkingSession = true;
+    try {
+      await _chat.api.validateSession();
+      if (!mounted) return;
+      if (!_sessionChecked) {
+        setState(() {
+          _sessionChecked = true;
+          _sessionError = null;
+        });
+        _chat.init();
+      }
+    } catch (e) {
+      if (mounted && !_sessionChecked) setState(() => _sessionError = '$e');
+    } finally {
+      _checkingSession = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (!_sessionChecked) {
+      return Scaffold(
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(_sessionError ?? 'Checking your session…'),
+              if (_sessionError != null)
+                OutlineButton(
+                  onPressed: _validateSession,
+                  child: const Text('Retry'),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
     return HomeShell(chat: _chat, settings: widget.settings, auth: widget.auth);
   }
 }

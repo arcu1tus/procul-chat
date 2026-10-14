@@ -24,6 +24,12 @@ class TokenEvent extends ChatStreamEvent {
   final String content;
 }
 
+/// Displayable provider reasoning, separate from answer text.
+class ReasoningEvent extends ChatStreamEvent {
+  const ReasoningEvent(this.content);
+  final String content;
+}
+
 /// An image produced during the reply, fetched through the attachment API.
 class ImageEvent extends ChatStreamEvent {
   const ImageEvent(this.attachment);
