@@ -195,8 +195,9 @@ zstd/gzip fallback and COOP/COEP headers to enable multithreaded Skwasm. Configu
 
 `../.github/workflows/ci.yml` runs `flutter pub get --enforce-lockfile`, `flutter analyze
 --no-pub`, `flutter test --no-pub`, and `python3 -m unittest discover -s tool -p 'test_*.py'`
-on every PR to `main` and push to `main`. Flutter is pinned to **3.47.7** in both that workflow
-and `publish-flutter-app.yml`; update both pins together when changing the SDK.
+on PRs to `main` and pushes to `main` when frontend files or relevant workflows change. Flutter
+is pinned to **3.47.7** in both that workflow and `publish-flutter-app.yml`; update both pins
+together when changing the SDK.
 
 Both Linux test jobs install `pkg-config` and `libgtk-3-dev` before Flutter setup. Clipboard/drop
 Rust build hooks compile native host assets even for unit/widget tests; GTK development headers
@@ -209,6 +210,8 @@ names, emits a numeric `build_name` for native platform version fields, and omit
 from Linux package versions. nFPM encodes prereleases with `~` for package ordering and converts
 RPM-incompatible prerelease hyphens to underscores. The workflow run number supplies Flutter's
 native build number; asset names retain the full SemVer.
+The Android matrix job uses `setup-java@v6` to cache Gradle dependencies and its wrapper across
+tagged builds.
 
 Artifacts are named `procul-chat-<platform>-<semver>.<extension>` in ignored `dist/`:
 Android `.apk`, Wasm web `.zip` (with JavaScript fallback), Windows x64 `.zip` (whole bundle

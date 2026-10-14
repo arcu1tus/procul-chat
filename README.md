@@ -465,8 +465,9 @@ and reuses the Docker layer cache through the Actions cache API.
 
 ## Continuous integration
 
-- [`ci.yml`](.github/workflows/ci.yml) builds/tests the backend and analyzes/tests the Flutter
-  client on pushes to `main` and every pull request targeting `main`.
+- [`ci.yml`](.github/workflows/ci.yml) runs on pushes to `main` and every pull request targeting
+  `main`, building/testing the backend and analyzing/testing Flutter only when their respective
+  files or CI workflows change. Docs-only changes complete the checks without running builds.
 - [`publish-backend-image.yml`](.github/workflows/publish-backend-image.yml) tests and
   publishes the container image on `v*` tags.
 - [`publish-flutter-app.yml`](.github/workflows/publish-flutter-app.yml) validates `v<SemVer>`

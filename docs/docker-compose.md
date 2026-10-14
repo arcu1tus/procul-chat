@@ -24,6 +24,9 @@ on every `v*` tag:
 ghcr.io/<owner>/procul-chat/backend-api:<tag>
 ```
 
+The tag workflow restores and tests the backend before building the image. Ordinary CI runs the
+backend job only when backend files or relevant workflows change.
+
 (Registry paths must be lowercase; the workflow lowercases the owner/repo.) For this repository
 that is `ghcr.io/arcu1tus/procul-chat/backend-api`.
 

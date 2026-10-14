@@ -27,12 +27,13 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           cache: true
           cache-dependency-path: backend/**/*.csproj
+          check-latest: false
 
       - name: Restore
         run: dotnet restore backend/Procul.slnx
 
       - name: Test
-        run: dotnet test backend/Procul.slnx --configuration Release --verbosity normal
+        run: dotnet test backend/Procul.slnx --configuration Release --no-restore --verbosity normal
 
   publish:
     name: Build & push image
