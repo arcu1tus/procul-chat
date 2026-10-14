@@ -1,3 +1,5 @@
+import 'support/media_fixture.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -135,6 +137,7 @@ void main() {
     () async {
       var remote = [..._initial];
       final chat = _chat(history: (_) async => _history(remote));
+      withMediaPolicy(chat);
       addTearDown(chat.dispose);
       await chat.init();
       chat.pendingAttachments.addAll([

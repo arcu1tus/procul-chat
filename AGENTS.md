@@ -21,7 +21,7 @@ development. It has two halves:
   `expectedRevision`). Configuration lives in a single `config.jsonc`; only secrets and the config
   path are environment variables.
 - **`frontend/`** — a Flutter client (Linux desktop, web, mobile) with multiple conversations,
-  streaming replies, **message editing**, tool-activity display, Markdown rendering, a **model
+  streaming replies, **message editing**, persisted expandable tool activity and reasoning, clipboard/drop media, Markdown rendering, a **model
   picker** and a **Models** catalog screen, **file attachments** with inline image rendering, a
   **token-usage dashboard**, and multiple saved server profiles behind a shared-password sign-in.
 

@@ -198,6 +198,11 @@ zstd/gzip fallback and COOP/COEP headers to enable multithreaded Skwasm. Configu
 on every PR to `main` and push to `main`. Flutter is pinned to **3.47.7** in both that workflow
 and `publish-flutter-app.yml`; update both pins together when changing the SDK.
 
+Both Linux test jobs install `pkg-config` and `libgtk-3-dev` before Flutter setup. Clipboard/drop
+Rust build hooks compile native host assets even for unit/widget tests; GTK development headers
+provide the GLib/GObject/GDK pkg-config metadata they require. Preserve this prerequisite in
+release validation as well as PR CI (installing it only in the Linux release-build job is too late).
+
 `publish-flutter-app.yml` builds only on valid `v<SemVer>` tag pushes, after repeating analysis
 and tests. `tool/release_metadata.py` validates full SemVer, strips the leading `v` for asset
 names, emits a numeric `build_name` for native platform version fields, and omits build metadata
@@ -336,7 +341,7 @@ are editable. A hard failure triggers a resync (see below).
   reply but refreshes the revision; `409` uses the same recovery for send and edit.
 - **Tool activity lives on the assistant message.** `ToolCallEvent`/`ToolResultEvent` are
   folded into the streaming assistant `ChatMessage.toolCalls` (matched by `callId`), not added
-  as separate buffer entries. Tool calls are not persisted, so they vanish on reload.
+  as separate buffer entries. Tool calls, explicit completion states, and provider reasoning are persisted and parsed from history. Reasoning stays separate from the answer and is collapsed by default.
 - **Token usage is two-level.** `ChatController.activeUsage` is the active conversation's
   cumulative total: seeded from `GET /v1/usage/conversations/{id}` when a conversation is
   opened, then incremented by each turn's `UsageEvent` so switching conversations needs no
@@ -412,7 +417,7 @@ are editable. A hard failure triggers a resync (see below).
   whose `colorScheme.ring` is transparent (the `FocusOutline` default border is the scheme's
   `ring`), leaving only the capsule's outer ring.
   `Key('message-input')` identifies the composer field because the sidebar now also has a
-  `TextField` for search. Send is disabled for blank text and while attachments upload; the
+  `TextField` for search. Send is disabled for an empty draft and while attachments are read/uploaded; media-only messages are allowed; the
   keyboard submission path applies the same upload guard. The hint switches to reply progress
   during streaming and explains destructive editing while editing. The a11y labels
   (`Send message` / `Attach file`) and keyboard semantics are preserved.
@@ -467,10 +472,10 @@ are editable. A hard failure triggers a resync (see below).
   disabled while streaming or mid-upload); a multi-select keeps going when one file fails.
   One busy state spans the batch, and failures remain visible even if a later file succeeds.
   Draft generations discard late upload results after a chat/edit switch and stop the batch;
-  controller send/edit methods also refuse submission during an upload.
+  controller send/edit methods also refuse submission during a read/upload.
   `ChatController.send` snapshots the pending ids into the request and attaches the metadata to the
   user bubble; the queue clears on send, `newChat()`, and switching chats. `pendingAttachments` is
-  *not* persisted: a failed turn leaves the uploads orphaned server-side. When a fetch 404s
+  *not* persisted across app restarts; pre-acceptance HTTP failures restore the draft and pending IDs. When a fetch 404s
   (retention purged the bytes) the image falls back to a **"no longer stored"** chip
   (`_ExpiredAttachmentChip`), not a generic file chip.
 - **Attachment bytes are fetched through `ChatApi`, then cached.** `ChatController.loadAttachmentBytes`
@@ -725,7 +730,7 @@ surfaces the error rather than downgrading the token to plaintext.
   `FakeConversationStore` into `ChatController`; `flutter_secure_storage` has no test double in
   the plugin, so a real `SecureCredentialStore` would fail on the platform channel.
 - **The 401 path is the sign-out path.** `ChatApi` fires `onUnauthorized` once (wired to
-  `auth.logout()`), and `main.dart` keys `AuthenticatedShell` by profile id. If you add a new
+  `auth.invalidateSession(capturedSession)`), and `main.dart` keys `AuthenticatedShell` by profile id + token. If you add a new
   authenticated call, route it through `ChatApi` so it inherits both the bearer header and the
   401 handling — don't build a second HTTP client.
 - **shadcn `Text` has no `.destructive` style.** The text extensions only cover sizes, weights
@@ -765,3 +770,36 @@ surfaces the error rather than downgrading the token to plaintext.
   hangs in **teardown** (and `flutter test --timeout` never fires because the test body already
   finished). Guard it — `addTearDown(() => stream.isClosed ? null : stream.close())` — as in
   `chat_usage_test.dart`.
+
+## Clipboard, drops, and response history
+
+- `media_input.dart` normalizes one file representation per clipboard/drop item and provides an
+  injectable `MediaInputSource`. Native paste uses `SystemClipboard`; web uses focus-scoped
+  `ClipboardEvents` so browser permissions do not force asynchronous clipboard reads. Text is
+  inserted once at the selection, including mixed text/media. Remote URIs are not fetched.
+- `MediaDropTarget` stays mounted while enabled/disabled so clipboard reads and uploads do not
+  detach the focused composer. It accepts incoming files across available platforms and starts data requests
+  inside the native callback and returns promptly; file reads/uploads continue outside it. Reads
+  and file counts are bounded by authenticated `GET /v1/attachments/policy` settings.
+- `ChatController` owns policy + current model capabilities. Uploads validate before each file,
+  revalidate after completion, and validate again on send/edit. Queue chips expose incompatibility
+  instead of disappearing. Model/catalog changes can block a queued file. Media is disabled until
+  policy/capabilities are loaded. Unknown binary formats and video are rejected, including when a
+  model declares video (the current adapter cannot transmit it).
+- `ResponseActivity` uses keyboard/touch-expandable `ActivityDisclosure` widgets. `reasoning` SSE
+  chunks update the Thinking status separately from answer text; history preserves reasoning and
+  ordered tools with explicit completion (including null results). Interrupted/failed responses
+  remain inspectable. Sync reconciles activity metadata while preserving bubble identity.
+- `super_clipboard` / `super_drag_and_drop` are pinned to `0.10.0-dev.2` because stable 0.9.1
+  conflicts with secure storage's Windows win32 dependency. Preserve the lockfile and verify
+  native builds plus Wasm web when changing these packages. Native build hooks require Rust.
+- The Linux runner sets an ordinary GTK window title, allowing native KDE decoration on Wayland
+  and X11. The bundled `assets/icon/icon.png` supplies the X11 window icon; nFPM installs
+  `com.example.procul_chat_flutter.desktop` to match `APPLICATION_ID` on Wayland. Keep the
+  desktop destination and `StartupWMClass` synchronized with the GTK application ID. Do not reintroduce the template's old unconditional Wayland GtkHeaderBar.
+- `AuthenticatedShell` probes its captured session before showing chat, every 25s, and on resume,
+  independent of chat streaming/editing. API callbacks invalidate only that profile/token;
+  delayed 401s cannot sign out a newer session. Logout clears memory before secure-storage I/O;
+  network failures keep credentials and permit retry. Shell identity includes profile + token.
+- S3 media downloads still use the authenticated backend endpoint, streamed in bounded server
+  buffers. Flutter buffers received image bytes for rendering; no public S3 URL is exposed.

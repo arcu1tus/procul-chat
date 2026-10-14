@@ -37,7 +37,11 @@ internal sealed class OpenRouterImageClient(
             var references = new JsonArray();
             foreach (var reference in request.References)
             {
-                references.Add(DataUrl(reference));
+                references.Add(new JsonObject
+                {
+                    ["type"] = "image_url",
+                    ["image_url"] = new JsonObject { ["url"] = DataUrl(reference) },
+                });
             }
 
             body["input_references"] = references;

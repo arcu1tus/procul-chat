@@ -53,6 +53,7 @@ class AuthController extends ChangeNotifier {
   }
 
   String? _token;
+  Future<void> _credentialDeletion = Future.value();
 
   /// The active session, or null when no profile is authenticated (so the app
   /// shows the Connect screen).
@@ -130,6 +131,7 @@ class AuthController extends ChangeNotifier {
 
       // Store the token first: if secure storage fails, don't leave a
       // half-added profile behind.
+      await _credentialDeletion;
       await _credentials.writeToken(profile.id, session.token);
       if (existing == null) {
         _profiles.add(profile);
@@ -165,6 +167,7 @@ class AuthController extends ChangeNotifier {
 
     _activeId = id;
     error = null;
+    await _credentialDeletion;
     _token = await _credentials.readToken(id);
     await _store.writeActiveId(id);
     notifyListeners();
@@ -175,12 +178,22 @@ class AuthController extends ChangeNotifier {
   /// The profile itself (and its URL) is kept.
   Future<void> logout() async {
     final id = _activeId;
-    if (id != null) {
-      await _credentials.deleteToken(id);
-    }
     _token = null;
     error = null;
     notifyListeners();
+    if (id != null) {
+      _credentialDeletion = _credentials.deleteToken(id).catchError((Object e) {
+        error = 'Could not clear the stored session: $e';
+        notifyListeners();
+      });
+      await _credentialDeletion;
+    }
+  }
+
+  /// A rejected request may belong to a session that has since been replaced.
+  Future<void> invalidateSession(ActiveSession rejected) async {
+    if (_activeId != rejected.profile.id || _token != rejected.token) return;
+    await logout();
   }
 
   /// Removes [id] and its token. Removing the active server also logs out;

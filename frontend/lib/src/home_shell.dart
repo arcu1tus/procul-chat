@@ -87,6 +87,7 @@ class _HomeShellState extends State<HomeShell>
     // and a brand-new chat can fall back to it.
     _catalog.addListener(_syncDefaultModel);
     _catalog.load();
+    widget.chat.loadAttachmentPolicy();
     _controller.addStatusListener(_handleSlideStatus);
     _syncTimer = Timer.periodic(_syncInterval, (_) => _sync());
   }
@@ -128,8 +129,10 @@ class _HomeShellState extends State<HomeShell>
     chat.syncActiveConversation();
   }
 
-  void _syncDefaultModel() =>
-      widget.chat.setDefaultModel(_catalog.defaultModel);
+  void _syncDefaultModel() {
+    widget.chat.setDefaultModel(_catalog.defaultModel);
+    widget.chat.setModels(_catalog.models);
+  }
 
   void _openSidebar() {
     if (!_sidebarOpen) setState(() => _sidebarOpen = true);

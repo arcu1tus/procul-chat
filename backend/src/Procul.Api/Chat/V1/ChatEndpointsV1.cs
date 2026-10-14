@@ -5,6 +5,7 @@ using Procul.Api.Attachments;
 using Procul.Api.Attachments.V1;
 using Procul.Api.Chat.Models;
 using Procul.Api.Infrastructure;
+using Procul.Api.Configuration;
 
 namespace Procul.Api.Chat.V1;
 
@@ -31,14 +32,14 @@ internal static class ChatEndpointsV1
     /// The user-facing problem with a message text, or null when it is valid. Rejects empty
     /// (after trim) and oversized text; <paramref name="field"/> names the JSON field.
     /// </summary>
-    private static string? ValidateMessageText(string? text, string field)
+    private static string? ValidateMessageText(string? text, string field, bool hasAttachments = false)
     {
-        if (string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(text) && !hasAttachments)
         {
             return $"'{field}' must not be empty.";
         }
 
-        if (text.Length > MaxMessageLength)
+        if (text?.Length > MaxMessageLength)
         {
             return $"'{field}' must be at most {MaxMessageLength} characters.";
         }
@@ -76,6 +77,7 @@ internal static class ChatEndpointsV1
         ChatStreamServiceV1 chat,
         ChatModelRegistry registry,
         ModelCatalogService catalog,
+        AttachmentOptions attachmentOptions,
         CreateConversationRequestV1 body,
         CancellationToken ct
     )
@@ -88,30 +90,33 @@ internal static class ChatEndpointsV1
                 detail: $"Unknown model '{model}'. Use GET /v1/models to list configured models.");
         }
 
-        if (ValidateMessageText(body.InitialMessage, "initialMessage") is { } textProblem)
+        if (ValidateMessageText(body.InitialMessage, "initialMessage", body.AttachmentIds is { Count: > 0 }) is { } textProblem)
         {
             return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: textProblem);
         }
 
         var slug = model.Length > 0 ? model : null;
-        var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, body.AttachmentIds, slug, ct);
+        var accepted = ResolvedChatModel.Resolve(registry, catalog, slug);
+        var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, body.AttachmentIds, slug, ct,
+            maxAttachments: attachmentOptions.MaxAttachmentsPerMessage, model: accepted);
         if (!gate.IsValid)
         {
             return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: gate.Error);
         }
 
-        var capabilities = catalog.GetCapabilities(registry.ResolveOrDefault(slug)).Input;
+        var capabilities = accepted.Input;
 
         var conversation = new Conversation
         {
-            Title = ChatStreamServiceV1.FallbackTitle(body.InitialMessage),
+            Title = ChatStreamServiceV1.FallbackTitle(string.IsNullOrWhiteSpace(body.InitialMessage)
+                ? string.Join(", ", gate.Attachments.Select(a => a.FileName)) : body.InitialMessage),
             Model = slug,
         };
         db.Conversations.Add(conversation);
         await db.SaveChangesAsync(ct);
 
         return TypedResults.ServerSentEvents(
-            chat.StreamNewConversationAsync(conversation, body.InitialMessage, gate.Attachments, capabilities, ct)
+            chat.StreamNewConversationAsync(conversation, body.InitialMessage ?? "", gate.Attachments, capabilities, ct, accepted.Definition)
         );
     }
 
@@ -292,6 +297,11 @@ internal static class ChatEndpointsV1
                 m.Text,
                 m.MessageRole,
                 m.CreatedAt,
+                m.Reasoning,
+                m.CompletionStatus,
+                m.Model,
+                ToolCalls = m.ToolCalls.OrderBy(t => t.Sequence).Select(t => new ConversationToolCallV1(
+                    t.CallId, t.Name, t.Arguments, t.Result, t.Error, t.Status)).ToList(),
                 Attachments = m.Attachments
                     .Select(a => new AttachmentV1(a.Id, a.FileName, a.ContentType, a.SizeBytes, a.CreatedAt))
                     .ToList(),
@@ -317,14 +327,17 @@ internal static class ChatEndpointsV1
                     MessageRole: m.MessageRole,
                     CreatedAt: m.CreatedAt,
                     Attachments: m.Attachments,
-                    Model: usage?.Model,
+                    Model: m.Model ?? usage?.Model,
                     Usage: usage is null
                         ? null
                         : new ConversationMessageUsageV1(
                             usage.InputTokens,
                             usage.OutputTokens,
                             usage.CachedInputTokens,
-                            usage.TotalTokens));
+                            usage.TotalTokens),
+                    ToolCalls: m.ToolCalls,
+                    Reasoning: m.Reasoning,
+                    CompletionStatus: m.CompletionStatus);
             })
             .ToList();
 
@@ -336,6 +349,7 @@ internal static class ChatEndpointsV1
         ChatStreamServiceV1 chat,
         ChatModelRegistry registry,
         ModelCatalogService catalog,
+        AttachmentOptions attachmentOptions,
         Guid conversationId,
         SendMessageRequestV1 body,
         CancellationToken ct
@@ -352,21 +366,23 @@ internal static class ChatEndpointsV1
             return RevisionConflict(conversation.Revision);
         }
 
-        if (ValidateMessageText(body.Text, "text") is { } textProblem)
+        if (ValidateMessageText(body.Text, "text", body.AttachmentIds is { Count: > 0 }) is { } textProblem)
         {
             return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: textProblem);
         }
 
-        var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, body.AttachmentIds, conversation.Model, ct);
+        var accepted = ResolvedChatModel.Resolve(registry, catalog, conversation.Model);
+        var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, body.AttachmentIds, conversation.Model, ct,
+            maxAttachments: attachmentOptions.MaxAttachmentsPerMessage, model: accepted);
         if (!gate.IsValid)
         {
             return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: gate.Error);
         }
 
-        var capabilities = catalog.GetCapabilities(registry.ResolveOrDefault(conversation.Model)).Input;
+        var capabilities = accepted.Input;
 
         return TypedResults.ServerSentEvents(
-            chat.StreamAssistantReplyAsync(conversationId, body.Text, gate.Attachments, capabilities, ct)
+            chat.StreamAssistantReplyAsync(conversationId, body.Text ?? "", gate.Attachments, capabilities, ct, accepted.Definition)
         );
     }
 
@@ -375,6 +391,7 @@ internal static class ChatEndpointsV1
         ChatStreamServiceV1 chat,
         ChatModelRegistry registry,
         ModelCatalogService catalog,
+        AttachmentOptions attachmentOptions,
         Guid conversationId,
         Guid messageId,
         EditMessageRequestV1 body,
@@ -392,12 +409,8 @@ internal static class ChatEndpointsV1
             return RevisionConflict(conversation.Revision);
         }
 
-        if (ValidateMessageText(body.Text, "text") is { } textProblem)
-        {
-            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: textProblem);
-        }
-
         var message = await db.ConversationMessages
+            .Include(m => m.Attachments)
             .FirstOrDefaultAsync(m => m.Id == messageId && m.ConversationId == conversationId, ct);
         if (message is null)
         {
@@ -411,25 +424,23 @@ internal static class ChatEndpointsV1
                 detail: "Only user messages can be edited.");
         }
 
-        // Absent attachmentIds keeps the current attachments; a list (even empty) replaces them.
-        // An id already attached to *this* message is allowed.
-        IReadOnlyList<Attachment>? replacement = null;
-        if (body.AttachmentIds is not null)
+        var effectiveIds = body.AttachmentIds ?? message.Attachments.Select(a => a.Id).ToList();
+        if (ValidateMessageText(body.Text, "text", effectiveIds.Count > 0) is { } textProblem)
         {
-            var gate = await AttachmentGate.ResolveAsync(
-                db, registry, catalog, body.AttachmentIds, conversation.Model, ct, allowMessageId: messageId);
-            if (!gate.IsValid)
-            {
-                return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: gate.Error);
-            }
-
-            replacement = gate.Attachments;
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: textProblem);
         }
-
-        var capabilities = catalog.GetCapabilities(registry.ResolveOrDefault(conversation.Model)).Input;
+        var accepted = ResolvedChatModel.Resolve(registry, catalog, conversation.Model);
+        var gate = await AttachmentGate.ResolveAsync(db, registry, catalog, effectiveIds, conversation.Model, ct,
+            allowMessageId: messageId, maxAttachments: attachmentOptions.MaxAttachmentsPerMessage, model: accepted);
+        if (!gate.IsValid)
+        {
+            return TypedResults.Problem(statusCode: StatusCodes.Status400BadRequest, detail: gate.Error);
+        }
+        IReadOnlyList<Attachment>? replacement = body.AttachmentIds is null ? null : gate.Attachments;
+        var capabilities = accepted.Input;
 
         return TypedResults.ServerSentEvents(
-            chat.EditMessageAsync(conversationId, messageId, body.Text, replacement, capabilities, ct)
+            chat.EditMessageAsync(conversationId, messageId, body.Text ?? "", replacement, capabilities, ct, accepted.Definition)
         );
     }
 }

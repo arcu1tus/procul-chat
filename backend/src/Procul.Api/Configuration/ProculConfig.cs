@@ -63,6 +63,9 @@ public sealed class AttachmentConfig
     /// <summary>Largest attachment accepted, in bytes.</summary>
     public long MaxFileSizeBytes { get; set; } = 20 * 1024 * 1024;
 
+    /// <summary>Maximum distinct attachments on one submitted user message.</summary>
+    public int MaxAttachmentsPerMessage { get; set; } = 20;
+
     /// <summary>
     /// Allowed content-type patterns (e.g. <c>image/*</c>). An empty list rejects every upload,
     /// so set it explicitly (see <c>config.jsonc.example</c> for the recommended defaults).

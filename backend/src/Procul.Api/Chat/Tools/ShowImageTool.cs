@@ -55,8 +55,8 @@ internal sealed class ShowImageTool(
                 ? $"shown-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.{ExtensionFor(contentType)}"
                 : AttachmentValidation.SanitizeFileName(fileName);
 
-            await ToolMedia.StoreAsync(context, bytes, name, contentType, ct);
-            return $"Displayed the image ({contentType}, {bytes.Length} bytes) in the chat.";
+            var stored = await ToolMedia.StoreAsync(context, bytes, name, contentType, ct);
+            return $"Displayed the image ({contentType}, {bytes.Length} bytes) in the chat. Attachment id: {stored.Id}.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

@@ -355,6 +355,11 @@ internal static class ProculConfigLoader
 
     private static void ValidateAttachments(ProculConfig config)
     {
+        if (config.Attachments.MaxAttachmentsPerMessage < 1)
+        {
+            throw new InvalidOperationException("attachments.maxAttachmentsPerMessage must be positive.");
+        }
+
         var storage = config.Attachments.Storage?.Trim().ToLowerInvariant() ?? "postgres";
         if (!AllowedStorage.Contains(storage))
         {

@@ -1,5 +1,12 @@
 # Deploying Procul on a VPS
 
+The healthcheck examples require Docker Engine **25+** and Compose **2.20.2+**. Startup probes
+run every second during the grace period; success starts dependents immediately. PostgreSQL is
+checked over TCP and must execute `SELECT 1`, so its temporary socket-only initialization server
+cannot prematurely satisfy readiness. API `/health` remains a process liveness check; model/MCP
+startup work and migrations can still affect startup time.
+
+
 An end-to-end walkthrough for a single **amd64** VPS: the backend and PostgreSQL in Docker
 behind a **containerized Caddy**, then a **sideloaded Android APK** built on the same host.
 
@@ -85,9 +92,17 @@ services:
       # Mount the parent dir: correct for both PG17 (/data subdir) and PG18+ layouts.
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U procul -d procul"]
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" &&
+          PGPASSWORD="$${POSTGRES_PASSWORD}" PGCONNECT_TIMEOUT=2
+          psql -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+          -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' >/dev/null
+      start_period: 30s
+      start_interval: 1s
       interval: 10s
-      timeout: 5s
+      timeout: 3s
       retries: 5
     networks: [procul]
 
@@ -121,6 +136,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+      start_interval: 1s
     networks: [procul]
 
 volumes:

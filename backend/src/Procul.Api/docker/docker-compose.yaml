@@ -12,6 +12,19 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: procul
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" &&
+          PGPASSWORD="$${POSTGRES_PASSWORD}" PGCONNECT_TIMEOUT=2
+          psql -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+          -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' >/dev/null
+      start_period: 30s
+      start_interval: 1s
+      interval: 10s
+      timeout: 3s
+      retries: 5
     volumes:
       - postgres_data:/var/lib/postgresql
 

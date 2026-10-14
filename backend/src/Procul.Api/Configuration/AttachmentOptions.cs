@@ -13,6 +13,9 @@ public sealed class AttachmentOptions
     /// <summary>Largest attachment accepted, in bytes.</summary>
     public required long MaxFileSizeBytes { get; init; }
 
+    /// <summary>Maximum distinct attachments on one submitted user message.</summary>
+    public int MaxAttachmentsPerMessage { get; init; } = 20;
+
     /// <summary>Allowed content-type patterns (e.g. <c>image/*</c>).</summary>
     public required IReadOnlyList<string> AllowedContentTypes { get; init; }
 
@@ -38,6 +41,7 @@ public sealed class AttachmentOptions
     {
         Storage = config.Attachments.Storage,
         MaxFileSizeBytes = config.Attachments.MaxFileSizeBytes,
+        MaxAttachmentsPerMessage = config.Attachments.MaxAttachmentsPerMessage,
         AllowedContentTypes = config.Attachments.AllowedContentTypes,
         ResendHistory = config.Attachments.ResendHistory,
         TextInlineMaxBytes = config.Attachments.TextInlineMaxBytes,

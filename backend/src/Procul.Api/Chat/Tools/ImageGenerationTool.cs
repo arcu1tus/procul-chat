@@ -60,9 +60,9 @@ internal sealed class ImageGenerationTool(
             }
 
             var fileName = $"generated-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.{ExtensionFor(image.MediaType)}";
-            await ToolMedia.StoreAsync(context, image.Bytes, fileName, image.MediaType, ct);
+            var stored = await ToolMedia.StoreAsync(context, image.Bytes, fileName, image.MediaType, ct);
 
-            return $"Generated an image ({image.MediaType}, {image.Bytes.Length} bytes) and added it to the chat.";
+            return $"Generated an image ({image.MediaType}, {image.Bytes.Length} bytes) and added it to the chat. Attachment id: {stored.Id}.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -85,6 +85,10 @@ internal sealed class ImageGenerationTool(
         }
 
         var ids = referenceAttachmentIds.Distinct().ToList();
+        if (ids.Count > options.MaxReferenceImages)
+        {
+            return ([], $"Select at most {options.MaxReferenceImages} reference images.");
+        }
         // Scope to this conversation: a model must not be able to read (and forward to the image
         // provider) another conversation's attachments.
         var found = await context.Db.Attachments
@@ -103,7 +107,7 @@ internal sealed class ImageGenerationTool(
             return ([], $"Reference '{nonImage.FileName}' is not an image ({nonImage.ContentType}).");
         }
 
-        var limited = found.Take(Math.Max(0, options.MaxReferenceImages)).ToList();
+        var limited = ids.Select(id => found.Single(a => a.Id == id)).ToList();
         var references = new List<ImageReference>(limited.Count);
         foreach (var attachment in limited)
         {
@@ -116,7 +120,7 @@ internal sealed class ImageGenerationTool(
             }
             catch (IOException)
             {
-                // The bytes are gone (retention purged them); skip the reference rather than fail.
+                return ([], $"Reference '{attachment.FileName}' is no longer stored; choose another image.");
             }
         }
 

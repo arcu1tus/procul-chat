@@ -30,7 +30,9 @@ internal static class AttachmentGate
         IReadOnlyList<Guid>? attachmentIds,
         string? modelSlug,
         CancellationToken ct,
-        Guid? allowMessageId = null)
+        Guid? allowMessageId = null,
+        int maxAttachments = 20,
+        ResolvedChatModel? model = null)
     {
         if (attachmentIds is not { Count: > 0 })
         {
@@ -38,6 +40,10 @@ internal static class AttachmentGate
         }
 
         var ids = attachmentIds.Distinct().ToList();
+        if (ids.Count > maxAttachments)
+        {
+            return AttachmentResolution.Fail($"A message may contain at most {maxAttachments} attachments.");
+        }
         var found = await db.Attachments
             .Where(a => ids.Contains(a.Id))
             .ToListAsync(ct);
@@ -57,8 +63,9 @@ internal static class AttachmentGate
                 $"Attachment '{alreadyAttached.FileName}' is already attached to a message.");
         }
 
-        var definition = registry.ResolveOrDefault(modelSlug);
-        var capabilities = catalog.GetCapabilities(definition).Input;
+        model ??= ResolvedChatModel.Resolve(registry, catalog, modelSlug);
+        var definition = model.Definition;
+        var capabilities = model.Input;
 
         foreach (var attachment in found)
         {
@@ -88,6 +95,11 @@ internal static class AttachmentGate
         {
             return $"The model '{definition.Name}' cannot read '{fileName}' ({contentType}); " +
                 $"it requires the '{required.ToString().ToLowerInvariant()}' capability.";
+        }
+
+        if (!AttachmentContentBuilder.IsSupported(contentType, capabilities))
+        {
+            return $"'{fileName}' ({contentType}) cannot be sent by the chat adapter.";
         }
 
         return null;

@@ -20,6 +20,33 @@ const _sse =
     'data: {"value":{"type":"done"}}\n\n';
 
 void main() {
+  test('reasoning SSE is separate from the answer and null tool output completes', () async {
+    final api = ChatApi(
+      baseUrl: 'http://test',
+      token: 'test',
+      client: MockClient(
+        (_) async => http.Response(
+          'data: {"value":{"type":"reasoning","content":"visible thinking"}}\n\n'
+          'data: {"value":{"type":"toolCall","callId":"c","name":"tool"}}\n\n'
+          'data: {"value":{"type":"toolResult","callId":"c","result":null}}\n\n'
+          'data: {"value":{"type":"token","content":"answer"}}\n\n'
+          'data: {"value":{"type":"done"}}\n\n',
+          200,
+          headers: {'content-type': 'text/event-stream'},
+        ),
+      ),
+    );
+    final chat = ChatController(api: api, store: FakeConversationStore());
+    addTearDown(chat.dispose);
+    await chat.send('test');
+    final response = chat.messages.last;
+    expect(response.text, 'answer');
+    expect(response.reasoning, 'visible thinking');
+    expect(response.toolCalls.single.status, 'completed');
+    expect(response.toolCalls.single.isPending, isFalse);
+    expect(response.phase, 'done');
+  });
+
   test('controller records tool call and result from the SSE stream', () async {
     final client = MockClient.streaming((request, body) async {
       return http.StreamedResponse(

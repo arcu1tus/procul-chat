@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform;
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -24,6 +24,11 @@ import 'widgets/icon_action.dart';
 import 'widgets/model_badges.dart';
 import 'widgets/skeleton.dart';
 import 'widgets/streaming_text.dart';
+import 'widgets/response_activity.dart';
+import 'widgets/media_drop_target.dart';
+import 'media_input.dart';
+
+import 'package:super_clipboard/super_clipboard.dart' as media;
 
 /// The chat pane: header, message list, and composer.
 class ChatScreen extends StatefulWidget {
@@ -36,8 +41,10 @@ class ChatScreen extends StatefulWidget {
     this.compactModelPicker = false,
     this.compactActions = false,
     this.onMenu,
+    this.mediaInput = const SystemMediaInputSource(),
   });
 
+  final MediaInputSource mediaInput;
   final ChatController chat;
 
   /// The shared model catalog backing the app-bar model picker. When null (or
@@ -84,15 +91,120 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     widget.chat.addListener(_onChanged);
     _scrollController.addListener(_trackPin);
+    widget.catalog?.addListener(_syncCatalog);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncCatalog();
+    });
+    if (kIsWeb) {
+      media.ClipboardEvents.instance?.registerPasteEventListener(_webPaste);
+    }
   }
 
   @override
   void dispose() {
+    if (kIsWeb) {
+      media.ClipboardEvents.instance?.unregisterPasteEventListener(_webPaste);
+    }
+    widget.catalog?.removeListener(_syncCatalog);
     widget.chat.removeListener(_onChanged);
     _inputController.dispose();
     _scrollController.dispose();
     _inputFocus.dispose();
     super.dispose();
+  }
+
+  void _syncCatalog() {
+    final catalog = widget.catalog;
+    if (catalog == null) return;
+    widget.chat.setModels(catalog.models);
+    widget.chat.setDefaultModel(
+      catalog.defaultModel ??
+          catalog.models.where((m) => m.isDefault).firstOrNull?.slug,
+    );
+  }
+
+  void _webPaste(media.ClipboardReadEvent event) {
+    if (!_inputFocus.hasFocus ||
+        widget.chat.isStreaming ||
+        widget.chat.isUploadingAttachment ||
+        widget.chat.isReadingMedia ||
+        widget.chat.isLoadingMessages) {
+      return;
+    }
+    // Claim the browser event synchronously; requesting its reader suppresses
+    // browser insertion, so we insert plain text ourselves exactly once.
+    final reader = event.getClipboardReader();
+    _receive(
+      reader.then(
+        (r) async => readClipboardItems(
+          r.items,
+          maxBytes:
+              widget.chat.attachmentPolicy?.maxFileSizeBytes ??
+              defaultMaxAttachmentBytes,
+          maxItems: _remainingSlots,
+          text: await r.readValue(media.Formats.plainText) ?? '',
+        ),
+      ),
+    );
+  }
+
+  int get _remainingSlots =>
+      ((widget.chat.attachmentPolicy?.maxAttachmentsPerMessage ?? 0) -
+              widget.chat.pendingAttachments.length)
+          .clamp(0, 1000000);
+
+  void _paste() {
+    if (widget.chat.isStreaming ||
+        widget.chat.isUploadingAttachment ||
+        widget.chat.isReadingMedia ||
+        widget.chat.isLoadingMessages) {
+      return;
+    }
+    _inputFocus.requestFocus();
+    _receive(
+      widget.mediaInput.readClipboard(
+        maxBytes:
+            widget.chat.attachmentPolicy?.maxFileSizeBytes ??
+            defaultMaxAttachmentBytes,
+        maxItems: _remainingSlots,
+      ),
+    );
+  }
+
+  Future<void> _receive(Future<MediaInputPayload> payload) async {
+    final chat = widget.chat;
+    if (chat.isStreaming ||
+        chat.isUploadingAttachment ||
+        chat.isLoadingMessages ||
+        chat.isReadingMedia) {
+      return;
+    }
+    final generation = chat.draftGeneration;
+    chat.setReadingMedia(true);
+    try {
+      final value = await payload;
+      if (!mounted || chat.draftGeneration != generation) return;
+      if (value.text.isNotEmpty) {
+        final current = _inputController.value;
+        final selection = current.selection;
+        final start = selection.isValid ? selection.start : current.text.length;
+        final end = selection.isValid ? selection.end : current.text.length;
+        _inputController.value = TextEditingValue(
+          text: current.text.replaceRange(start, end, value.text),
+          selection: TextSelection.collapsed(offset: start + value.text.length),
+        );
+      }
+      await chat.uploadAttachments(value.files);
+      if (value.errors.isNotEmpty && chat.draftGeneration == generation) {
+        chat.reportError(value.errors.join('\n'));
+      }
+    } catch (e) {
+      if (mounted && chat.draftGeneration == generation) {
+        chat.reportError('Could not paste or drop media: $e');
+      }
+    } finally {
+      chat.setReadingMedia(false);
+    }
   }
 
   void _trackPin() {
@@ -166,21 +278,31 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final text = _inputController.text;
-    if (text.trim().isEmpty ||
+    if ((text.trim().isEmpty && widget.chat.pendingAttachments.isEmpty) ||
         widget.chat.isStreaming ||
         widget.chat.isLoadingMessages ||
-        widget.chat.isUploadingAttachment) {
+        widget.chat.isUploadingAttachment ||
+        widget.chat.isReadingMedia) {
+      return;
+    }
+    final problem = widget.chat.submissionProblem(text);
+    if (problem != null) {
+      widget.chat.reportError(problem);
       return;
     }
     final editing = widget.chat.isEditing;
     _inputController.clear();
     _pinnedToBottom = true;
     if (editing) {
-      widget.chat.editMessage(text);
+      await widget.chat.editMessage(text);
     } else {
-      widget.chat.send(text);
+      await widget.chat.send(text);
+    }
+    if (mounted && widget.chat.rejectedDraftText != null) {
+      _inputController.text = widget.chat.rejectedDraftText!;
+      widget.chat.rejectedDraftText = null;
     }
   }
 
@@ -485,26 +607,40 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             const Divider(),
           ],
-          child: Column(
-            children: [
-              Expanded(
-                child: ChatRefreshTrigger(
-                  // A pull must not clobber a live stream, so disable it mid-turn.
-                  onRefresh: chat.isStreaming
-                      ? null
-                      : chat.reloadActiveConversation,
-                  child: _body(chat),
+          child: MediaDropTarget(
+            enabled:
+                chat.mediaReady &&
+                !chat.isStreaming &&
+                !chat.isLoadingMessages &&
+                !chat.isUploadingAttachment &&
+                !chat.isReadingMedia,
+            maxBytes:
+                chat.attachmentPolicy?.maxFileSizeBytes ??
+                defaultMaxAttachmentBytes,
+            maxItems: _remainingSlots,
+            onReceive: _receive,
+            child: Column(
+              children: [
+                Expanded(
+                  child: ChatRefreshTrigger(
+                    // A pull must not clobber a live stream, so disable it mid-turn.
+                    onRefresh: chat.isStreaming
+                        ? null
+                        : chat.reloadActiveConversation,
+                    child: _body(chat),
+                  ),
                 ),
-              ),
-              Composer(
-                controller: _inputController,
-                focusNode: _inputFocus,
-                chat: chat,
-                onSubmit: _submit,
-                onAttach: _attach,
-                onCancelEdit: _cancelEdit,
-              ),
-            ],
+                Composer(
+                  controller: _inputController,
+                  focusNode: _inputFocus,
+                  chat: chat,
+                  onSubmit: _submit,
+                  onAttach: _attach,
+                  onCancelEdit: _cancelEdit,
+                  onPaste: _paste,
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -724,7 +860,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
     final hasAttachments = message.attachments.isNotEmpty;
     // While tools run there is no reply text yet, so don't also show the
     // thinking dots — the tool rows already signal activity.
-    final showText = message.text.isNotEmpty || !hasTools;
+    final showText =
+        message.text.isNotEmpty || (!hasTools && message.reasoning.isEmpty);
     // Actions are disabled mid-turn and while already editing.
     final canAct = !widget.isStreaming && !chat.isEditing;
 
@@ -732,7 +869,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        for (final call in message.toolCalls) _ToolCallRow(call: call),
+        ResponseActivity(message: message, isStreaming: widget.isStreaming),
         if (hasTools && showText) const Gap(8),
         if (hasAttachments) ...[
           AttachmentList(
@@ -1332,80 +1469,6 @@ class _ThinkingDotsState extends State<_ThinkingDots>
     final t = (_controller.value + index * 0.16) % 1.0;
     final triangle = 1 - (2 * (t - 0.5)).abs();
     return 0.35 + 0.65 * triangle;
-  }
-}
-
-/// A compact, muted line summarising one tool invocation. Hovering reveals the
-/// arguments and the result or error.
-class _ToolCallRow extends StatelessWidget {
-  const _ToolCallRow({required this.call});
-
-  final ToolCall call;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = ColorScheme.of(context);
-
-    final label = switch (call) {
-      ToolCall(isPending: true) => 'Running ${call.name}…',
-      ToolCall(hasFailed: true) => '${call.name} failed',
-      _ => 'Used ${call.name}',
-    };
-
-    return Tooltip(
-      tooltip: (context) => TooltipContainer(child: Text(_details)),
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              transitionBuilder: (child, animation) =>
-                  FadeTransition(opacity: animation, child: child),
-              child: call.isPending
-                  ? SizedBox(
-                      key: const ValueKey('running'),
-                      width: 13,
-                      height: 13,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: colors.mutedForeground,
-                      ),
-                    )
-                  : Icon(
-                      call.hasFailed ? LucideIcons.info : LucideIcons.check,
-                      key: const ValueKey('done'),
-                      size: 14,
-                      color: colors.mutedForeground,
-                    ),
-            ),
-            const Gap(6),
-            Flexible(
-              child: Text(
-                label,
-                style: TextStyle(fontSize: 12, color: colors.mutedForeground),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String get _details {
-    final buffer = StringBuffer(call.name);
-    if (call.arguments != null) {
-      buffer.write('\n\nArguments: ${call.arguments}');
-    }
-    if (call.result != null) {
-      buffer.write('\n\nResult: ${call.result}');
-    }
-    if (call.error != null) {
-      buffer.write('\n\nError: ${call.error}');
-    }
-    return buffer.toString();
   }
 }
 

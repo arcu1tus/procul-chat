@@ -55,7 +55,8 @@ public static class AttachmentContentBuilder
 
     /// <summary>Whether a model with these capabilities can receive the given content type.</summary>
     public static bool IsSupported(string contentType, IReadOnlySet<ModelInputModality> capabilities) =>
-        RequiredModality(contentType) is not { } required || capabilities.Contains(required);
+        IsText(contentType) ||
+        (RequiredModality(contentType) is { } required && capabilities.Contains(required));
 
     /// <summary>Whether the content type is a <c>text/*</c> file that is inlined into the prompt.</summary>
     public static bool IsText(string contentType) =>
@@ -67,11 +68,11 @@ public static class AttachmentContentBuilder
 
     /// <summary>The note emitted for an attachment that is not sent to the model this turn.</summary>
     public static TextContent NotSentNote(Attachment attachment) =>
-        new($"{Describe(attachment.FileName, attachment.ContentType, attachment.SizeBytes)} — not sent to this model");
+        new($"{Describe(attachment.FileName, attachment.ContentType, attachment.SizeBytes)} id={attachment.Id} — not sent to this model");
 
     /// <summary>The note emitted for an earlier turn's attachment when history is not re-sent.</summary>
     public static TextContent HistoryNote(Attachment attachment) =>
-        new(Describe(attachment.FileName, attachment.ContentType, attachment.SizeBytes));
+        new($"{Describe(attachment.FileName, attachment.ContentType, attachment.SizeBytes)} id={attachment.Id}");
 
     /// <summary>
     /// Builds the parts for one attachment. Callers must only pass bytes when the attachment is

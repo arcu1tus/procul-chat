@@ -33,7 +33,10 @@ public sealed record ConversationMessageV1(
     DateTimeOffset CreatedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] List<AttachmentV1>? Attachments = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Model = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ConversationMessageUsageV1? Usage = null
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ConversationMessageUsageV1? Usage = null,
+    List<ConversationToolCallV1>? ToolCalls = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Reasoning = null,
+    string CompletionStatus = "completed"
 );
 
 // POST /conversations
@@ -101,3 +104,6 @@ public sealed record ModelHealthV1(
     DateTimeOffset? LastUsedAt,
     string? Source
 );
+
+/// <summary>A historical invocation and its explicit completion state.</summary>
+public sealed record ConversationToolCallV1(string CallId, string Name, string? Arguments, string? Result, string? Error, string Status);

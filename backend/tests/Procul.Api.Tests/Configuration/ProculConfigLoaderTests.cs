@@ -23,6 +23,22 @@ public class ProculConfigLoaderTests
         """{ "slug": "test/model", "baseUrl": "https://openrouter.ai/api/v1" }""";
 
     [Fact]
+    public void Attachment_count_defaults_to_twenty_and_can_be_configured()
+    {
+        Assert.Equal(20, Load($$"""{ "models": [{{MinimalModel}}] }""").Attachments.MaxAttachmentsPerMessage);
+        Assert.Equal(3, Load($$"""{ "models": [{{MinimalModel}}], "attachments": { "maxAttachmentsPerMessage": 3 } }""").Attachments.MaxAttachmentsPerMessage);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("1.5")]
+    public void Attachment_count_must_be_a_positive_integer(string count)
+    {
+        Assert.Throws<InvalidOperationException>(() => Load($$"""{ "models": [{{MinimalModel}}], "attachments": { "maxAttachmentsPerMessage": {{count}} } }"""));
+    }
+
+    [Fact]
     public void Parses_a_full_config_with_jsonc_comments_and_trailing_commas()
     {
         var config = Load($$"""

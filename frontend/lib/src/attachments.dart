@@ -42,6 +42,34 @@ class Attachment {
   );
 }
 
+/// Upload policy fetched from the authenticated backend.
+class AttachmentPolicy {
+  const AttachmentPolicy({
+    required this.maxAttachmentsPerMessage,
+    required this.maxFileSizeBytes,
+    required this.allowedContentTypes,
+  });
+  final int maxAttachmentsPerMessage;
+  final int maxFileSizeBytes;
+  final List<String> allowedContentTypes;
+  factory AttachmentPolicy.fromJson(
+    Map<String, dynamic> json,
+  ) => AttachmentPolicy(
+    maxAttachmentsPerMessage: (json['maxAttachmentsPerMessage'] as num).toInt(),
+    maxFileSizeBytes: (json['maxFileSizeBytes'] as num).toInt(),
+    allowedContentTypes: (json['allowedContentTypes'] as List).cast<String>(),
+  );
+  bool allows(String contentType) {
+    final type = contentType.trim().toLowerCase();
+    return allowedContentTypes.any((raw) {
+      final pattern = raw.trim().toLowerCase();
+      return pattern.endsWith('/*')
+          ? type.startsWith(pattern.substring(0, pattern.length - 1))
+          : type == pattern;
+    });
+  }
+}
+
 /// The client-side pre-check cap (20 MiB). The backend's configured
 /// `attachments.maxFileSizeBytes` is the source of truth; this just gives a
 /// friendlier error before the bytes leave the device.
@@ -96,7 +124,7 @@ const _extensionsByModality = <ModelInputModality, List<String>>{
     'bmp',
   ],
   ModelInputModality.file: ['pdf'],
-  ModelInputModality.audio: ['mp3', 'wav', 'm4a', 'oga'],
+  ModelInputModality.audio: ['mp3', 'wav'],
   ModelInputModality.text: [
     'txt',
     'md',
@@ -137,12 +165,21 @@ String? attachmentProblem({
   required int sizeBytes,
   required Set<ModelInputModality> capabilities,
   int maxBytes = defaultMaxAttachmentBytes,
+  AttachmentPolicy? policy,
 }) {
   if (sizeBytes > maxBytes) {
     return "'$fileName' is ${formatAttachmentSize(sizeBytes)}; "
         "the limit is ${formatAttachmentSize(maxBytes)}.";
   }
 
+  if (sizeBytes <= 0) return "'$fileName' is empty.";
+  if (policy != null && !policy.allows(contentType)) {
+    return "'$fileName' has a content type this server does not allow.";
+  }
+  final type = contentType.trim().toLowerCase();
+  if (!type.startsWith('text/') && attachmentRequiredModality(type) == null) {
+    return "'$fileName' ($contentType) cannot be sent by the chat adapter.";
+  }
   final required = attachmentRequiredModality(contentType);
   if (required != null && !capabilities.contains(required)) {
     return "'$fileName' needs the ${_modalityLabel(required)} capability, "

@@ -23,6 +23,9 @@ internal abstract class HttpImageGenerationClient(
 
     /// <summary>POSTs a JSON body and returns the parsed response, mapping failures to an exception.</summary>
     protected async Task<JsonDocument> PostAsync(string path, string json, CancellationToken ct)
+        => await PostContentAsync(path, new StringContent(json, Encoding.UTF8, "application/json"), ct);
+
+    protected async Task<JsonDocument> PostContentAsync(string path, HttpContent content, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(Options.Timeout);
@@ -30,7 +33,7 @@ internal abstract class HttpImageGenerationClient(
         using var http = httpClientFactory.CreateClient(ClientName);
         using var message = new HttpRequestMessage(HttpMethod.Post, CombineUrl(Options.BaseUrl, path))
         {
-            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            Content = content,
         };
 
         if (!string.IsNullOrWhiteSpace(Options.ApiKey))

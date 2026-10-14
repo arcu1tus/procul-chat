@@ -40,6 +40,13 @@ public class ProculDbContext(DbContextOptions<ProculDbContext> options) : DbCont
             e.HasIndex(m => new { m.ConversationId, m.CreatedAt, m.Id });
         });
 
+        modelBuilder.Entity<ConversationToolCall>(e =>
+        {
+            e.HasKey(t => new { t.MessageId, t.Sequence });
+            e.HasOne<ConversationMessage>().WithMany(m => m.ToolCalls)
+                .HasForeignKey(t => t.MessageId).OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<TurnUsage>(e =>
         {
             e.HasKey(u => u.Id);

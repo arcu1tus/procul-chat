@@ -27,9 +27,11 @@ class AttachmentChip extends StatelessWidget {
     this.onTap,
     this.onRemove,
     this.thumbnail = false,
+    this.problem,
   });
 
   final Attachment attachment;
+  final String? problem;
   final ChatController? chat;
   final VoidCallback? onTap;
   final VoidCallback? onRemove;
@@ -49,7 +51,9 @@ class AttachmentChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: colors.secondary,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: colors.border),
+          border: Border.all(
+            color: problem == null ? colors.border : colors.destructive,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -71,6 +75,17 @@ class AttachmentChip extends StatelessWidget {
                 size: 14,
                 color: colors.mutedForeground,
               ),
+            if (problem != null) ...[
+              const Gap(4),
+              Tooltip(
+                tooltip: (_) => TooltipContainer(child: Text(problem!)),
+                child: Icon(
+                  LucideIcons.info,
+                  size: 14,
+                  color: colors.destructive,
+                ),
+              ),
+            ],
             const Gap(8),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 170),

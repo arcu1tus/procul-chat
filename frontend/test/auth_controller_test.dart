@@ -38,6 +38,30 @@ AuthController _controller({
 );
 
 void main() {
+  test(
+    'a delayed 401 for a replaced session cannot log out the newer token',
+    () async {
+      var issued = 0;
+      final auth = _controller(
+        credentials: FakeCredentialStore(),
+        store: FakeServerStore(),
+        client: MockClient(
+          (_) async =>
+              http.Response(jsonEncode({'token': 'token-${++issued}'}), 200),
+        ),
+      );
+      addTearDown(auth.dispose);
+      await auth.connect(baseUrl: 'https://example.test', password: 'pw');
+      final old = auth.active!;
+      await auth.connect(baseUrl: 'https://example.test', password: 'pw');
+      await auth.invalidateSession(old);
+      expect(auth.active!.token, 'token-2');
+      final invalidating = auth.invalidateSession(auth.active!);
+      expect(auth.active, isNull);
+      await invalidating;
+    },
+  );
+
   test('connect saves a profile and the token, and authenticates', () async {
     final credentials = FakeCredentialStore();
     final store = FakeServerStore();

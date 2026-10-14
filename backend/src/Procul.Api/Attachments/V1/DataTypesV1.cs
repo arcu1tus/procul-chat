@@ -8,3 +8,6 @@ public sealed record AttachmentV1(
     long SizeBytes,
     DateTimeOffset CreatedAt
 );
+
+/// <summary>The configured upload policy, shared with authenticated clients.</summary>
+public sealed record AttachmentPolicyV1(int MaxAttachmentsPerMessage, long MaxFileSizeBytes, IReadOnlyList<string> AllowedContentTypes);

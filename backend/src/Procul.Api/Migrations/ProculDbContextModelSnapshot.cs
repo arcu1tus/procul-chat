@@ -119,6 +119,10 @@ namespace Procul.Api.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("CompletionStatus")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<Guid>("ConversationId")
                         .HasColumnType("uuid");
 
@@ -130,6 +134,12 @@ namespace Procul.Api.Migrations
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)");
 
+                    b.Property<string>("Reasoning")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Model")
+                        .HasColumnType("text");
+
                     b.Property<string>("Text")
                         .IsRequired()
                         .HasColumnType("text");
@@ -139,6 +149,40 @@ namespace Procul.Api.Migrations
                     b.HasIndex("ConversationId", "CreatedAt", "Id");
 
                     b.ToTable("ConversationMessages");
+                });
+
+            modelBuilder.Entity("Procul.Api.Chat.ConversationToolCall", b =>
+                {
+                    b.Property<Guid>("MessageId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Arguments")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CallId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Result")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("MessageId", "Sequence");
+
+                    b.ToTable("ConversationToolCall");
                 });
 
             modelBuilder.Entity("Procul.Api.Chat.TurnUsage", b =>
@@ -214,6 +258,15 @@ namespace Procul.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Procul.Api.Chat.ConversationToolCall", b =>
+                {
+                    b.HasOne("Procul.Api.Chat.ConversationMessage", null)
+                        .WithMany("ToolCalls")
+                        .HasForeignKey("MessageId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Procul.Api.Chat.TurnUsage", b =>
                 {
                     b.HasOne("Procul.Api.Chat.Conversation", null)
@@ -226,6 +279,8 @@ namespace Procul.Api.Migrations
             modelBuilder.Entity("Procul.Api.Chat.ConversationMessage", b =>
                 {
                     b.Navigation("Attachments");
+
+                    b.Navigation("ToolCalls");
                 });
 #pragma warning restore 612, 618
         }

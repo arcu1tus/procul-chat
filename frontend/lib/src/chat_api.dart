@@ -62,6 +62,30 @@ class ChatApi {
   Uri _uri(String path, [Map<String, String>? query]) =>
       Uri.parse('$baseUrl$path').replace(queryParameters: query);
 
+  /// Checks the current bearer token without touching chat state.
+  Future<void> validateSession() async {
+    final response = await _client
+        .get(_uri('/v1/auth/session'), headers: _authHeaders)
+        .timeout(const Duration(seconds: 8));
+    if (response.statusCode != 204) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+  }
+
+  /// Loads server limits for every attachment source.
+  Future<AttachmentPolicy> fetchAttachmentPolicy() async {
+    final response = await _client.get(
+      _uri('/v1/attachments/policy'),
+      headers: _authHeaders,
+    );
+    if (response.statusCode != 200) {
+      _throwHttpError(response.statusCode, response.body);
+    }
+    return AttachmentPolicy.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   /// `GET /v1/conversations`
   ///
   /// Returns every conversation, most recently active first (as ordered by the
@@ -500,6 +524,7 @@ class ChatApi {
         ),
       ),
       'acknowledge' => const AcknowledgeEvent(),
+      'reasoning' => ReasoningEvent('${value['content'] ?? ''}'),
       'token' => TokenEvent('${value['content'] ?? ''}'),
       'image' => ImageEvent(
         Attachment(

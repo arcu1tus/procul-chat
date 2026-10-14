@@ -28,7 +28,7 @@ publish:
 
 # Start the dev Postgres on :5432.
 dev-db-up:
-    docker compose -f src/Procul.Api/docker/docker-compose.yaml up -d
+    docker compose -f src/Procul.Api/docker/docker-compose.yaml up -d --wait --wait-timeout 60
 
 # Stop the dev Postgres (keeps the data volume).
 dev-db-down:

@@ -55,7 +55,7 @@ needs it: the API requires PostgreSQL to store conversations, messages, attachme
 | Field | Type | Default | Meaning |
 | ----- | ---- | ------- | ------- |
 | `corsAllowedOrigins` | `string[]` | `[]` | Browser origins allowed to call the API. **Development:** an empty list allows *any* origin (the Flutter web dev server uses an ephemeral port). **Everywhere else:** only the listed origins are allowed — there is **no wildcard**. A `*` or a malformed value (not an absolute `http(s)` origin, or one carrying a path) fails startup. Entries are trimmed and normalized (trailing slash removed). |
-| `sessionLifetime` | duration | `30d` | Lifetime of an issued session token (see [Authentication](../backend/AGENTS.md#authentication)). Changing `PROCUL_API_PASSWORD` invalidates every token regardless. |
+| `sessionLifetime` | duration | `30d` | Lifetime of an issued session token (see [Authentication](../backend/AGENTS.md#authentication)). Changing `PROCUL_API_PASSWORD` and restarting/recreating the backend invalidates every existing token. Clients probe on startup, resume, and every 25 seconds; network errors retain credentials for retry. |
 
 ```jsonc
 "server": {
@@ -86,6 +86,7 @@ needed) whenever a connection string is configured. There is no separate migrati
 | Field | Type | Default | Meaning |
 | ----- | ---- | ------- | ------- |
 | `storage` | `"postgres"` \| `"s3"` | `postgres` | Where the file **bytes** live. Metadata always lives in PostgreSQL. |
+| `maxAttachmentsPerMessage` | integer ≥ 1 | `20` | Maximum distinct attachments on a new or edited user message, including retained files. Does not cap historical messages. |
 | `maxFileSizeBytes` | integer ≥ 1 | `20971520` (20 MiB) | Largest accepted upload. Kestrel's body limit is raised to this plus 1 MiB so the handler (not Kestrel) returns a friendly `413`. The Flutter client pre-checks the same limit. |
 | `allowedContentTypes` | `string[]` | `[]` | Content-type **patterns** (wildcards like `image/*` allowed). An **empty list rejects every upload**, so set it explicitly. |
 | `resendHistory` | boolean | `true` | `true` re-sends earlier turns' attachment bytes every turn (so a model chosen later can still read them); `false` sends the bytes only on the turn the file was attached and a short text note afterwards. |
@@ -107,6 +108,7 @@ needed) whenever a connection string is configured. There is no separate migrati
 ```jsonc
 "attachments": {
   "storage": "postgres",
+  "maxAttachmentsPerMessage": 20,
   "maxFileSizeBytes": 20971520,
   "allowedContentTypes": ["image/*", "text/*", "application/pdf", "audio/mpeg", "audio/wav"],
   "resendHistory": true,
@@ -127,7 +129,8 @@ How each attachment type is mapped to model content — and which **capability**
 documented in [`../backend/AGENTS.md`](../backend/AGENTS.md#attachments) and mirrored in the
 top-level README. In short: `image/*` → image part (`image`), `application/pdf` → file part
 (`file`/`pdf`), `audio/*` → input-audio (`audio`), `text/*` always inlined, everything else
-(video, unknown) stored and shown but never sent. The backend enforces the capability gate at
+(video, unknown binary formats) rejected for new uploads/submissions. Existing unsupported history
+contributes metadata without reading its bytes. The backend enforces the capability gate at
 **upload** *and* at **send**.
 
 #### Retention
@@ -215,7 +218,7 @@ not mention it.
 | `model` | string | `google/gemini-2.5-flash-image` | An image-**output** model. Required when `enabled` is true. |
 | `defaultSize` | string | `1024x1024` | Default size when the model omits one. |
 | `defaultAspectRatio` | string | `1:1` | Default aspect ratio when the model omits one. |
-| `maxReferenceImages` | integer ≥ 0 | `4` | Cap on reference images sent with one generation. |
+| `maxReferenceImages` | integer ≥ 0 | `4` | Cap on explicitly selected reference images; excess references fail rather than being silently truncated. |
 | `timeout` | duration | `120s` | Per-request budget. |
 | `retention` | duration \| `"0"` | inherits `attachments.retention` | Age limit for generated/shown images; same semantics as `attachments.retention`. |
 
@@ -239,6 +242,15 @@ chat receives an `image` SSE event carrying the attachment id. The `show_image` 
 base64) is always offered; its URL fetches are SSRF-guarded (public `http(s)` only). Every
 redirect destination is checked, with at most five redirects per fetch. DNS rebinding is still
 a limitation because the HTTP connection resolves the hostname again.
+
+Reference selection uses `referenceAttachmentIds` from attachment labels in model input and IDs
+returned by media tools. Only images in the current conversation are accepted, in the requested
+order. Expired/non-image/foreign selections fail before contacting the provider. OpenRouter uses
+structured `input_references`; OpenAI-compatible editing uses multipart `/images/edits`.
+
+The authenticated `GET /v1/attachments/policy` exposes size, count, and allowed MIME limits to
+clients. Picker, paste, and drop apply this policy plus the active model's input capabilities.
+Queued incompatible files stay visible and block sending; model changes affect subsequent turns.
 
 ### `modelHealth`
 

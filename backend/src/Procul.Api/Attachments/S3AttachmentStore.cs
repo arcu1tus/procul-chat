@@ -41,7 +41,7 @@ internal sealed class AmazonS3Operations(IAmazonS3 s3, string bucket, ILogger lo
         try
         {
             var response = await s3.GetObjectAsync(bucket, key, ct);
-            return response.ResponseStream;
+            return new OwnedDownloadStream(response.ResponseStream, response);
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {

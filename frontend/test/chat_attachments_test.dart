@@ -1,3 +1,5 @@
+import 'support/media_fixture.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -84,9 +86,11 @@ MockClient _historyClient(Map<String, dynamic> attachment, Uint8List bytes) =>
       return http.Response('{}', 200);
     });
 
-ChatController _chat(MockClient client, {String? stored}) => ChatController(
-  api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
-  store: FakeConversationStore(stored),
+ChatController _chat(MockClient client, {String? stored}) => withMediaPolicy(
+  ChatController(
+    api: ChatApi(baseUrl: 'http://test', token: 'tok', client: client),
+    store: FakeConversationStore(stored),
+  ),
 );
 
 void main() {
@@ -215,6 +219,7 @@ void main() {
     expect(creates, hasLength(1));
     expect(jsonDecode(creates.single.body), {
       'initialMessage': 'have a look',
+      'model': 'test',
       'attachmentIds': ['a1'],
     });
     expect(chat.pendingAttachments, isEmpty);

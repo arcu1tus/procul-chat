@@ -45,6 +45,7 @@ public class AttachmentPipelineTests : IClassFixture<WebApplicationFactory<Progr
           "attachments": {
             "storage": "postgres",
             "maxFileSizeBytes": 1024,
+            "maxAttachmentsPerMessage": 2,
             "allowedContentTypes": ["image/*", "text/*", "application/pdf"]
           },
           "models": [
@@ -164,6 +165,79 @@ public class AttachmentPipelineTests : IClassFixture<WebApplicationFactory<Progr
     }
 
     [Fact]
+    public async Task Policy_and_media_only_messages_use_the_configured_limit()
+    {
+        using var factory = CreateFactory();
+        using var client = await SignedInClientAsync(factory);
+        var policy = await client.GetFromJsonAsync<AttachmentPolicyV1>("/v1/attachments/policy");
+        Assert.Equal(2, policy!.MaxAttachmentsPerMessage);
+        Assert.Equal(MaxFileSize, policy.MaxFileSizeBytes);
+        var attachments = new List<AttachmentV1>();
+        for (var i = 0; i < 3; i++) attachments.Add(await UploadAsync(client, [1], $"{i}.png", "image/png"));
+        using var tooMany = await client.PostAsJsonAsync("/v1/conversations", new CreateConversationRequestV1("", AttachmentIds: attachments.Select(a => a.Id).ToList()));
+        Assert.Equal(HttpStatusCode.BadRequest, tooMany.StatusCode);
+        using var valid = await client.PostAsJsonAsync("/v1/conversations", new CreateConversationRequestV1("", AttachmentIds: [attachments[0].Id, attachments[0].Id]));
+        valid.EnsureSuccessStatusCode();
+        Assert.Contains("done", await valid.Content.ReadAsStringAsync());
+        Assert.Single(_captured.Last(m => m.Role == ChatRole.User).Contents.OfType<DataContent>());
+    }
+
+    [Fact]
+    public async Task Retained_attachments_are_counted_before_a_media_only_edit_truncates_history()
+    {
+        using var factory = CreateFactory();
+        using var client = await SignedInClientAsync(factory);
+        var files = new List<AttachmentV1>();
+        for (var i = 0; i < 3; i++) files.Add(await UploadAsync(client, [1], $"{i}.png", "image/png"));
+        var conversation = new Conversation { Model = "model/one" };
+        var user = new ConversationMessage { ConversationId = conversation.Id, Text = "original", MessageRole = MessageRole.User };
+        var assistant = new ConversationMessage
+        {
+            ConversationId = conversation.Id,
+            Text = "answer",
+            MessageRole = MessageRole.Assistant,
+            Reasoning = "saved thinking",
+            Model = "model/one",
+            ToolCalls = [new() { CallId = "c", Name = "tool", Status = "completed" }]
+        };
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProculDbContext>();
+            db.Conversations.Add(conversation);
+            db.ConversationMessages.AddRange(user, assistant);
+            foreach (var file in files)
+            {
+                var attachment = await db.Attachments.FindAsync(file.Id);
+                attachment!.ConversationId = conversation.Id;
+                attachment.MessageId = user.Id;
+            }
+            await db.SaveChangesAsync();
+        }
+        var history = await client.GetFromJsonAsync<GetConversationMessagesResponseV1>($"/v1/conversations/{conversation.Id}/messages?limit=1");
+        var saved = Assert.Single(history!.Messages);
+        Assert.Equal("saved thinking", saved.Reasoning);
+        Assert.Equal("model/one", saved.Model);
+        Assert.Equal("completed", Assert.Single(saved.ToolCalls!).Status);
+        Assert.Null(saved.ToolCalls![0].Result);
+        var editUrl = $"/v1/conversations/{conversation.Id}/messages/{user.Id}/edit";
+        using var rejected = await client.PostAsJsonAsync(editUrl, new EditMessageRequestV1(""));
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProculDbContext>();
+            Assert.Equal("original", (await db.ConversationMessages.FindAsync(user.Id))!.Text);
+            Assert.True(await db.ConversationMessages.AnyAsync(m => m.Id == assistant.Id));
+        }
+        using var accepted = await client.PostAsJsonAsync(editUrl, new EditMessageRequestV1("", AttachmentIds: [files[0].Id]));
+        accepted.EnsureSuccessStatusCode();
+        Assert.Contains("done", await accepted.Content.ReadAsStringAsync());
+        using var finalScope = factory.Services.CreateScope();
+        var finalDb = finalScope.ServiceProvider.GetRequiredService<ProculDbContext>();
+        Assert.False(await finalDb.ConversationMessages.AnyAsync(m => m.Id == assistant.Id));
+        Assert.Empty(await finalDb.Set<ConversationToolCall>().ToListAsync());
+    }
+
+    [Fact]
     public async Task Every_attachment_route_requires_a_token()
     {
         using var client = CreateFactory().CreateClient();
@@ -171,10 +245,12 @@ public class AttachmentPipelineTests : IClassFixture<WebApplicationFactory<Progr
         using var upload = await client.PostAsync("/v1/attachments", FileForm([1], "a.png", "image/png"));
         using var download = await client.GetAsync($"/v1/attachments/{Guid.NewGuid()}");
         using var delete = await client.DeleteAsync($"/v1/attachments/{Guid.NewGuid()}");
+        using var policy = await client.GetAsync("/v1/attachments/policy");
 
         Assert.Equal(HttpStatusCode.Unauthorized, upload.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, download.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, delete.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, policy.StatusCode);
     }
 
     [Fact]
