@@ -245,9 +245,11 @@ docker run --rm -p 8080:8080 \
   layer cache with `cache-from/to: type=gha`.
 - `backend/.dockerignore` (context root) keeps `bin/`, `obj/`, and — importantly — `.env` out
   of the build context. The image is environment-agnostic; config is injected at run time.
-- GitHub Actions: `.github/workflows/ci.yml` builds/tests on pushes to `main` and PRs;
-  `.github/workflows/publish-backend-image.yml` tests and pushes
-  `ghcr.io/<owner>/<repo>/backend-api` on `v*` tags (via `GITHUB_TOKEN`, `packages: write`).
+- GitHub Actions: `.github/workflows/ci.yml` builds/tests on pushes to `main` and PRs when
+  backend files or relevant workflows change; the `.NET` setup reuses a preinstalled 10.x SDK
+  when available. `.github/workflows/publish-backend-image.yml` restores once, tests with
+  `--no-restore`, and pushes `ghcr.io/<owner>/<repo>/backend-api` on `v*` tags (via
+  `GITHUB_TOKEN`, `packages: write`).
 
 ## Authentication
 

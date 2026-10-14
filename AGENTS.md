@@ -84,9 +84,11 @@ guidance.
 
 ## Working agreements (standing rules)
 
-- **Start a new branch at the start of each implementation** (e.g. `feat/...`, `fix/...`,
-  `chore/...`).
-- **Commit your work, then ASK before pushing.** Never push without explicit confirmation.
+- **Before each implementation, run `git switch main` and `git pull --prune`, then create a new
+  branch from the updated `main`.** Name the branch for the work it does (e.g. `fix/chat-bug`,
+  `chore/ci-efficiency`), never for the agent (e.g. `codex/...`).
+- **Commit your work, then ask whether to push the branch and open a pull request.** Never push
+  or create a PR without explicit confirmation.
 - **Keep the docs fresh in the same change.** If you alter structure, conventions, commands, the
   config shape, the image name/tags, or the build steps, update the matching `AGENTS.md` **and**
   the relevant `docs/` page together.
@@ -127,8 +129,11 @@ See `backend/AGENTS.md` / `frontend/AGENTS.md` for per-area detail and `docs/` f
 
 ## GitHub CI & releases
 
-`.github/workflows/ci.yml` runs backend build/tests and Flutter analysis/unit/widget tests on
-every pull request targeting `main` and every push to `main`, without path filters.
+`.github/workflows/ci.yml` starts on every pull request targeting `main` and every push to
+`main`. A change-detection job runs the backend and Flutter jobs only when their respective
+files or workflows change; changes to `ci.yml` run both. Docs-only changes still create a
+completed CI workflow, so required checks do not remain pending. If change detection fails,
+both test jobs run.
 `publish-backend-image.yml` publishes the backend image on `v*` tag pushes.
 `publish-flutter-app.yml` uses the same trigger, validates `v<SemVer>` (including prereleases
 and build metadata), tests the frontend, then builds Android APK, Wasm web ZIP, Windows x64

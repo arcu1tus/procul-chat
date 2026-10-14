@@ -67,9 +67,11 @@ Preview definitions live in `frontend/lib/previews.dart`; no backend or sign-in 
 
 ## Automated CI & tagged releases
 
-[`ci.yml`](../.github/workflows/ci.yml) runs Flutter analysis and the complete unit/widget test
-suite for every pull request targeting `main` and every push to `main`, alongside backend CI.
-It also tests release tag parsing. Dependencies are restored with `--enforce-lockfile`.
+[`ci.yml`](../.github/workflows/ci.yml) starts for every pull request targeting `main` and every
+push to `main`. It runs Flutter analysis, the complete unit/widget test suite, and release tag
+parsing tests when frontend files or relevant workflows change. Backend-only and docs-only changes
+skip the Flutter job; the workflow still completes for required checks. Dependencies are restored
+with `--enforce-lockfile`.
 Flutter **3.47.7** (Dart 3.13.5) is pinned in both CI and the release workflow; update both
 pins together when upgrading the SDK.
 
@@ -87,6 +89,8 @@ The workflow attaches these five assets to the matching GitHub Release, creating
 generated notes if absent. SemVer prereleases create prereleases; existing release notes and
 settings are preserved. Reruns replace same-named assets. No release needs to be created
 manually before pushing the tag.
+The Android job caches Gradle dependencies and its wrapper with `setup-java@v6`; later tagged
+builds can reuse downloads when the Android build files have not changed.
 
 | Target | Release asset for `v1.2.3` | Contents |
 | --- | --- | --- |

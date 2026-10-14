@@ -20,8 +20,40 @@ env:
   FLUTTER_VERSION: '3.47.7'
 
 jobs:
+  changes:
+    name: Detect affected areas
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Keep the workflow running for docs-only PRs so required checks can finish.
+      - name: Filter changed files
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/publish-backend-image.yml'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/publish-flutter-app.yml'
+
   backend:
     name: Build & test backend
+    needs: changes
+    # If change detection fails, run the tests rather than silently skipping them.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.backend == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,6 +65,7 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           cache: true
           cache-dependency-path: backend/**/*.csproj
+          check-latest: false
 
       - name: Restore
         run: dotnet restore backend/Procul.slnx
@@ -45,6 +78,8 @@ jobs:
 
   frontend:
     name: Analyze & test Flutter
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
